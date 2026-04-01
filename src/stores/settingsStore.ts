@@ -1,0 +1,177 @@
+import { defineStore } from "pinia";
+import { ref, watch } from "vue";
+import { logger } from "@/utils/logger";
+import { APP_STORAGE_PREFIX } from "@/appConfig";
+
+export const CUSTOMIZABLE_VARS = [
+  // Surfaces
+  '--bg-primary',
+  '--bg-secondary',
+  '--bg-tertiary',
+  // Text
+  '--text-primary',
+  '--text-secondary',
+  '--text-tertiary',
+  // UI chrome
+  '--border-color',
+  '--accent-color',
+  '--accent-hover',
+  // Semantic
+  '--success-color',
+  '--error-color',
+  '--warning-color',
+  // Status badges
+  '--status-draft-bg',
+  '--status-draft-fg',
+  '--status-progress-bg',
+  '--status-progress-fg',
+  '--status-complete-bg',
+  '--status-complete-fg',
+] as const
+
+export type CustomizableVar = typeof CUSTOMIZABLE_VARS[number]
+
+export type ThemeColorOverrides = {
+  dark:  Partial<Record<CustomizableVar, string>>
+  light: Partial<Record<CustomizableVar, string>>
+}
+
+export interface UserSettings {
+  theme: "dark" | "light";
+  fontSize: number;
+  fontFamily: string;
+  lineHeight: number;
+  tabWidth: number;
+  spellCheck: boolean;
+  autoSaveInterval: number;
+  keyboardShortcuts: Record<string, string>;
+  themeColors: ThemeColorOverrides;
+  // Privacy
+  showDeletedMessagePlaceholder: boolean;
+  confirmBeforeDelete: boolean;
+  storageLimitGB: number;
+  // Voice
+  inputDeviceId: string;
+  outputDeviceId: string;
+  pushToTalkKey: string | null;
+  customTURNServers: RTCIceServer[];
+  // Network
+  rendezvousServerUrl: string;
+  soundEnabled: boolean;
+  notificationsEnabled: boolean;
+}
+
+const STORAGE_KEY = APP_STORAGE_PREFIX + 'settings'
+
+function detectOSTheme(): 'dark' | 'light' {
+  try {
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+  } catch { return 'dark' }
+}
+
+const defaultSettings: UserSettings = {
+  theme: detectOSTheme(),
+  fontSize: 14,
+  fontFamily: "system-ui, -apple-system, sans-serif",
+  lineHeight: 1.5,
+  tabWidth: 2,
+  spellCheck: true,
+  autoSaveInterval: 10000,
+  keyboardShortcuts: {
+    settings: "ctrl+,",
+  },
+  themeColors: { dark: {}, light: {} },
+  // Privacy
+  showDeletedMessagePlaceholder: false,
+  confirmBeforeDelete: true,
+  storageLimitGB: 5,
+  // Voice
+  inputDeviceId: '',
+  outputDeviceId: '',
+  pushToTalkKey: null,
+  customTURNServers: [],
+  // Network
+  rendezvousServerUrl: '',
+  soundEnabled: true,
+  notificationsEnabled: true,
+};
+
+function loadFromStorage(): UserSettings {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (typeof parsed === 'object' && parsed !== null && typeof parsed.theme === 'string') {
+        return { ...defaultSettings, ...parsed }
+      }
+      logger.warn('Settings', 'Stored settings failed validation — using defaults')
+    }
+  } catch {}
+  return { ...defaultSettings }
+}
+
+function applyCSSVars(s: UserSettings) {
+  const root = document.documentElement
+  root.style.setProperty('--editor-font-size', `${s.fontSize}px`)
+  root.style.setProperty('--editor-line-height', String(s.lineHeight))
+  root.style.setProperty('--editor-font-family', s.fontFamily)
+  const overrides = s.themeColors?.[s.theme] ?? {}
+  for (const v of CUSTOMIZABLE_VARS) {
+    const val = overrides[v]
+    if (val) {
+      root.style.setProperty(v, val)
+    } else {
+      root.style.removeProperty(v)
+    }
+  }
+}
+
+export const useSettingsStore = defineStore("settings", () => {
+  const settings = ref<UserSettings>(loadFromStorage());
+
+  let _persistTimer: ReturnType<typeof setTimeout> | undefined
+  watch(settings, (val) => {
+    applyCSSVars(val)
+    if (_persistTimer !== undefined) clearTimeout(_persistTimer)
+    _persistTimer = setTimeout(() => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(val))
+    }, 300)
+  }, { deep: true, immediate: true })
+
+  const updateSetting = <K extends keyof UserSettings>(
+    key: K,
+    value: UserSettings[K]
+  ) => {
+    settings.value[key] = value;
+  };
+
+  const updateKeyboardShortcut = (action: string, shortcut: string) => {
+    settings.value.keyboardShortcuts[action] = shortcut;
+  };
+
+  const updateThemeColor = (theme: 'dark' | 'light', varName: CustomizableVar, value: string) => {
+    settings.value.themeColors[theme][varName] = value
+  }
+
+  const resetThemeColors = (theme: 'dark' | 'light') => {
+    settings.value.themeColors[theme] = {}
+  }
+
+  const resetToDefaults = () => {
+    settings.value = { ...defaultSettings, themeColors: { dark: {}, light: {} } };
+  };
+
+  const getSetting = <K extends keyof UserSettings>(key: K): UserSettings[K] => {
+    return settings.value[key];
+  };
+
+  return {
+    settings,
+    updateSetting,
+    updateKeyboardShortcut,
+    updateThemeColor,
+    resetThemeColors,
+    resetToDefaults,
+    getSetting,
+  };
+});
