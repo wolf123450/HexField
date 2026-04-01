@@ -1,0 +1,55 @@
+[package]
+name = "gamechat"
+version = "0.1.0"
+description = "GameChat — privacy-first P2P chat"
+authors = []
+edition = "2021"
+
+[lib]
+name = "gamechat_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri
+tauri              = { version = "2", features = ["devtools"] }
+tauri-plugin-log   = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-fs    = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-deep-link = "2"
+
+# Serde
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+log                = "0.4"
+
+# SQLite
+rusqlite           = { version = "0.32", features = ["bundled"] }
+rusqlite_migration = "1"
+
+# Async runtime + networking
+tokio              = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+tokio-tungstenite  = { version = "0.26", features = ["native-tls"] }
+futures-util       = "0.3"
+reqwest            = { version = "0.12", features = ["json", "native-tls"] }
+
+# Identity
+uuid               = { version = "1", features = ["v4", "v7"] }
+ed25519-dalek      = { version = "2", features = ["serde"] }
+rand               = "0.8"
+
+# P2P sync + content-addressing
+negentropy         = "0.5"
+blake3             = "1"
+
+# LAN discovery
+mdns-sd            = "0.13"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows            = { version = "0.58", features = ["Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }

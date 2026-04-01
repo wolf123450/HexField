@@ -1,0 +1,67 @@
+/* Shared styles for all Settings tab components */
+
+.setting-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+.setting-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.setting-value {
+  color: var(--accent-color);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.setting-control { display: flex; align-items: center; }
+.range-row { gap: var(--spacing-sm); align-items: center; }
+.range-min, .range-max {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  min-width: 30px;
+}
+.range-max { text-align: right; }
+input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent-color);
+  cursor: pointer;
+}
+
+.setting-select {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 5px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  width: 100%;
+  max-width: 260px;
+}
+
+.pill-group { display: flex; flex-wrap: wrap; gap: var(--spacing-xs); }
+.pill { background: var(--bg-tertiary); border-radius: 12px; }
+.pill:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+
+.setting-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+  margin-top: 2px;
+}
+.inline-hint { margin-top: 4px; }
+.setting-hint kbd {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 10px;
+}

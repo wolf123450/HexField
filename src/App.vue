@@ -1,0 +1,86 @@
+<template>
+  <TitleBar />
+  <RouterView />
+  <Settings />
+  <Notification />
+  <ContextMenu />
+</template>
+
+<script setup lang="ts">
+import { onMounted } from 'vue'
+import { RouterView } from 'vue-router'
+import TitleBar from '@/components/TitleBar.vue'
+import Settings from '@/components/Settings.vue'
+import Notification from '@/components/Notification.vue'
+import ContextMenu from '@/components/ContextMenu.vue'
+import { useUIStore } from '@/stores/uiStore'
+import { useSettingsStore } from '@/stores/settingsStore'
+import { useIdentityStore } from '@/stores/identityStore'
+import { useServersStore } from '@/stores/serversStore'
+import { autoCheckForUpdate } from '@/utils/updateService'
+import { initializeKeyboardShortcuts, registerDefaultShortcuts } from '@/utils/keyboard'
+import { createContextMenuResolver } from '@/utils/contextMenuResolver'
+import { APP_ONBOARDING_KEY, APP_NAME } from '@/appConfig'
+
+const uiStore       = useUIStore()
+const settingsStore = useSettingsStore()
+const identityStore = useIdentityStore()
+const serversStore  = useServersStore()
+
+// Apply persisted theme immediately
+uiStore.setTheme(settingsStore.settings.theme)
+
+const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+const contextMenuResolver = createContextMenuResolver({ sidebarResetWidth: () => {} })
+
+onMounted(async () => {
+  // Initialize identity (loads or generates keypair + WASM init)
+  await identityStore.initializeIdentity()
+
+  // Load joined servers
+  await serversStore.loadServers()
+
+  // Select first server if any, and load its first text channel
+  const firstId = serversStore.joinedServerIds[0]
+  if (firstId) {
+    serversStore.setActiveServer(firstId)
+    const { useChannelsStore } = await import('@/stores/channelsStore')
+    const channelsStore = useChannelsStore()
+    await channelsStore.loadChannels(firstId)
+    const first = channelsStore.channels[firstId]?.find(c => c.type === 'text')
+    if (first) {
+      channelsStore.setActiveChannel(first.id)
+      const { useMessagesStore } = await import('@/stores/messagesStore')
+      const messagesStore = useMessagesStore()
+      await messagesStore.loadMessages(first.id)
+      await messagesStore.loadMutationsForChannel(first.id)
+    }
+  }
+
+  // Keyboard shortcuts
+  initializeKeyboardShortcuts()
+  registerDefaultShortcuts({
+    settings: () => uiStore.toggleSettings(),
+  })
+
+  // Global context menu handler
+  document.addEventListener('contextmenu', (e) => {
+    if (import.meta.env.PROD && isTauri) e.preventDefault()
+    const items = contextMenuResolver(e)
+    if (items.length > 0) {
+      e.preventDefault()
+      uiStore.showContextMenu(e.clientX, e.clientY, items)
+    }
+  })
+
+  // Welcome notification on first launch
+  if (!localStorage.getItem(APP_ONBOARDING_KEY)) {
+    localStorage.setItem(APP_ONBOARDING_KEY, '1')
+    uiStore.showNotification(`Welcome to ${APP_NAME}!`, 'info', 5000)
+  }
+
+  // Auto-update check (deferred)
+  setTimeout(() => autoCheckForUpdate(), 10_000)
+})
+</script>
