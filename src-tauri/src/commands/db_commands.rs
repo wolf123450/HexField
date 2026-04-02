@@ -21,19 +21,21 @@ pub fn db_load_messages(
                    WHERE channel_id = ?1 AND logical_ts < (SELECT logical_ts FROM messages WHERE id = ?2)
                    ORDER BY logical_ts DESC LIMIT ?3";
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-        stmt.query_map([&channel_id, &bid, &limit.to_string()], row_to_message)
+        let rows = stmt.query_map([&channel_id, &bid, &limit.to_string()], row_to_message)
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        rows
     } else {
         let sql = "SELECT id, channel_id, server_id, author_id, content, content_type,
                    reply_to_id, created_at, logical_ts, verified, raw_attachments
                    FROM messages WHERE channel_id = ?1 ORDER BY logical_ts DESC LIMIT ?2";
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-        stmt.query_map([&channel_id, &limit.to_string()], row_to_message)
+        let rows = stmt.query_map([&channel_id, &limit.to_string()], row_to_message)
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        rows
     };
 
     Ok(rows)
@@ -521,6 +523,15 @@ pub fn db_revoke_device(state: State<AppState>, device_id: String) -> Result<(),
         "UPDATE devices SET revoked = 1 WHERE device_id = ?1",
         [&device_id],
     ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Channel delete ────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn db_delete_channel(state: State<AppState>, channel_id: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM channels WHERE id = ?1", [&channel_id]).map_err(|e| e.to_string())?;
     Ok(())
 }
 

@@ -35,13 +35,8 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "macOS": {
-      "infoPlist": {
-        "NSCameraUsageDescription": "GameChat uses your camera for video calls.",
-        "NSMicrophoneUsageDescription": "GameChat uses your microphone for voice chat.",
-        "NSScreenCaptureUsageDescription": "GameChat uses screen capture for screen sharing."
-      }
-    }
+    "macOS": {}
+
   },
   "plugins": {
     "deep-link": {

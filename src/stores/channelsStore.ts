@@ -44,6 +44,31 @@ export const useChannelsStore = defineStore('channels', () => {
     return channel
   }
 
+  async function deleteChannel(channelId: string) {
+    await invoke('db_delete_channel', { channelId })
+    for (const [sid, list] of Object.entries(channels.value)) {
+      channels.value[sid] = list.filter(c => c.id !== channelId)
+    }
+    if (activeChannelId.value === channelId) activeChannelId.value = null
+  }
+
+  async function renameChannel(channelId: string, newName: string) {
+    for (const list of Object.values(channels.value)) {
+      const ch = list.find(c => c.id === channelId)
+      if (ch) {
+        ch.name = newName
+        await invoke('db_save_channel', {
+          channel: {
+            id: ch.id, server_id: ch.serverId, name: newName,
+            type: ch.type, position: ch.position, topic: ch.topic ?? null,
+            created_at: new Date().toISOString(),
+          },
+        })
+        break
+      }
+    }
+  }
+
   function setActiveChannel(channelId: string | null) {
     activeChannelId.value = channelId
   }
@@ -73,6 +98,8 @@ export const useChannelsStore = defineStore('channels', () => {
     activeChannelId,
     loadChannels,
     createChannel,
+    deleteChannel,
+    renameChannel,
     setActiveChannel,
     applyChannelMutation,
   }
