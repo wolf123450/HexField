@@ -46,6 +46,10 @@ export const useIdentityStore = defineStore('identity', () => {
       publicDHKey.value   = cryptoService.getPublicDHKey()
       isRegistered.value  = true
     }
+
+    // Initialise per-device keypair (separate from identity keypair)
+    const { useDevicesStore } = await import('./devicesStore')
+    await useDevicesStore().initDeviceIdentity(userId.value!)
   }
 
   async function updateDisplayName(name: string) {

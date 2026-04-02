@@ -13,9 +13,13 @@ type SodiumType = typeof _sodium
 class CryptoService {
   private sodium: SodiumType | null = null
 
-  // Private keys — held only in this module
-  private signKeyPair:  { publicKey: Uint8Array; privateKey: Uint8Array } | null = null
-  private dhKeyPair:    { publicKey: Uint8Array; privateKey: Uint8Array } | null = null
+  // Identity keys — one per user, shared across devices
+  private signKeyPair:       { publicKey: Uint8Array; privateKey: Uint8Array } | null = null
+  private dhKeyPair:         { publicKey: Uint8Array; privateKey: Uint8Array } | null = null
+
+  // Device keys — one per physical device install
+  private deviceSignKeyPair: { publicKey: Uint8Array; privateKey: Uint8Array } | null = null
+  private deviceDHKeyPair:   { publicKey: Uint8Array; privateKey: Uint8Array } | null = null
 
   async init(): Promise<void> {
     await _sodium.ready
@@ -128,6 +132,72 @@ class CryptoService {
       return s.to_string(plaintext)
     } catch {
       return null
+    }
+  }
+
+  /**
+   * Generate a fresh device keypair (separate from identity keys).
+   * Returns secrets as base64 for persistence.
+   */
+  async generateDeviceKeys(): Promise<{ deviceSignSecret: string; deviceDHSecret: string }> {
+    const s = this.sodium!
+    this.deviceSignKeyPair = s.crypto_sign_keypair()
+    this.deviceDHKeyPair   = s.crypto_box_keypair()
+    return {
+      deviceSignSecret: s.to_base64(this.deviceSignKeyPair.privateKey),
+      deviceDHSecret:   s.to_base64(this.deviceDHKeyPair.privateKey),
+    }
+  }
+
+  async loadDeviceKeys(deviceSignSecretB64: string, deviceDHSecretB64: string): Promise<void> {
+    const s = this.sodium!
+    const deviceSignSecret = s.from_base64(deviceSignSecretB64)
+    const deviceDHSecret   = s.from_base64(deviceDHSecretB64)
+    this.deviceSignKeyPair = {
+      privateKey: deviceSignSecret,
+      publicKey:  deviceSignSecret.slice(32, 64),
+    }
+    this.deviceDHKeyPair = {
+      privateKey: deviceDHSecret,
+      publicKey:  s.crypto_scalarmult_base(deviceDHSecret),
+    }
+  }
+
+  getDevicePublicSignKey(): string {
+    const s = this.sodium!
+    return s.to_base64(this.deviceSignKeyPair!.publicKey)
+  }
+
+  getDevicePublicDHKey(): string {
+    const s = this.sodium!
+    return s.to_base64(this.deviceDHKeyPair!.publicKey)
+  }
+
+  /**
+   * Sign an attestation payload with the device sign key.
+   * Input is JSON-stringified; returns base64 signature.
+   */
+  signAttestation(payload: object): string {
+    const s = this.sodium!
+    const bytes = s.from_string(JSON.stringify(payload))
+    const sig   = s.crypto_sign_detached(bytes, this.deviceSignKeyPair!.privateKey)
+    return s.to_base64(sig)
+  }
+
+  /**
+   * Verify an attestation signed by a known device sign key.
+   */
+  verifyAttestation(payload: object, sigB64: string, deviceSignKeyB64: string): boolean {
+    const s = this.sodium!
+    try {
+      const bytes = s.from_string(JSON.stringify(payload))
+      return s.crypto_sign_verify_detached(
+        s.from_base64(sigB64),
+        bytes,
+        s.from_base64(deviceSignKeyB64),
+      )
+    } catch {
+      return false
     }
   }
 
