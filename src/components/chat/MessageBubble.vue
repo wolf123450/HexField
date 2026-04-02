@@ -1,5 +1,17 @@
 <template>
-  <div class="message-bubble" :class="{ 'has-header': showHeader }">
+  <div
+    class="message-bubble"
+    :class="{ 'has-header': showHeader }"
+    @mouseenter="isHovered = true"
+    @mouseleave="isHovered = false"
+  >
+    <!-- Hover action bar: add-reaction button (Discord-style overlay) -->
+    <div v-if="isHovered && message.content !== null" class="message-actions">
+      <button class="action-btn" title="Add reaction" @click.stop="openPickerFromBar">
+        <AppIcon :path="mdiEmoticonPlus" :size="20" />
+      </button>
+    </div>
+
     <template v-if="showHeader">
       <div class="message-avatar">{{ authorInitials }}</div>
       <div class="message-main">
@@ -9,24 +21,55 @@
           <span v-if="message.isEdited" class="edited-label">(edited)</span>
         </div>
         <MessageContent :message="message" />
+        <ReactionBar
+          v-if="message.reactions.length > 0"
+          :message-id="message.id"
+          :channel-id="message.channelId"
+          :server-id="message.serverId"
+          :reactions="message.reactions"
+          :show-add-button="true"
+          @open-picker="openPicker"
+        />
       </div>
     </template>
     <template v-else>
       <div class="message-indent" />
       <div class="message-main">
         <MessageContent :message="message" />
+        <ReactionBar
+          v-if="message.reactions.length > 0"
+          :message-id="message.id"
+          :channel-id="message.channelId"
+          :server-id="message.serverId"
+          :reactions="message.reactions"
+          :show-add-button="true"
+          @open-picker="openPicker"
+        />
       </div>
     </template>
   </div>
+  <EmojiPicker
+    ref="picker"
+    :message-id="message.id"
+    :channel-id="message.channelId"
+    :server-id="message.serverId"
+    :anchor-x="pickerX"
+    :anchor-y="pickerY"
+    @select="onEmojiSelected"
+  />
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { formatDistanceToNow } from 'date-fns'
 import type { Message } from '@/types/core'
+import { mdiEmoticonPlus } from '@mdi/js'
 import { useServersStore } from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
+import { useMessagesStore } from '@/stores/messagesStore'
 import MessageContent from './MessageContent.vue'
+import ReactionBar from './ReactionBar.vue'
+import EmojiPicker from './EmojiPicker.vue'
 
 const props = defineProps<{
   message: Message
@@ -35,6 +78,12 @@ const props = defineProps<{
 
 const serversStore  = useServersStore()
 const identityStore = useIdentityStore()
+const messagesStore = useMessagesStore()
+
+const isHovered = ref(false)
+const picker    = ref<InstanceType<typeof EmojiPicker> | null>(null)
+const pickerX   = ref(0)
+const pickerY   = ref(0)
 
 const author = computed(() => {
   const members = serversStore.members[props.message.serverId] ?? {}
@@ -57,7 +106,136 @@ const formattedTime = computed(() => {
     return ''
   }
 })
+
+function openPickerFromBar(event: MouseEvent) {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  pickerX.value = rect.left
+  pickerY.value = rect.bottom + 4
+  picker.value?.open()
+}
+
+function openPicker(event: MouseEvent) {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  pickerX.value = rect.left
+  pickerY.value = rect.bottom + 4
+  picker.value?.open()
+}
+
+async function onEmojiSelected(emojiId: string) {
+  await messagesStore.addReaction(
+    props.message.id,
+    props.message.channelId,
+    props.message.serverId,
+    emojiId,
+  )
+}
 </script>
+
+<style scoped>
+.message-bubble {
+  position: relative;
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 0 var(--spacing-sm);
+  padding: 2px var(--spacing-md);
+  transition: background 0.1s ease;
+}
+
+.message-bubble:hover {
+  background: var(--bg-secondary);
+}
+
+.message-bubble.has-header {
+  padding-top: var(--spacing-sm);
+}
+
+/* Hover action bar — floats over the top-right corner */
+.message-actions {
+  position: absolute;
+  top: -14px;
+  right: var(--spacing-md);
+  display: flex;
+  gap: 2px;
+  background: var(--bg-primary);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 2px;
+  z-index: 10;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  transition: color 0.1s, background 0.1s;
+  transform: none;
+}
+
+.action-btn:hover {
+  background: var(--bg-secondary);
+  color: var(--accent-color);
+  transform: none;
+}
+
+.message-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent-color);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.message-indent {
+  width: 36px;
+  flex-shrink: 0;
+}
+
+.message-main {
+  min-width: 0;
+  padding-bottom: 4px;
+}
+
+.message-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-sm);
+  margin-bottom: 2px;
+}
+
+.author-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.message-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.edited-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+</style>
+
 
 <style scoped>
 .message-bubble {

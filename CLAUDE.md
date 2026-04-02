@@ -294,6 +294,13 @@ When writing a new `invoke` call, cross-reference three places:
 - Prefer computed props for derived display values; avoid side-effectful watchers
 - Use `v-if` for conditional rendering of heavy components (not `v-show`), except for elements that toggle very frequently
 
+### Icons
+- **Never write inline `<svg>` elements in components.** Always use the `<AppIcon>` component with a path from `@mdi/js`.
+- `AppIcon` is globally registered — no import needed in `<script setup>`.
+- Import the path constant: `import { mdiEmoticonPlus } from '@mdi/js'` then use `<AppIcon :path="mdiEmoticonPlus" :size="20" />`.
+- Browse available icons at https://pictogrammers.com/library/mdi/ — the export name is the camelCase version of the icon name (e.g. `emoticon-plus` → `mdiEmoticonPlus`).
+- Icon buttons that override the global `button` reset **must** set `padding: 0` and `transform: none` in their scoped CSS to prevent the global `button` rule from shrinking the icon or adding a hover translateY.
+
 ### CSS
 - Use CSS custom properties from `styles/global.css` (`--bg-primary`, `--text-secondary`, `--accent-color`, `--spacing-md`, etc.)
 - Always `<style scoped>` — only `global.css` is unscoped
@@ -375,6 +382,7 @@ Issues that have already been encountered and fixed. **Do not re-introduce these
 | `useVirtualizer` returns `Ref` — calling methods without `.value` in script | Use `virtualizer.value.scrollToIndex(...)` in `<script>`, bare `virtualizer.scrollToIndex()` in `<template>` |
 | `rusqlite` `query_map` borrow outlives `stmt` in `if/else` | Collect into local `let rows = ...; rows` before block exit |
 | `MutationRow.mutation_type` / `ChannelRow.channel_type` have `#[serde(rename = "type")]` | Frontend must send `{ type: ... }` not `{ mutation_type: ... }` |
+| Global `button, .btn` rule sets `padding: var(--spacing-sm) var(--spacing-md)` | Icon-only buttons need `padding: 0; transform: none` in scoped CSS, otherwise the padding consumes almost the entire fixed width and the icon renders at 2-3px | 
 
 ---
 
@@ -401,9 +409,9 @@ Check [`docs/TODO.md`](docs/TODO.md) for detailed task-level progress.
 |-------|--------|
 | 1 — Foundation | Complete |
 | 2 — Servers & Channels UI | Complete |
-| 3 — Text Chat & Encryption | Next |
-| 3b — Message Sync | Pending |
-| 4 — Reactions & Emoji | Pending |
+| 3 — Text Chat & Encryption | Complete |
+| 3b — Message Sync | Complete |
+| 4 — Reactions & Emoji | Next |
 | 4b — Device Linking | Pending |
 | 5 — Voice & Screen Share | Pending |
 | 5b — P2P File Attachments | Pending |

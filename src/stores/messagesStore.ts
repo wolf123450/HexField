@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
 import type { Message, Mutation, Attachment, ReactionSummary, EncryptedEnvelope } from '@/types/core'
 import { cryptoService } from '@/services/cryptoService'
+import { generateHLC, advanceHLC } from '@/utils/hlc'
 
 // Wire message shape for chat_message payloads sent over the network
 interface ChatWireMessage {
@@ -230,6 +231,9 @@ export const useMessagesStore = defineStore('messages', () => {
     const existing = messages.value[wire.channelId]
     if (existing?.some(m => m.id === wire.messageId)) return
 
+    // Advance our HLC past the incoming logical timestamp
+    const logicalTs = advanceHLC(wire.logicalTs)
+
     const msg: Message = {
       id:          wire.messageId,
       channelId:   wire.channelId,
@@ -240,7 +244,7 @@ export const useMessagesStore = defineStore('messages', () => {
       attachments: [],
       reactions:   [],
       isEdited:    false,
-      logicalTs:   wire.logicalTs,
+      logicalTs,
       createdAt:   wire.createdAt,
       verified:    true,
     }
@@ -310,6 +314,69 @@ export const useMessagesStore = defineStore('messages', () => {
     }
   }
 
+  // ── Reactions ──────────────────────────────────────────────────────────────
+
+  async function addReaction(messageId: string, channelId: string, serverId: string, emojiId: string) {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    const myId = identityStore.userId!
+
+    // Enforce max 20 distinct reactions per message
+    const muts = mutations.value[channelId] ?? []
+    const existing = computeReactions(messageId, muts, myId)
+    const alreadyReacted = existing.some(r => r.emojiId === emojiId && r.selfReacted)
+    if (alreadyReacted) return
+    if (existing.filter(r => r.count > 0).length >= 20 && !existing.some(r => r.emojiId === emojiId)) return
+
+    const mutation: import('@/types/core').Mutation = {
+      id:        (await import('uuid')).v7(),
+      type:      'reaction_add',
+      targetId:  messageId,
+      channelId,
+      authorId:  myId,
+      emojiId,
+      logicalTs: generateHLC(),
+      createdAt: new Date().toISOString(),
+      verified:  true,
+    }
+
+    await applyMutation(mutation)
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: {
+      id: mutation.id, type: mutation.type, targetId: mutation.targetId,
+      channelId: mutation.channelId, authorId: mutation.authorId,
+      emojiId: mutation.emojiId, logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
+    }})
+  }
+
+  async function removeReaction(messageId: string, channelId: string, serverId: string, emojiId: string) {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    const myId = identityStore.userId!
+
+    const mutation: import('@/types/core').Mutation = {
+      id:        (await import('uuid')).v7(),
+      type:      'reaction_remove',
+      targetId:  messageId,
+      channelId,
+      authorId:  myId,
+      emojiId,
+      logicalTs: generateHLC(),
+      createdAt: new Date().toISOString(),
+      verified:  true,
+    }
+
+    await applyMutation(mutation)
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: {
+      id: mutation.id, type: mutation.type, targetId: mutation.targetId,
+      channelId: mutation.channelId, authorId: mutation.authorId,
+      emojiId: mutation.emojiId, logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
+    }})
+  }
+
   // ── Unread / read tracking ─────────────────────────────────────────────────
 
   function markChannelRead(channelId: string) {
@@ -333,25 +400,13 @@ export const useMessagesStore = defineStore('messages', () => {
     sendMessage,
     receiveEncryptedMessage,
     applyMutation,
+    addReaction,
+    removeReaction,
     markChannelRead,
   }
 })
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-let _hlcLogical  = 0
-let _hlcLastWall = 0
-
-function generateHLC(): string {
-  const wall = Date.now()
-  if (wall > _hlcLastWall) {
-    _hlcLastWall = wall
-    _hlcLogical  = 0
-  } else {
-    _hlcLogical++
-  }
-  return `${_hlcLastWall}-${_hlcLogical.toString().padStart(6, '0')}`
-}
 
 function rowToMessage(r: any): Message {
   return {

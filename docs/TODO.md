@@ -50,20 +50,20 @@
 
 **Goal**: Live P2P text chat with E2E encryption over WebRTC data channels.
 
-- [ ] WS signaling connection lifecycle (`signalingService.ts` + Rust WS actor)
-  - [ ] `signal_connect` / `signal_disconnect` / `signal_send` Tauri commands
-  - [ ] Frontend `listen('signal_message', ...)` wired to `networkStore`
-- [ ] WebRTC peer connection setup (`webrtcService.ts`)
-  - [ ] `createOffer`, `handleOffer`, `handleAnswer`, `handleIceCandidate`
-  - [ ] Data channel open → wired to `messagesService` + `syncService`
-- [ ] Message encryption/decryption via `cryptoService`
-  - [ ] `encryptMessage` (X25519 ECDH + XSalsa20-Poly1305 + Ed25519 sig)
-  - [ ] `decryptMessage` (verify sig → decrypt → store plaintext)
-- [ ] `sendMessage` flow: UUID v7 → optimistic display → encrypt → broadcast → db save
-- [ ] Receive message flow: decrypt → verify → db save → reactive display
-- [ ] Typing indicators (`typing_start` / `typing_stop` WS events)
-- [ ] File attachments Phase 1: inline base64 ≤100KB, external URL display
-- [ ] Image auto-downscale via Canvas API before embedding
+- [x] WS signaling connection lifecycle (`signalingService.ts` + Rust WS actor)
+  - [x] `signal_connect` / `signal_disconnect` / `signal_send` Tauri commands
+  - [x] Frontend `listen('signal_message', ...)` wired to `networkStore`
+- [x] WebRTC peer connection setup (`webrtcService.ts`)
+  - [x] `createOffer`, `handleOffer`, `handleAnswer`, `handleIceCandidate`
+  - [x] Data channel open → wired to `networkStore` dispatch → `messagesStore`
+- [x] Message encryption/decryption via `cryptoService`
+  - [x] `encryptMessage` (X25519 ECDH + XSalsa20-Poly1305 + Ed25519 sig)
+  - [x] `decryptMessage` (verify sig → decrypt → store plaintext)
+- [x] `sendMessage` flow: UUID v7 → optimistic display → encrypt → broadcast → db save
+- [x] Receive message flow: decrypt → verify → db save → reactive display
+- [x] Typing indicators (`typing_start` / `typing_stop` events over data channels)
+- [x] File attachments Phase 1: inline base64 ≤100KB, external URL display
+- [x] Image auto-downscale via Canvas API before embedding
 
 ---
 
@@ -71,16 +71,16 @@
 
 **Goal**: Automatic history reconciliation when peers connect/reconnect.
 
-- [ ] Evaluate `negentropy` Rust crate API fit against SQLite schema
-  - If suitable: integrate into Rust backend; expose `sync_reconcile` Tauri command
-  - If unsuitable: implement custom range-based reconciliation (~400 lines Rust)
-  - Final fallback: Merkle tree over hourly time buckets
-- [ ] Per-channel sync session protocol over WebRTC data channel
-  - [ ] Pass 1: reconcile `messages` table per channel
-  - [ ] Pass 2: reconcile `mutations` table per channel
-  - [ ] Pass 3 (per-server, on connect): reconcile `server_update`, `role_assign`, `device_attest` etc.
-- [ ] `hybridLogicalClock.ts` utility — generate and advance HLC values
-- [ ] Offline message queue: messages composed offline stay local → auto-synced on next reconnect
+- [x] Evaluate `negentropy` Rust crate API fit against SQLite schema
+  - [x] Suitable: integrated into Rust backend; UUID v7 zero-padded to 32-byte `Id`, timestamp from first 6 bytes
+  - [x] `sync_initiate` / `sync_respond` / `sync_process_response` Tauri commands
+  - [x] `sync_get_messages` / `sync_get_mutations` / `sync_save_messages` / `sync_save_mutations` / `sync_list_channels`
+- [x] Per-channel sync session protocol over WebRTC data channel (`syncService.ts`)
+  - [x] Pass 1: reconcile `messages` table per channel
+  - [x] Pass 2: reconcile `mutations` table per channel
+  - [x] Pass 3 (per-server, on connect): reconcile `mutations` where `channel_id = '__server__'`
+- [x] `src/utils/hlc.ts` utility — `generateHLC`, `advanceHLC`, `compareHLC`; `advanceHLC` called on message receive
+- [x] Offline message queue: messages written to SQLite while offline → included in next negentropy sync automatically
 - [ ] Test: two clients diverge offline, exchange messages, reconnect → verify full consistent history
 
 ---

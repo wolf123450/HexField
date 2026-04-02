@@ -473,6 +473,24 @@ pub fn get_emoji_image(
     std::fs::read(file_path).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn store_emoji_image(
+    app_handle: tauri::AppHandle,
+    emoji_id: String,
+    server_id: String,
+    image_bytes: Vec<u8>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    let emoji_dir = app_dir.join("emoji").join(&server_id);
+    std::fs::create_dir_all(&emoji_dir).map_err(|e| e.to_string())?;
+    let file_path = emoji_dir.join(format!("{}.webp", emoji_id));
+    std::fs::write(file_path, &image_bytes).map_err(|e| e.to_string())
+}
+
 // ── Devices ───────────────────────────────────────────────────────────────────
 
 #[tauri::command]

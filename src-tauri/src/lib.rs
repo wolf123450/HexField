@@ -6,6 +6,7 @@ mod commands;
 
 use commands::db_commands::*;
 use commands::signal_commands::*;
+use commands::sync_commands::*;
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
@@ -64,6 +65,7 @@ pub fn run() {
             db_load_emoji,
             db_save_emoji,
             get_emoji_image,
+            store_emoji_image,
             // Devices
             db_load_devices,
             db_save_device,
@@ -76,6 +78,15 @@ pub fn run() {
             signal_connect,
             signal_disconnect,
             signal_send,
+            // Sync (negentropy set reconciliation)
+            sync_initiate,
+            sync_respond,
+            sync_process_response,
+            sync_get_messages,
+            sync_get_mutations,
+            sync_save_messages,
+            sync_save_mutations,
+            sync_list_channels,
         ])
         .run(tauri::generate_context!())
         .expect("error while running GameChat");

@@ -148,6 +148,37 @@ export interface InviteLink {
   uses:            number
 }
 
+// ── SQLite row types (Tauri IPC wire format) ───────────────────────────────────
+// These match the Rust serde-serialized structs in src-tauri/src/db/types.rs.
+// Used by sync commands that exchange raw rows between peers.
+
+export interface MessageRow {
+  id:              string
+  channel_id:      string
+  server_id:       string
+  author_id:       string
+  content:         string | null
+  content_type:    string
+  reply_to_id:     string | null
+  created_at:      string
+  logical_ts:      string
+  verified:        boolean
+  raw_attachments: string | null
+}
+
+export interface MutationRow {
+  id:           string
+  type:         string       // serde rename from mutation_type
+  target_id:    string
+  channel_id:   string
+  author_id:    string
+  new_content:  string | null
+  emoji_id:     string | null
+  logical_ts:   string
+  created_at:   string
+  verified:     boolean
+}
+
 // ── Device ─────────────────────────────────────────────────────────────────────
 export interface Device {
   deviceId:        string
