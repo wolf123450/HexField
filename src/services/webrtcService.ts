@@ -8,6 +8,7 @@
 import { signalingService } from './signalingService'
 
 export type DataChannelMessageHandler = (userId: string, data: unknown) => void
+export type RemoteTrackHandler        = (userId: string, stream: MediaStream, track: MediaStreamTrack) => void
 
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -18,6 +19,7 @@ interface PeerState {
   pc: RTCPeerConnection
   dc: RTCDataChannel | null
   makingOffer: boolean
+  localStream: MediaStream | null
 }
 
 class WebRTCService {
@@ -25,6 +27,7 @@ class WebRTCService {
   private onDataMessage: DataChannelMessageHandler | null = null
   private onPeerConnected: ((userId: string) => void) | null = null
   private onPeerDisconnected: ((userId: string) => void) | null = null
+  private onRemoteTrack: RemoteTrackHandler | null = null
   private localUserId = ''
 
   /**
@@ -35,11 +38,13 @@ class WebRTCService {
     onDataMessage: DataChannelMessageHandler,
     onPeerConnected?: (userId: string) => void,
     onPeerDisconnected?: (userId: string) => void,
+    onRemoteTrack?: RemoteTrackHandler,
   ): void {
     this.localUserId = localUserId
     this.onDataMessage = onDataMessage
     this.onPeerConnected = onPeerConnected ?? null
     this.onPeerDisconnected = onPeerDisconnected ?? null
+    this.onRemoteTrack = onRemoteTrack ?? null
   }
 
   /**
@@ -124,6 +129,54 @@ class WebRTCService {
   }
 
   /**
+   * Add a local audio track to all existing peer connections.
+   * Triggers ICE renegotiation on each connection automatically.
+   */
+  addAudioTrack(track: MediaStreamTrack, stream: MediaStream): void {
+    for (const [, state] of this.peers) {
+      state.pc.addTrack(track, stream)
+    }
+  }
+
+  /**
+   * Add or replace the video (screen-share) track on all existing peer connections.
+   */
+  addScreenShareTrack(track: MediaStreamTrack): void {
+    for (const [, state] of this.peers) {
+      const sender = state.pc.getSenders().find(s => s.track?.kind === 'video')
+      if (sender) {
+        sender.replaceTrack(track).catch(e => console.error('[webrtc] replaceTrack error:', e))
+      } else {
+        state.pc.addTrack(track)
+      }
+    }
+  }
+
+  /**
+   * Remove the video (screen-share) track from all peer connections.
+   */
+  removeScreenShareTrack(): void {
+    for (const [, state] of this.peers) {
+      const sender = state.pc.getSenders().find(s => s.track?.kind === 'video')
+      if (sender) {
+        sender.replaceTrack(null).catch(e => console.error('[webrtc] removeTrack error:', e))
+      }
+    }
+  }
+
+  /**
+   * Remove the audio track(s) from all peer connections (on voice leave).
+   */
+  removeAudioTracks(): void {
+    for (const [, state] of this.peers) {
+      const senders = state.pc.getSenders().filter(s => s.track?.kind === 'audio')
+      for (const sender of senders) {
+        state.pc.removeTrack(sender)
+      }
+    }
+  }
+
+  /**
    * Send data over the data channel to a specific peer.
    */
   sendToPeer(userId: string, data: unknown): boolean {
@@ -186,7 +239,7 @@ class WebRTCService {
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
 
-    state = { pc, dc: null, makingOffer: false }
+    state = { pc, dc: null, makingOffer: false, localStream: null }
     this.peers.set(userId, state)
 
     // ICE candidate → send via signaling
@@ -208,6 +261,12 @@ class WebRTCService {
       } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         this.onPeerDisconnected?.(userId)
       }
+    }
+
+    // Remote media track handler (audio/video)
+    pc.ontrack = (event) => {
+      const stream = event.streams[0] ?? new MediaStream([event.track])
+      this.onRemoteTrack?.(userId, stream, event.track)
     }
 
     // If we're the offerer, create the data channel

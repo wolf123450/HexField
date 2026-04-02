@@ -8,6 +8,7 @@
   <InviteModal />
   <JoinModal />
   <DeviceLinkModal />
+  <VoiceBar />
 </template>
 
 <script setup lang="ts">
@@ -21,14 +22,16 @@ import ServerCreateModal from '@/components/modals/ServerCreateModal.vue'
 import InviteModal from '@/components/modals/InviteModal.vue'
 import JoinModal from '@/components/modals/JoinModal.vue'
 import DeviceLinkModal from '@/components/modals/DeviceLinkModal.vue'
+import VoiceBar from '@/components/chat/VoiceBar.vue'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import { useServersStore } from '@/stores/serversStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import { useMessagesStore } from '@/stores/messagesStore'
+import { useVoiceStore } from '@/stores/voiceStore'
 import { autoCheckForUpdate } from '@/utils/updateService'
-import { initializeKeyboardShortcuts, registerDefaultShortcuts } from '@/utils/keyboard'
+import { initializeKeyboardShortcuts, registerDefaultShortcuts, keyboardShortcutManager } from '@/utils/keyboard'
 import { createContextMenuResolver } from '@/utils/contextMenuResolver'
 import { APP_ONBOARDING_KEY, APP_NAME } from '@/appConfig'
 
@@ -38,6 +41,7 @@ const identityStore = useIdentityStore()
 const serversStore  = useServersStore()
 const networkStore  = useNetworkStore()
 const messagesStore = useMessagesStore()
+const voiceStore    = useVoiceStore()
 
 // Apply persisted theme immediately
 uiStore.setTheme(settingsStore.settings.theme)
@@ -92,6 +96,13 @@ onMounted(async () => {
   registerDefaultShortcuts({
     settings: () => uiStore.toggleSettings(),
   })
+  // Voice control shortcuts
+  keyboardShortcutManager.register('m', () => {
+    if (voiceStore.session) voiceStore.toggleMute()
+  }, { ctrl: true, shift: true })
+  keyboardShortcutManager.register('d', () => {
+    if (voiceStore.session) voiceStore.toggleDeafen()
+  }, { ctrl: true, shift: true })
 
   // Global context menu handler
   document.addEventListener('contextmenu', (e) => {
