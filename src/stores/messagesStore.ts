@@ -148,24 +148,42 @@ export const useMessagesStore = defineStore('messages', () => {
       },
     })
 
-    // 3. Encrypt for each server member and broadcast
+    // 3. Encrypt for each server member (identity key + all attested devices) and broadcast
     try {
       const { useServersStore } = await import('./serversStore')
+      const { useDevicesStore } = await import('./devicesStore')
       const serversStore = useServersStore()
+      const devicesStore = useDevicesStore()
       const memberMap = serversStore.members[serverId] ?? {}
       const myUserId  = identityStore.userId!
 
       const envelopes: EncryptedEnvelope[] = []
       for (const member of Object.values(memberMap)) {
-        if (!member.publicDHKey) continue
-        envelopes.push(
-          cryptoService.encryptMessage(content, myUserId, member.userId, member.publicDHKey)
-        )
+        // Encrypt to identity key
+        if (member.publicDHKey) {
+          envelopes.push(
+            cryptoService.encryptMessage(content, myUserId, member.userId, member.publicDHKey)
+          )
+        }
+        // Encrypt to each attested device key
+        for (const device of devicesStore.getActiveDevices(member.userId)) {
+          if (device.publicDHKey && device.publicDHKey !== member.publicDHKey) {
+            envelopes.push(
+              cryptoService.encryptMessage(content, myUserId, member.userId, device.publicDHKey)
+            )
+          }
+        }
       }
       // Also encrypt for self so own device can verify its own history
       if (!memberMap[myUserId] && identityStore.publicDHKey) {
         envelopes.push(
           cryptoService.encryptMessage(content, myUserId, myUserId, identityStore.publicDHKey)
+        )
+      }
+      // Encrypt for own device DH key if available
+      if (devicesStore.deviceDHKey && devicesStore.deviceDHKey !== identityStore.publicDHKey) {
+        envelopes.push(
+          cryptoService.encryptMessage(content, myUserId, myUserId, devicesStore.deviceDHKey)
         )
       }
 
