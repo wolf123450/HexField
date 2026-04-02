@@ -412,7 +412,7 @@ Check [`docs/TODO.md`](docs/TODO.md) for detailed task-level progress.
 | 3 — Text Chat & Encryption | Complete |
 | 3b — Message Sync | Complete |
 | 4 — Reactions & Emoji | Next |
-| 4b — Device Linking | Pending |
+| 4b — Device Linking | Complete |
 | 5 — Voice & Screen Share | Pending |
 | 5b — P2P File Attachments | Pending |
 | 5c — NAT Relay | Pending |
