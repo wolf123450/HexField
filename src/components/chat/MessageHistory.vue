@@ -11,6 +11,7 @@
         v-for="vRow in virtualizer.getVirtualItems()"
         :key="vRow.index"
         :ref="(el) => { if (el) virtualizer.measureElement(el as Element) }"
+        :data-index="vRow.index"
         class="virtual-row"
         :style="{ transform: `translateY(${vRow.start}px)` }"
       >

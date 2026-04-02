@@ -47,6 +47,7 @@ rand               = "0.8"
 # P2P sync + content-addressing
 negentropy         = "0.5"
 blake3             = "1"
+base64             = "0.22"
 
 # LAN discovery
 mdns-sd            = "0.13"

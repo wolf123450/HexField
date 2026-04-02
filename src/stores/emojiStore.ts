@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { v7 as uuidv7 } from 'uuid'
 import type { CustomEmoji } from '@/types/core'
 import { APP_STORAGE_PREFIX } from '@/appConfig'
 
@@ -50,6 +51,62 @@ export const useEmojiStore = defineStore('emoji', () => {
     localStorage.setItem(RECENT_KEY, JSON.stringify(recent.value))
   }
 
+  async function uploadCustomEmoji(serverId: string, name: string, file: File): Promise<void> {
+    if (!['image/png', 'image/webp', 'image/gif'].includes(file.type)) {
+      throw new Error('Invalid type: only PNG, WebP, or GIF allowed')
+    }
+    if (file.size > 256 * 1024) throw new Error('File too large: max 256KB')
+
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = 128
+    const ctx = canvas.getContext('2d')!
+    const img = await createImageBitmap(file)
+    ctx.drawImage(img, 0, 0, 128, 128)
+    const blob = await new Promise<Blob>((res, rej) =>
+      canvas.toBlob(b => b ? res(b) : rej(new Error('Canvas toBlob failed')), 'image/webp', 0.85)
+    )
+
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+
+    const id = uuidv7()
+    const imageBytes = Array.from(new Uint8Array(await blob.arrayBuffer()))
+    const emojiMeta: CustomEmoji = {
+      id,
+      serverId,
+      name,
+      uploadedBy: identityStore.userId!,
+      createdAt: new Date().toISOString(),
+    }
+
+    await invoke('db_save_emoji', { emoji: {
+      id: emojiMeta.id,
+      server_id: emojiMeta.serverId,
+      name: emojiMeta.name,
+      uploaded_by: emojiMeta.uploadedBy,
+      created_at: emojiMeta.createdAt,
+    }, imageBytes })
+
+    if (!custom.value[serverId]) custom.value[serverId] = {}
+    custom.value[serverId][id] = emojiMeta
+
+    const dataUrl = `data:image/webp;base64,${btoa(String.fromCharCode(...new Uint8Array(imageBytes)))}`
+    imageCache.value[id] = dataUrl
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({
+      type: 'emoji_sync',
+      serverId,
+      emoji: { id, name, uploadedBy: emojiMeta.uploadedBy, createdAt: emojiMeta.createdAt },
+    })
+  }
+
+  async function storeEmojiImage(emojiId: string, serverId: string, imageBytes: number[]): Promise<void> {
+    await invoke('store_emoji_image', { emojiId, serverId, imageBytes })
+    const base64 = btoa(String.fromCharCode(...new Uint8Array(imageBytes)))
+    imageCache.value[emojiId] = `data:image/webp;base64,${base64}`
+  }
+
   return {
     custom,
     imageCache,
@@ -58,6 +115,8 @@ export const useEmojiStore = defineStore('emoji', () => {
     getEmojiImage,
     receiveEmojiSync,
     useEmoji,
+    uploadCustomEmoji,
+    storeEmojiImage,
   }
 })
 

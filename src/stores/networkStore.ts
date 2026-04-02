@@ -3,6 +3,8 @@ import { ref } from 'vue'
 import { signalingService } from '@/services/signalingService'
 import type { SignalPayload } from '@/services/signalingService'
 import { webrtcService } from '@/services/webrtcService'
+import { startSync, handleSyncMessage, setSendFn } from '@/services/syncService'
+import type { SyncWireMessage } from '@/services/syncService'
 
 export type SignalingState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -32,6 +34,9 @@ export const useNetworkStore = defineStore('network', () => {
       handleStateChange,
     )
 
+    // Give syncService a way to send to peers
+    setSendFn((peerId, data) => webrtcService.sendToPeer(peerId, data))
+
     // Initialize webrtcService
     webrtcService.init(
       localUserId,
@@ -40,6 +45,8 @@ export const useNetworkStore = defineStore('network', () => {
         if (!connectedPeers.value.includes(userId)) {
           connectedPeers.value = [...connectedPeers.value, userId]
         }
+        // Start history reconciliation with newly connected peer
+        startSync(userId).catch(e => console.warn('[network] sync start error:', e))
       },
       (userId) => {
         connectedPeers.value = connectedPeers.value.filter(id => id !== userId)
@@ -167,6 +174,26 @@ export const useNetworkStore = defineStore('network', () => {
       case 'typing_stop':
         handleTypingStopEvent(userId)
         break
+      case 'mutation':
+        handleMutationMessage(msg)
+        break
+      case 'emoji_sync':
+        handleEmojiSync(msg)
+        break
+      case 'emoji_image_request':
+        handleEmojiImageRequest(userId, msg)
+        break
+      case 'emoji_image':
+        handleEmojiImage(msg)
+        break
+      case 'sync_neg_init':
+      case 'sync_neg_reply':
+      case 'sync_push':
+      case 'sync_want':
+        handleSyncMessage(userId, msg as unknown as SyncWireMessage).catch(e =>
+          console.warn('[network] sync message error:', e)
+        )
+        break
       default:
         console.debug('[network] unhandled data message type:', msg.type)
     }
@@ -176,6 +203,71 @@ export const useNetworkStore = defineStore('network', () => {
     const { useMessagesStore } = await import('./messagesStore')
     const messagesStore = useMessagesStore()
     messagesStore.receiveEncryptedMessage(msg)
+  }
+
+  async function handleMutationMessage(msg: Record<string, unknown>) {
+    const raw = msg.mutation as Record<string, unknown>
+    if (!raw || typeof raw !== 'object') return
+    const { useMessagesStore } = await import('./messagesStore')
+    const messagesStore = useMessagesStore()
+    await messagesStore.applyMutation({
+      id:         raw.id as string,
+      type:       raw.type as any,
+      targetId:   raw.targetId as string,
+      channelId:  raw.channelId as string,
+      authorId:   raw.authorId as string,
+      emojiId:    raw.emojiId as string | undefined,
+      newContent: raw.newContent as string | undefined,
+      logicalTs:  raw.logicalTs as string,
+      createdAt:  raw.createdAt as string,
+      verified:   true,
+    })
+  }
+
+  async function handleEmojiSync(msg: Record<string, unknown>) {
+    const { useEmojiStore } = await import('./emojiStore')
+    const emojiStore = useEmojiStore()
+    const emoji = msg.emoji as { id: string; name: string; uploadedBy: string; createdAt: string }
+    const serverId = msg.serverId as string
+    if (!emoji || !serverId) return
+    emojiStore.receiveEmojiSync({ id: emoji.id, serverId, name: emoji.name, uploadedBy: emoji.uploadedBy, createdAt: emoji.createdAt })
+  }
+
+  async function handleEmojiImageRequest(fromUserId: string, msg: Record<string, unknown>) {
+    const emojiId = msg.emojiId as string
+    if (!emojiId) return
+    const { useEmojiStore } = await import('./emojiStore')
+    const emojiStore = useEmojiStore()
+    // Find which server this emoji belongs to
+    for (const [serverId, serverEmoji] of Object.entries(emojiStore.custom)) {
+      if (serverEmoji[emojiId]) {
+        try {
+          const dataUrl = await emojiStore.getEmojiImage(emojiId, serverId)
+          // Strip data URI prefix and send raw base64
+          const base64 = dataUrl.replace('data:image/webp;base64,', '')
+          const bytes = Array.from(atob(base64), c => c.charCodeAt(0))
+          webrtcService.sendToPeer(fromUserId, { type: 'emoji_image', emojiId, imageBytes: bytes })
+        } catch {
+          // Ignore — peer will retry later
+        }
+        break
+      }
+    }
+  }
+
+  async function handleEmojiImage(msg: Record<string, unknown>) {
+    const emojiId    = msg.emojiId as string
+    const imageBytes = msg.imageBytes as number[]
+    if (!emojiId || !imageBytes) return
+    const { useEmojiStore } = await import('./emojiStore')
+    const emojiStore = useEmojiStore()
+    // Find server for this emoji (metadata must have arrived via emoji_sync first)
+    for (const [serverId, serverEmoji] of Object.entries(emojiStore.custom)) {
+      if (serverEmoji[emojiId]) {
+        await emojiStore.storeEmojiImage(emojiId, serverId, imageBytes)
+        break
+      }
+    }
   }
 
   function handleTypingStart(userId: string, channelId: string) {
