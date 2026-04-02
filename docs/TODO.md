@@ -106,14 +106,14 @@
 
 **Goal**: Link additional devices under the same identity without a central authority.
 
-- [ ] Device keypair generation at first launch (separate from identity keypair)
-- [ ] `devices` SQLite table + `db_save_device` / `db_load_devices` Tauri commands
-- [ ] "Link new device" UI: generate QR code with `linkToken` (5-minute expiry)
-- [ ] `device_link_request` / `device_link_confirm` P2P protocol
-- [ ] Attestation signing: Device A signs Device B's public keys
-- [ ] Attest gossip: broadcast `device_attest` mutation to all known servers/contacts
-- [ ] Multi-device encryption: encrypt messages to ALL attested devices of each recipient
-- [ ] Device revocation flow: signed `device_revoke` mutation → peers stop encrypting to it
+- [x] Device keypair generation at first launch (separate from identity keypair)
+- [x] `devices` SQLite table + `db_save_device` / `db_load_devices` Tauri commands
+- [x] "Link new device" UI: generate QR code with `linkToken` (5-minute expiry)
+- [x] `device_link_request` / `device_link_confirm` P2P protocol
+- [x] Attestation signing: Device A signs Device B's public keys
+- [x] Attest gossip: broadcast `device_attest` mutation to all known servers/contacts
+- [x] Multi-device encryption: encrypt messages to ALL attested devices of each recipient
+- [x] Device revocation flow: signed `device_revoke` mutation → peers stop encrypting to it
 
 ---
 
