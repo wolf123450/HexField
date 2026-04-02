@@ -89,15 +89,16 @@
 
 **Goal**: Emoji reactions on messages, custom server emoji.
 
-- [ ] Reaction UI — pill display on `MessageBubble.vue`, optimistic add/remove
-- [ ] `db_save_mutation` for `reaction_add` / `reaction_remove`
-- [ ] Reactions materialized in `messagesStore` from mutations log
-- [ ] Built-in Unicode emoji picker (`emoji-data.json` ~80KB, 1000 common emoji)
-- [ ] `EmojiPicker.vue` — Teleport to body, tabs (Recent | Server emoji | Unicode categories)
-- [ ] Custom emoji upload flow (validate → Canvas resize to 128×128 → disk write via Rust)
-- [ ] `emojiStore` — lazy-load metadata, `get_emoji_image` on demand
-- [ ] P2P emoji gossip: `emoji_sync` metadata broadcast on reconnect, `emoji_image_request` lazy fetch
-- [ ] Max 20 distinct reactions per message
+- [x] Reaction UI — pill display on `MessageBubble.vue`, optimistic add/remove
+- [x] `db_save_mutation` for `reaction_add` / `reaction_remove`
+- [x] Reactions materialized in `messagesStore` from mutations log
+- [x] Built-in Unicode emoji picker (`emoji-data.json` ~80KB, 1000 common emoji)
+- [x] `EmojiPicker.vue` — Teleport to body, tabs (Recent | Server emoji | Unicode categories)
+- [x] Custom emoji upload flow (validate → Canvas resize to 128×128 → disk write via Rust)
+- [x] `emojiStore` — lazy-load metadata, `get_emoji_image` on demand
+- [x] P2P emoji gossip: `emoji_sync` metadata broadcast on reconnect, `emoji_image_request` lazy fetch
+- [x] Max 20 distinct reactions per message
+- [x] Quick-react bar: track per-user reaction usage counts in `emojiStore`; show top 3 most-used emoji as instant-access buttons in the hover action bar alongside the full-picker button
 
 ---
 
