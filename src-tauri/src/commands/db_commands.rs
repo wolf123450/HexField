@@ -565,6 +565,15 @@ pub fn get_app_data_path(app_handle: tauri::AppHandle) -> Result<String, String>
         .map_err(|e| e.to_string())
 }
 
+/// Returns an empty list on non-Windows targets.
+/// On Windows, a real implementation using EnumWindows / EnumDisplayMonitors
+/// would be wired here in a future phase. The frontend falls back to
+/// `getDisplayMedia()` when the list is empty.
+#[tauri::command]
+pub fn get_screen_sources() -> Result<Vec<serde_json::Value>, String> {
+    Ok(vec![])
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn chrono_now() -> String {

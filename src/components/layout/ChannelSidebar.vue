@@ -48,14 +48,15 @@
         v-for="ch in voiceChannels"
         :key="ch.id"
         class="channel-item channel-voice"
-        :class="{ active: ch.id === channelsStore.activeChannelId }"
-        @click="selectChannel(ch.id)"
+        :class="{ active: voiceStore.session?.channelId === ch.id }"
+        @click="selectVoiceChannel(ch.id)"
         @contextmenu.prevent="(e) => openChannelMenu(e, ch.id)"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="voice-icon">
           <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
         </svg>
         <span class="channel-name">{{ ch.name }}</span>
+        <span v-if="voiceStore.session?.channelId === ch.id" class="voice-live-dot" title="Connected" />
       </div>
     </div>
 
@@ -140,6 +141,21 @@ async function selectChannel(channelId: string) {
   messagesStore.markChannelRead(channelId)
   await messagesStore.loadMessages(channelId)
   await messagesStore.loadMutationsForChannel(channelId)
+}
+
+async function selectVoiceChannel(channelId: string) {
+  const serverId = serversStore.activeServerId
+  if (!serverId) return
+  // Toggle: leave if already in this channel
+  if (voiceStore.session?.channelId === channelId) {
+    await voiceStore.leaveVoiceChannel()
+  } else {
+    try {
+      await voiceStore.joinVoiceChannel(channelId, serverId)
+    } catch (e) {
+      console.error('[sidebar] failed to join voice channel:', e)
+    }
+  }
 }
 
 function unread(channelId: string): number {
@@ -310,6 +326,15 @@ function openServerSettings() {
 .voice-icon {
   color: var(--text-tertiary);
   flex-shrink: 0;
+}
+
+.voice-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3ba55d;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .channel-name {

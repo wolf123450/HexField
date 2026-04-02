@@ -52,7 +52,10 @@ export const useNetworkStore = defineStore('network', () => {
       },
       (userId) => {
         connectedPeers.value = connectedPeers.value.filter(id => id !== userId)
+        // Clean up voice state if the peer disconnects
+        handleVoicePeerDisconnect(userId)
       },
+      handleRemoteTrack,
     )
   }
 
@@ -196,6 +199,18 @@ export const useNetworkStore = defineStore('network', () => {
         break
       case 'device_attest':
         handleDeviceAttest(msg)
+        break
+      case 'voice_join':
+        handleVoiceJoin(userId, msg)
+        break
+      case 'voice_leave':
+        handleVoiceLeave(userId)
+        break
+      case 'voice_screen_share_start':
+        handleVoiceScreenShareStart(userId)
+        break
+      case 'voice_screen_share_stop':
+        handleVoiceScreenShareStop(userId)
         break
       case 'sync_neg_init':
       case 'sync_neg_reply':
@@ -349,6 +364,46 @@ export const useNetworkStore = defineStore('network', () => {
     if (!device) return
     const { useDevicesStore } = await import('./devicesStore')
     await useDevicesStore().receiveAttestedDevice(device)
+  }
+
+  async function handleRemoteTrack(_userId: string, stream: MediaStream, track: MediaStreamTrack) {
+    if (track.kind !== 'audio') return
+    const { useVoiceStore } = await import('./voiceStore')
+    const { audioService }  = await import('@/services/audioService')
+    const voiceStore = useVoiceStore()
+    // Only attach if the peer is in the same voice channel as us
+    if (!voiceStore.session) return
+    audioService.attachRemoteStream(_userId, stream)
+    voiceStore.updatePeer(_userId, { audioEnabled: true })
+  }
+
+  async function handleVoiceJoin(userId: string, msg: Record<string, unknown>) {
+    const { useVoiceStore }   = await import('./voiceStore')
+    const voiceStore = useVoiceStore()
+    const channelId  = msg.channelId as string | undefined
+    if (channelId && voiceStore.session?.channelId === channelId) {
+      voiceStore.updatePeer(userId, { audioEnabled: true })
+    }
+  }
+
+  async function handleVoiceLeave(userId: string) {
+    const { useVoiceStore } = await import('./voiceStore')
+    useVoiceStore().removePeer(userId)
+  }
+
+  async function handleVoiceScreenShareStart(userId: string) {
+    const { useVoiceStore } = await import('./voiceStore')
+    useVoiceStore().updatePeer(userId, { screenSharing: true })
+  }
+
+  async function handleVoiceScreenShareStop(userId: string) {
+    const { useVoiceStore } = await import('./voiceStore')
+    useVoiceStore().updatePeer(userId, { screenSharing: false })
+  }
+
+  async function handleVoicePeerDisconnect(userId: string) {
+    const { useVoiceStore } = await import('./voiceStore')
+    useVoiceStore().removePeer(userId)
   }
 
   function handleTypingStopEvent(userId: string) {

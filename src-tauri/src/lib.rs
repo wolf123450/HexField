@@ -74,6 +74,7 @@ pub fn run() {
             db_delete_channel,
             // System
             get_app_data_path,
+            get_screen_sources,
             // Signaling
             signal_connect,
             signal_disconnect,
