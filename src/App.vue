@@ -7,6 +7,7 @@
   <ServerCreateModal />
   <InviteModal />
   <JoinModal />
+  <DeviceLinkModal />
 </template>
 
 <script setup lang="ts">
@@ -19,6 +20,7 @@ import ContextMenu from '@/components/ContextMenu.vue'
 import ServerCreateModal from '@/components/modals/ServerCreateModal.vue'
 import InviteModal from '@/components/modals/InviteModal.vue'
 import JoinModal from '@/components/modals/JoinModal.vue'
+import DeviceLinkModal from '@/components/modals/DeviceLinkModal.vue'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useIdentityStore } from '@/stores/identityStore'

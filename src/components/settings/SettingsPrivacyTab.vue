@@ -50,14 +50,53 @@
       </div>
       <p class="form-hint">Maximum local storage for messages and attachments. Old attachments are pruned first when the limit is reached.</p>
     </div>
+
+    <!-- ── Linked Devices ──────────────────────────────────────────── -->
+    <div class="devices-section">
+      <div class="devices-header">
+        <label class="form-label" style="margin: 0">Linked Devices</label>
+        <button class="btn-link-device" @click="openLinkModal">
+          <AppIcon :path="mdiQrcode" :size="16" />
+          Link New Device
+        </button>
+      </div>
+      <p class="form-hint" style="margin-bottom: var(--spacing-sm)">
+        Other devices running GameChat that have been linked to your account.
+      </p>
+
+      <div v-if="ownDevices.length === 0" class="no-devices">
+        No other linked devices yet.
+      </div>
+      <div v-else class="device-list">
+        <div v-for="device in ownDevices" :key="device.deviceId" class="device-row">
+          <AppIcon :path="mdiLaptop" :size="20" class="device-icon" />
+          <div class="device-meta">
+            <div class="device-id">{{ shortId(device.deviceId) }}</div>
+            <div class="device-key">{{ shortKey(device.publicSignKey) }}</div>
+          </div>
+          <button class="btn-revoke" @click="revoke(device.deviceId)">
+            <AppIcon :path="mdiLinkOff" :size="14" />
+            Revoke
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { mdiQrcode, mdiLaptop, mdiLinkOff } from '@mdi/js'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useDevicesStore } from '@/stores/devicesStore'
+import { useIdentityStore } from '@/stores/identityStore'
+import { useUIStore } from '@/stores/uiStore'
 
 const settingsStore = useSettingsStore()
+const devicesStore  = useDevicesStore()
+const identityStore = useIdentityStore()
+const uiStore       = useUIStore()
+
 const showDeleted   = ref(settingsStore.settings.showDeletedMessagePlaceholder)
 const confirmDelete = ref(settingsStore.settings.confirmBeforeDelete)
 const storageLimit  = ref(settingsStore.settings.storageLimitGB)
@@ -65,6 +104,48 @@ const storageLimit  = ref(settingsStore.settings.storageLimitGB)
 function saveShowDeleted()   { settingsStore.updateSetting('showDeletedMessagePlaceholder', showDeleted.value) }
 function saveConfirmDelete() { settingsStore.updateSetting('confirmBeforeDelete', confirmDelete.value) }
 function saveStorageLimit()  { settingsStore.updateSetting('storageLimitGB', storageLimit.value) }
+
+// Device management
+const ownDevices = computed(() =>
+  devicesStore.getActiveDevices(identityStore.userId!).filter(
+    d => d.deviceId !== devicesStore.deviceId,
+  )
+)
+
+function shortId(id: string): string {
+  return id.slice(0, 8)
+}
+function shortKey(key: string): string {
+  return key.slice(0, 8) + '…' + key.slice(-8)
+}
+
+onMounted(async () => {
+  if (identityStore.userId) {
+    await devicesStore.loadPeerDevices(identityStore.userId)
+  }
+})
+
+async function revoke(deviceId: string) {
+  await devicesStore.revokeDevice(deviceId)
+  // Broadcast revocation mutation to peers
+  const { useNetworkStore } = await import('@/stores/networkStore')
+  useNetworkStore().broadcast({
+    type:     'mutation',
+    mutation: {
+      id:        crypto.randomUUID(),
+      type:      'device_revoke',
+      targetId:  deviceId,
+      channelId: '',
+      authorId:  identityStore.userId,
+      logicalTs: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    },
+  })
+}
+
+function openLinkModal() {
+  uiStore.openDeviceLinkModal()
+}
 </script>
 
 <style scoped>

@@ -47,6 +47,8 @@ export const useNetworkStore = defineStore('network', () => {
         }
         // Start history reconciliation with newly connected peer
         startSync(userId).catch(e => console.warn('[network] sync start error:', e))
+        // Gossip our own device attestation
+        gossipOwnDevice(userId)
       },
       (userId) => {
         connectedPeers.value = connectedPeers.value.filter(id => id !== userId)
@@ -186,6 +188,15 @@ export const useNetworkStore = defineStore('network', () => {
       case 'emoji_image':
         handleEmojiImage(msg)
         break
+      case 'device_link_request':
+        handleDeviceLinkRequest(userId, msg)
+        break
+      case 'device_link_confirm':
+        handleDeviceLinkConfirm(msg)
+        break
+      case 'device_attest':
+        handleDeviceAttest(msg)
+        break
       case 'sync_neg_init':
       case 'sync_neg_reply':
       case 'sync_push':
@@ -286,6 +297,58 @@ export const useNetworkStore = defineStore('network', () => {
       ...typingUsers.value,
       [userId]: { channelId, timeout },
     }
+  }
+
+  async function gossipOwnDevice(peerId: string) {
+    const { useDevicesStore } = await import('./devicesStore')
+    const devicesStore = useDevicesStore()
+    if (!devicesStore.deviceId || !devicesStore.deviceSignKey || !devicesStore.deviceDHKey) return
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    if (!identityStore.userId) return
+    webrtcService.sendToPeer(peerId, {
+      type:         'device_attest',
+      device: {
+        deviceId:      devicesStore.deviceId,
+        userId:        identityStore.userId,
+        publicSignKey: devicesStore.deviceSignKey,
+        publicDHKey:   devicesStore.deviceDHKey,
+        attestedBy:    null,
+        attestationSig: null,
+        revoked:       false,
+        createdAt:     new Date().toISOString(),
+      },
+    })
+  }
+
+  async function handleDeviceLinkRequest(_fromUserId: string, msg: Record<string, unknown>) {
+    const { useDevicesStore } = await import('./devicesStore')
+    const devicesStore = useDevicesStore()
+    const linkToken    = msg.linkToken as string
+    if (!devicesStore.isLinkTokenValid(linkToken)) {
+      console.warn('[network] device_link_request: invalid or expired link token')
+      return
+    }
+    devicesStore.pendingLinkRequest = {
+      deviceId:      msg.deviceId      as string,
+      publicSignKey: msg.publicSignKey as string,
+      publicDHKey:   msg.publicDHKey   as string,
+      displayName:   (msg.displayName  as string | undefined) ?? 'New Device',
+    }
+  }
+
+  async function handleDeviceLinkConfirm(msg: Record<string, unknown>) {
+    const device = msg.device as import('@/types/core').Device | undefined
+    if (!device) return
+    const { useDevicesStore } = await import('./devicesStore')
+    await useDevicesStore().receiveAttestedDevice(device)
+  }
+
+  async function handleDeviceAttest(msg: Record<string, unknown>) {
+    const device = msg.device as import('@/types/core').Device | undefined
+    if (!device) return
+    const { useDevicesStore } = await import('./devicesStore')
+    await useDevicesStore().receiveAttestedDevice(device)
   }
 
   function handleTypingStopEvent(userId: string) {

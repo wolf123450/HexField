@@ -109,10 +109,15 @@ export const useUIStore = defineStore("ui", () => {
   const showJoinModal         = ref(false)
   const showInviteModal       = ref(false)
   const inviteServerId        = ref<string | null>(null)
+  const showDeviceLinkModal   = ref(false)
 
   function openInviteModal(serverId: string) {
     inviteServerId.value  = serverId
     showInviteModal.value = true
+  }
+
+  function openDeviceLinkModal() {
+    showDeviceLinkModal.value = true
   }
 
   return {
@@ -152,5 +157,7 @@ export const useUIStore = defineStore("ui", () => {
     showInviteModal,
     inviteServerId,
     openInviteModal,
+    showDeviceLinkModal,
+    openDeviceLinkModal,
   };
 });
