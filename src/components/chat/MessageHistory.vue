@@ -9,7 +9,7 @@
     >
       <div
         v-for="vRow in virtualizer.getVirtualItems()"
-        :key="vRow.key"
+        :key="vRow.index"
         :ref="(el) => { if (el) virtualizer.measureElement(el as Element) }"
         class="virtual-row"
         :style="{ transform: `translateY(${vRow.start}px)` }"
@@ -46,12 +46,12 @@ const allMessages = computed(() => {
   return [...confirmed, ...pending]
 })
 
-const virtualizer = useVirtualizer({
-  count:            computed(() => allMessages.value.length),
+const virtualizer = useVirtualizer(computed(() => ({
+  count:            allMessages.value.length,
   getScrollElement: () => scrollContainer.value,
   estimateSize:     () => 60,
   overscan:         5,
-})
+})))
 
 // Scroll to bottom when new messages arrive (if user was at bottom)
 watch(() => allMessages.value.length, async () => {
@@ -63,7 +63,7 @@ watch(() => allMessages.value.length, async () => {
 
 function scrollToBottom() {
   const count = allMessages.value.length
-  if (count > 0) virtualizer.scrollToIndex(count - 1, { align: 'end' })
+  if (count > 0) virtualizer.value.scrollToIndex(count - 1, { align: 'end' })
 }
 
 function onScroll() {

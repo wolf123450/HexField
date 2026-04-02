@@ -1,14 +1,15 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 mod db;
 mod commands;
 
 use commands::db_commands::*;
+use commands::signal_commands::*;
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
-    pub signal_tx: Mutex<Option<tokio::sync::mpsc::Sender<serde_json::Value>>>,
+    pub signal_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<serde_json::Value>>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -37,7 +38,7 @@ pub fn run() {
             let conn = db::open(app_dir);
             app.manage(AppState {
                 db: Mutex::new(conn),
-                signal_tx: Mutex::new(None),
+                signal_tx: Arc::new(Mutex::new(None)),
             });
             Ok(())
         })
@@ -67,8 +68,14 @@ pub fn run() {
             db_load_devices,
             db_save_device,
             db_revoke_device,
+            // Channel management
+            db_delete_channel,
             // System
             get_app_data_path,
+            // Signaling
+            signal_connect,
+            signal_disconnect,
+            signal_send,
         ])
         .run(tauri::generate_context!())
         .expect("error while running GameChat");

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSCameraUsageDescription</key>
+  <string>GameChat uses your camera for video calls.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>GameChat uses your microphone for voice chat.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>GameChat uses screen capture for screen sharing.</string>
+</dict>
+</plist>

@@ -25,7 +25,7 @@ export const useServersStore = defineStore('servers', () => {
     }
   }
 
-  async function createServer(name: string, iconFile?: File): Promise<Server> {
+  async function createServer(name: string, _iconFile?: File): Promise<Server> {
     const { useIdentityStore } = await import('./identityStore')
     const identityStore = useIdentityStore()
 

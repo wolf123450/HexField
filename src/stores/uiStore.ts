@@ -104,6 +104,17 @@ export const useUIStore = defineStore("ui", () => {
   const emojiPickerAnchor = ref<HTMLElement | null>(null)
   const emojiPickerTarget = ref<string | null>(null)   // channelId or messageId
 
+  // ─── Modals ───────────────────────────────────────────────────────────
+  const showServerCreateModal = ref(false)
+  const showJoinModal         = ref(false)
+  const showInviteModal       = ref(false)
+  const inviteServerId        = ref<string | null>(null)
+
+  function openInviteModal(serverId: string) {
+    inviteServerId.value  = serverId
+    showInviteModal.value = true
+  }
+
   return {
     // State
     sidebarOpen,
@@ -135,5 +146,11 @@ export const useUIStore = defineStore("ui", () => {
     memberListOpen,
     emojiPickerAnchor,
     emojiPickerTarget,
+    // Modals
+    showServerCreateModal,
+    showJoinModal,
+    showInviteModal,
+    inviteServerId,
+    openInviteModal,
   };
 });

@@ -4,6 +4,9 @@
   <Settings />
   <Notification />
   <ContextMenu />
+  <ServerCreateModal />
+  <InviteModal />
+  <JoinModal />
 </template>
 
 <script setup lang="ts">
@@ -13,10 +16,15 @@ import TitleBar from '@/components/TitleBar.vue'
 import Settings from '@/components/Settings.vue'
 import Notification from '@/components/Notification.vue'
 import ContextMenu from '@/components/ContextMenu.vue'
+import ServerCreateModal from '@/components/modals/ServerCreateModal.vue'
+import InviteModal from '@/components/modals/InviteModal.vue'
+import JoinModal from '@/components/modals/JoinModal.vue'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import { useServersStore } from '@/stores/serversStore'
+import { useNetworkStore } from '@/stores/networkStore'
+import { useMessagesStore } from '@/stores/messagesStore'
 import { autoCheckForUpdate } from '@/utils/updateService'
 import { initializeKeyboardShortcuts, registerDefaultShortcuts } from '@/utils/keyboard'
 import { createContextMenuResolver } from '@/utils/contextMenuResolver'
@@ -26,6 +34,8 @@ const uiStore       = useUIStore()
 const settingsStore = useSettingsStore()
 const identityStore = useIdentityStore()
 const serversStore  = useServersStore()
+const networkStore  = useNetworkStore()
+const messagesStore = useMessagesStore()
 
 // Apply persisted theme immediately
 uiStore.setTheme(settingsStore.settings.theme)
@@ -37,6 +47,23 @@ const contextMenuResolver = createContextMenuResolver({ sidebarResetWidth: () =>
 onMounted(async () => {
   // Initialize identity (loads or generates keypair + WASM init)
   await identityStore.initializeIdentity()
+
+  // Give messagesStore the local userId for synchronous reaction computation
+  if (identityStore.userId) {
+    messagesStore.setMyUserId(identityStore.userId)
+  }
+
+  // Initialize P2P networking layer
+  if (identityStore.userId) {
+    await networkStore.init(identityStore.userId)
+    // Connect to rendezvous server if configured
+    const rendezvousUrl = settingsStore.settings.rendezvousServerUrl
+    if (rendezvousUrl) {
+      networkStore.connect(rendezvousUrl).catch(() => {
+        // Non-fatal — app works without a rendezvous server
+      })
+    }
+  }
 
   // Load joined servers
   await serversStore.loadServers()

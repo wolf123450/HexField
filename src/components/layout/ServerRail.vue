@@ -28,7 +28,6 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useServersStore } from '@/stores/serversStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useChannelsStore } from '@/stores/channelsStore'
@@ -62,16 +61,12 @@ const addServerMenu: MenuItem[] = [
   {
     type: 'action',
     label: 'Create a Server',
-    callback: () => {
-      // TODO Phase 2: open ServerCreateModal
-    },
+    callback: () => { uiStore.showServerCreateModal = true },
   },
   {
     type: 'action',
     label: 'Join a Server',
-    callback: () => {
-      // TODO Phase 2: open join flow
-    },
+    callback: () => { uiStore.showJoinModal = true },
   },
 ]
 </script>
