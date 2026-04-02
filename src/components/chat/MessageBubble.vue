@@ -5,8 +5,28 @@
     @mouseenter="isHovered = true"
     @mouseleave="isHovered = false"
   >
-    <!-- Hover action bar: add-reaction button (Discord-style overlay) -->
+    <!-- Hover action bar: quick-react + full picker button -->
     <div v-if="isHovered && message.content !== null" class="message-actions">
+      <button
+        v-for="emojiId in emojiStore.topEmoji"
+        :key="emojiId"
+        class="action-btn quick-react-btn"
+        :title="emojiId"
+        @click.stop="quickReact(emojiId)"
+      >
+        <img
+          v-if="isCustomEmoji(emojiId) && emojiStore.imageCache[emojiId]"
+          :src="emojiStore.imageCache[emojiId]"
+          class="quick-emoji-img"
+          :alt="emojiId"
+        />
+        <img
+          v-else-if="!isCustomEmoji(emojiId)"
+          :src="twemojiUrl(emojiId)"
+          class="quick-emoji-img"
+          :alt="emojiId"
+        />
+      </button>
       <button class="action-btn" title="Add reaction" @click.stop="openPickerFromBar">
         <AppIcon :path="mdiEmoticonPlus" :size="20" />
       </button>
@@ -67,6 +87,8 @@ import { mdiEmoticonPlus } from '@mdi/js'
 import { useServersStore } from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import { useMessagesStore } from '@/stores/messagesStore'
+import { useEmojiStore } from '@/stores/emojiStore'
+import { twemojiUrl } from '@/utils/twemoji'
 import MessageContent from './MessageContent.vue'
 import ReactionBar from './ReactionBar.vue'
 import EmojiPicker from './EmojiPicker.vue'
@@ -79,6 +101,7 @@ const props = defineProps<{
 const serversStore  = useServersStore()
 const identityStore = useIdentityStore()
 const messagesStore = useMessagesStore()
+const emojiStore    = useEmojiStore()
 
 const isHovered = ref(false)
 const picker    = ref<InstanceType<typeof EmojiPicker> | null>(null)
@@ -107,6 +130,10 @@ const formattedTime = computed(() => {
   }
 })
 
+function isCustomEmoji(emojiId: string): boolean {
+  return emojiId.length > 20
+}
+
 function openPickerFromBar(event: MouseEvent) {
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
   pickerX.value = rect.left
@@ -122,6 +149,15 @@ function openPicker(event: MouseEvent) {
 }
 
 async function onEmojiSelected(emojiId: string) {
+  await messagesStore.addReaction(
+    props.message.id,
+    props.message.channelId,
+    props.message.serverId,
+    emojiId,
+  )
+}
+
+async function quickReact(emojiId: string) {
   await messagesStore.addReaction(
     props.message.id,
     props.message.channelId,
@@ -184,6 +220,16 @@ async function onEmojiSelected(emojiId: string) {
   background: var(--bg-secondary);
   color: var(--accent-color);
   transform: none;
+}
+
+.quick-react-btn {
+  background-color: var(--bg-primary);
+}
+
+.quick-emoji-img {
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
 }
 
 .message-avatar {

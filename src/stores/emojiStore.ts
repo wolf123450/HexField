@@ -1,12 +1,14 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
 import type { CustomEmoji } from '@/types/core'
 import { APP_STORAGE_PREFIX } from '@/appConfig'
 
 const RECENT_KEY = APP_STORAGE_PREFIX + 'recent_emoji'
+const USAGE_KEY  = APP_STORAGE_PREFIX + 'emoji_usage'
 const MAX_RECENT = 20
+const TOP_N      = 3
 
 export const useEmojiStore = defineStore('emoji', () => {
   // [serverId][emojiId] → CustomEmoji metadata
@@ -14,7 +16,17 @@ export const useEmojiStore = defineStore('emoji', () => {
   // emojiId → data: URI
   const imageCache = ref<Record<string, string>>({})
   // recent emoji ids (max 20)
-  const recent     = ref<string[]>(loadRecent())
+  const recent       = ref<string[]>(loadRecent())
+  // emojiId → usage count (persisted)
+  const usageCounts  = ref<Record<string, number>>(loadUsageCounts())
+
+  // top N emoji by usage count
+  const topEmoji = computed<string[]>(() =>
+    Object.entries(usageCounts.value)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, TOP_N)
+      .map(([id]) => id)
+  )
 
   async function loadEmoji(serverId: string) {
     const rows = await invoke<any[]>('db_load_emoji', { serverId })
@@ -49,6 +61,8 @@ export const useEmojiStore = defineStore('emoji', () => {
   function useEmoji(emojiId: string) {
     recent.value = [emojiId, ...recent.value.filter(id => id !== emojiId)].slice(0, MAX_RECENT)
     localStorage.setItem(RECENT_KEY, JSON.stringify(recent.value))
+    usageCounts.value[emojiId] = (usageCounts.value[emojiId] ?? 0) + 1
+    localStorage.setItem(USAGE_KEY, JSON.stringify(usageCounts.value))
   }
 
   async function uploadCustomEmoji(serverId: string, name: string, file: File): Promise<void> {
@@ -111,6 +125,8 @@ export const useEmojiStore = defineStore('emoji', () => {
     custom,
     imageCache,
     recent,
+    topEmoji,
+    usageCounts,
     loadEmoji,
     getEmojiImage,
     receiveEmojiSync,
@@ -125,4 +141,11 @@ function loadRecent(): string[] {
     const raw = localStorage.getItem(RECENT_KEY)
     return raw ? JSON.parse(raw) : []
   } catch { return [] }
+}
+
+function loadUsageCounts(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(USAGE_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch { return {} }
 }
