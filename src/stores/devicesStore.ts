@@ -170,7 +170,7 @@ export const useDevicesStore = defineStore('devices', () => {
         public_dh_key:   device.publicDHKey,
         attested_by:     device.attestedBy ?? null,
         attestation_sig: device.attestationSig ?? null,
-        revoked:         device.revoked ? 1 : 0,
+        revoked:         !!device.revoked,
         created_at:      device.createdAt,
       },
     })

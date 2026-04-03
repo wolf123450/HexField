@@ -42,7 +42,7 @@
           :class="{ speaking: voiceStore.speakingPeers.has('self') }"
         >
           <div class="av-ring" />
-          <div class="av-avatar">{{ selfInitials }}</div>
+          <AvatarImage :src="identityStore.avatarDataUrl" :name="identityStore.displayName || 'You'" :size="64" class="av-avatar" />
           <div class="tile-overlay">
             <span class="tile-label">{{ identityStore.displayName || 'You' }} (you)</span>
           </div>
@@ -115,7 +115,7 @@
             :class="{ speaking: voiceStore.speakingPeers.has(peer.userId) }"
           >
             <div class="av-ring" />
-            <div class="av-avatar">{{ peerInitials(peer.userId) }}</div>
+            <AvatarImage :src="serversStore.members[serverId]?.[peer.userId]?.avatarDataUrl ?? null" :name="peerName(peer.userId)" :size="64" class="av-avatar" />
             <div class="tile-overlay">
               <span class="tile-label">{{ peerName(peer.userId) }}</span>
             </div>
@@ -183,11 +183,6 @@ const channelName = computed(() => {
   return channelsStore.channels[sid]?.find(c => c.id === cid)?.name ?? ''
 })
 
-const selfInitials = computed(() => {
-  const name = identityStore.displayName || '?'
-  return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
-})
-
 // Remote shares visible (not hidden)
 const remoteShares = computed<[string, MediaStream][]>(() =>
   Object.entries(voiceStore.screenStreams).filter(([userId]) => !hiddenStreams.has(userId))
@@ -245,11 +240,6 @@ watchEffect(() => {
 function peerName(userId: string): string {
   const sid = serverId.value
   return serversStore.members[sid]?.[userId]?.displayName ?? userId.slice(0, 8)
-}
-
-function peerInitials(userId: string): string {
-  const name = peerName(userId)
-  return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
 }
 </script>
 

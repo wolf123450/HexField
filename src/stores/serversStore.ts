@@ -251,6 +251,7 @@ export const useServersStore = defineStore('servers', () => {
     roles: string[]
     joinedAt: string
     onlineStatus: string
+    avatarDataUrl?: string
   }) {
     if (!servers.value[m.serverId]) return // Unknown server — reject silently
     await invoke('db_upsert_member', {
@@ -266,6 +267,8 @@ export const useServersStore = defineStore('servers', () => {
       },
     })
     if (!members.value[m.serverId]) members.value[m.serverId] = {}
+    // Preserve existing avatarDataUrl if caller didn't supply a new one
+    const existingAvatar = members.value[m.serverId][m.userId]?.avatarDataUrl
     members.value[m.serverId][m.userId] = {
       userId:        m.userId,
       serverId:      m.serverId,
@@ -275,6 +278,7 @@ export const useServersStore = defineStore('servers', () => {
       roles:         m.roles,
       joinedAt:      m.joinedAt,
       onlineStatus:  m.onlineStatus as ServerMember['onlineStatus'],
+      avatarDataUrl: m.avatarDataUrl ?? existingAvatar,
     }
   }
 

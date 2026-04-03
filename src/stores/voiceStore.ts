@@ -16,8 +16,10 @@ export const useVoiceStore = defineStore('voice', () => {
   const isDeafened      = ref<boolean>(false)
   const loopbackEnabled = ref<boolean>(false)
   const voiceViewActive = ref<boolean>(false) // false = minimised → show text channel
-  const peers           = ref<Record<string, Peer>>({})
-  const speakingPeers   = ref<Set<string>>(new Set())
+  const peers              = ref<Record<string, Peer>>({})
+  const speakingPeers      = ref<Set<string>>(new Set())
+  // Tracks which voice channel each remote peer is currently in (even if we are not in the channel)
+  const peerVoiceChannels  = ref<Record<string, string>>({})
 
   const peerCount     = computed(() => Object.keys(peers.value).length)
   const meshWarning   = computed(() => peerCount.value >= MESH_PEER_LIMIT)
@@ -107,6 +109,7 @@ export const useVoiceStore = defineStore('voice', () => {
     isDeafened.value      = false
     loopbackEnabled.value = false
     speakingPeers.value   = new Set()
+    // Don't wipe peerVoiceChannels on leave — peers may still be in voice
   }
 
   // ── Mute / Deafen ─────────────────────────────────────────────────────────
@@ -243,6 +246,14 @@ export const useVoiceStore = defineStore('voice', () => {
     audioService.detachRemoteStream(userId)
   }
 
+  function setPeerVoiceChannel(userId: string, channelId: string): void {
+    peerVoiceChannels.value[userId] = channelId
+  }
+
+  function clearPeerVoiceChannel(userId: string): void {
+    delete peerVoiceChannels.value[userId]
+  }
+
   return {
     session,
     localStream,
@@ -254,6 +265,7 @@ export const useVoiceStore = defineStore('voice', () => {
     voiceViewActive,
     peers,
     speakingPeers,
+    peerVoiceChannels,
     peerCount,
     meshWarning,
     hasScreenShares,
@@ -263,6 +275,8 @@ export const useVoiceStore = defineStore('voice', () => {
     toggleDeafen,
     toggleLoopback,
     startScreenShare,
+    setPeerVoiceChannel,
+    clearPeerVoiceChannel,
     stopScreenShare,
     setPeerSpeaking,
     updatePeer,

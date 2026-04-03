@@ -406,10 +406,6 @@ export const useNetworkStore = defineStore('network', () => {
     for (const m of memberList) {
       if (m.userId !== fromUserId) continue // Only accept sender's own memberships
       await serversStore.upsertMember(m)
-      // Apply avatar in-memory (not persisted — re-gossiped on next connect).
-      if (m.avatarDataUrl && serversStore.members[m.serverId]?.[m.userId]) {
-        serversStore.members[m.serverId][m.userId].avatarDataUrl = m.avatarDataUrl
-      }
     }
   }
 
@@ -465,16 +461,23 @@ export const useNetworkStore = defineStore('network', () => {
     const { useVoiceStore }   = await import('./voiceStore')
     const voiceStore = useVoiceStore()
     const channelId  = msg.channelId as string | undefined
-    if (channelId && voiceStore.session?.channelId === channelId) {
+    if (!channelId) return
+    // Always track where this peer is in voice (so sidebar shows it even for non-participants)
+    voiceStore.setPeerVoiceChannel(userId, channelId)
+    if (voiceStore.session?.channelId === channelId) {
       voiceStore.updatePeer(userId, { audioEnabled: true })
-      // Reply so the joiner knows we're already in this channel.
-      sendToPeer(userId, { type: 'voice_join', channelId })
+      // Reply only if this is an initial announce (not a reply), to avoid a ping-pong loop.
+      if (!msg.isReply) {
+        sendToPeer(userId, { type: 'voice_join', channelId, isReply: true })
+      }
     }
   }
 
   async function handleVoiceLeave(userId: string) {
     const { useVoiceStore } = await import('./voiceStore')
-    useVoiceStore().removePeer(userId)
+    const voiceStore = useVoiceStore()
+    voiceStore.removePeer(userId)
+    voiceStore.clearPeerVoiceChannel(userId)
   }
 
   async function handleVoiceScreenShareStart(userId: string) {
