@@ -27,6 +27,14 @@ export const useServersStore = defineStore('servers', () => {
         // raw_json malformed — skip
       }
     }
+    // Load server avatars from key-value store
+    for (const serverId of joinedServerIds.value) {
+      const dataUrl = await invoke<string | null>('db_load_key', { keyId: `server_avatar_${serverId}` })
+        .catch(() => null)
+      if (dataUrl && servers.value[serverId]) {
+        servers.value[serverId].avatarDataUrl = dataUrl
+      }
+    }
   }
 
   async function createServer(name: string, _iconFile?: File): Promise<Server> {
@@ -120,6 +128,37 @@ export const useServersStore = defineStore('servers', () => {
     if (members.value[serverId]?.[userId]) {
       members.value[serverId][userId].displayName = displayName
     }
+  }
+
+  function updateMemberProfile(
+    serverId: string,
+    userId: string,
+    payload: {
+      displayName?: string
+      avatarDataUrl?: string | null
+      bio?: string | null
+      bannerColor?: string | null
+      bannerDataUrl?: string | null
+    },
+  ) {
+    const m = members.value[serverId]?.[userId]
+    if (!m) return
+    if (payload.displayName   !== undefined) m.displayName   = payload.displayName
+    if (payload.avatarDataUrl !== undefined) m.avatarDataUrl = payload.avatarDataUrl
+    if (payload.bio           !== undefined) m.bio           = payload.bio
+    if (payload.bannerColor   !== undefined) m.bannerColor   = payload.bannerColor
+    if (payload.bannerDataUrl !== undefined) m.bannerDataUrl = payload.bannerDataUrl
+  }
+
+  async function updateServerAvatar(serverId: string, dataUrl: string | null) {
+    if (servers.value[serverId]) {
+      servers.value[serverId].avatarDataUrl = dataUrl
+    }
+    await invoke('db_save_key', {
+      keyId:   `server_avatar_${serverId}`,
+      keyType: 'server_avatar',
+      keyData: dataUrl ?? '',
+    })
   }
 
   function applyServerMutation(mutation: Mutation) {
@@ -322,6 +361,8 @@ export const useServersStore = defineStore('servers', () => {
     setActiveServer,
     updateMemberStatus,
     updateMemberDisplayName,
+    updateMemberProfile,
+    updateServerAvatar,
     applyServerMutation,
     joinFromManifest,
     createInviteToken,

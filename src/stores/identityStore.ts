@@ -10,6 +10,9 @@ export const useIdentityStore = defineStore('identity', () => {
   const publicSignKey = ref<string | null>(null)
   const publicDHKey   = ref<string | null>(null)
   const avatarDataUrl = ref<string | null>(null)
+  const bio           = ref<string | null>(null)
+  const bannerColor   = ref<string | null>(null)
+  const bannerDataUrl = ref<string | null>(null)
   const isRegistered  = ref<boolean>(false)
 
   async function initializeIdentity() {
@@ -30,6 +33,9 @@ export const useIdentityStore = defineStore('identity', () => {
       publicSignKey.value = cryptoService.getPublicSignKey()
       publicDHKey.value   = cryptoService.getPublicDHKey()
       if (existingAvatar) avatarDataUrl.value = existingAvatar
+      bio.value         = await invoke<string | null>('db_load_key', { keyId: 'local_bio' })
+      bannerColor.value = await invoke<string | null>('db_load_key', { keyId: 'local_banner_color' })
+      bannerDataUrl.value = await invoke<string | null>('db_load_key', { keyId: 'local_banner_data' })
       isRegistered.value  = true
     } else {
       // First launch — generate new identity
@@ -63,15 +69,36 @@ export const useIdentityStore = defineStore('identity', () => {
     avatarDataUrl.value = dataUrl
   }
 
+  async function updateBio(text: string) {
+    bio.value = text
+    await invoke('db_save_key', { keyId: 'local_bio', keyType: 'bio', keyData: text })
+  }
+
+  async function updateBanner(color: string | null, dataUrl: string | null) {
+    bannerColor.value   = color
+    bannerDataUrl.value = dataUrl
+    if (color !== null) {
+      await invoke('db_save_key', { keyId: 'local_banner_color', keyType: 'banner_color', keyData: color })
+    }
+    if (dataUrl !== null) {
+      await invoke('db_save_key', { keyId: 'local_banner_data', keyType: 'banner_data', keyData: dataUrl })
+    }
+  }
+
   return {
     userId,
     displayName,
     publicSignKey,
     publicDHKey,
     avatarDataUrl,
+    bio,
+    bannerColor,
+    bannerDataUrl,
     isRegistered,
     initializeIdentity,
     updateDisplayName,
     updateAvatar,
+    updateBio,
+    updateBanner,
   }
 })

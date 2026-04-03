@@ -14,6 +14,7 @@ export interface Server {
   name:            string
   description?:    string
   iconUrl?:        string
+  avatarDataUrl?:  string | null
   ownerId:         string
   memberCount:     number
   createdAt:       string        // ISO 8601
@@ -32,6 +33,9 @@ export interface ServerMember {
   publicDHKey:     string
   onlineStatus:    OnlineStatus
   avatarDataUrl?:  string | null
+  bio?:            string | null
+  bannerColor?:    string | null
+  bannerDataUrl?:  string | null
 }
 
 export type OnlineStatus = 'online' | 'idle' | 'dnd' | 'offline'
