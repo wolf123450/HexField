@@ -603,6 +603,17 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    fn save_mutation(conn: &Connection, id: &str, mut_type: &str, target_id: &str, channel_id: &str,
+                     author_id: &str, emoji_id: Option<&str>, logical_ts: &str) {
+        conn.execute(
+            "INSERT OR IGNORE INTO mutations
+             (id, type, target_id, channel_id, author_id, new_content, emoji_id,
+              logical_ts, created_at, verified)
+             VALUES (?1,?2,?3,?4,?5,NULL,?6,?7,'2025-01-01',1)",
+            rusqlite::params![id, mut_type, target_id, channel_id, author_id, emoji_id, logical_ts],
+        ).unwrap();
+    }
+
     fn save_message(conn: &Connection, msg: &MessageRow) {
         conn.execute(
             "INSERT OR REPLACE INTO messages
@@ -938,4 +949,80 @@ mod tests {
             .collect::<Result<_, _>>().unwrap();
         assert_eq!(ids.len(), 2);
     }
+
+    // ── reaction_add idempotency ──────────────────────────────────────────────
+
+    #[test]
+    fn test_reaction_add_insert_or_ignore_is_idempotent() {
+        let conn = test_conn();
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        save_message(&conn, &make_message("msg-r1", "ch-1", "1000000000000-000000"));
+
+        // Insert same mutation ID twice — second must be ignored
+        save_mutation(&conn, "mut-r1", "reaction_add", "msg-r1", "ch-1", "user-bob", Some("👍"), "1000000000001-000000");
+        save_mutation(&conn, "mut-r1", "reaction_add", "msg-r1", "ch-1", "user-bob", Some("👍"), "1000000000001-000000");
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM mutations WHERE id = 'mut-r1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "INSERT OR IGNORE must prevent duplicate mutation rows");
+    }
+
+    // ── reaction_remove after reaction_add ────────────────────────────────────
+
+    #[test]
+    fn test_reaction_add_and_remove_both_stored_for_frontend_fold() {
+        let conn = test_conn();
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        save_message(&conn, &make_message("msg-r2", "ch-1", "1000000000000-000000"));
+
+        save_mutation(&conn, "mut-add", "reaction_add",    "msg-r2", "ch-1", "user-bob", Some("👍"), "1000000000001-000000");
+        save_mutation(&conn, "mut-rem", "reaction_remove", "msg-r2", "ch-1", "user-bob", Some("👍"), "1000000000002-000000");
+
+        // Both mutations must be present — frontend's computeReactions folds them to 0
+        let add_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM mutations WHERE target_id = 'msg-r2' AND type = 'reaction_add'",
+            [], |r| r.get(0),
+        ).unwrap();
+        let rem_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM mutations WHERE target_id = 'msg-r2' AND type = 'reaction_remove'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(add_count, 1);
+        assert_eq!(rem_count, 1);
+    }
+
+    // ── db_upsert_member: preserves all fields on display_name-only update ────
+
+    #[test]
+    fn test_upsert_member_preserves_fields_when_updating_display_name_only() {
+        let conn = test_conn();
+        seed_server(&conn, "srv-1");
+
+        let original = MemberRow {
+            user_id:         "user-carol".to_string(),
+            server_id:       "srv-1".to_string(),
+            display_name:    "Carol".to_string(),
+            roles:           Some("[\"admin\",\"member\"]".to_string()),
+            joined_at:       "2025-03-15T10:00:00Z".to_string(),
+            public_sign_key: "original-sign-key".to_string(),
+            public_dh_key:   "original-dh-key".to_string(),
+            online_status:   "online".to_string(),
+        };
+        upsert_member(&conn, &original);
+
+        // Second upsert changes only display_name
+        let updated = MemberRow { display_name: "Carol Updated".to_string(), ..original.clone() };
+        upsert_member(&conn, &updated);
+
+        let loaded = load_member(&conn, "user-carol", "srv-1").expect("member must still exist");
+        assert_eq!(loaded.display_name,    "Carol Updated");
+        assert_eq!(loaded.roles,           original.roles,           "roles must be preserved");
+        assert_eq!(loaded.public_sign_key, original.public_sign_key, "sign key must be preserved");
+        assert_eq!(loaded.public_dh_key,   original.public_dh_key,   "dh key must be preserved");
+        assert_eq!(loaded.joined_at,       original.joined_at,       "joined_at must be preserved");
+    }
 }
+
