@@ -20,12 +20,10 @@
           class="quick-emoji-img"
           :alt="emojiId"
         />
-        <img
+        <span
           v-else-if="!isCustomEmoji(emojiId)"
-          :src="twemojiUrl(emojiId)"
-          class="quick-emoji-img"
-          :alt="emojiId"
-        />
+          class="native-emoji quick-emoji-char"
+        >{{ codepointToChar(emojiId) }}</span>
       </button>
       <button class="action-btn" title="Add reaction" @click.stop="openPickerFromBar">
         <AppIcon :path="mdiEmoticonPlus" :size="20" />
@@ -88,7 +86,7 @@ import { useServersStore } from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import { useMessagesStore } from '@/stores/messagesStore'
 import { useEmojiStore } from '@/stores/emojiStore'
-import { twemojiUrl } from '@/utils/twemoji'
+import { codepointToChar } from '@/utils/twemoji'
 import MessageContent from './MessageContent.vue'
 import ReactionBar from './ReactionBar.vue'
 import EmojiPicker from './EmojiPicker.vue'
@@ -230,6 +228,16 @@ async function quickReact(emojiId: string) {
   width: 20px;
   height: 20px;
   pointer-events: none;
+}
+
+.native-emoji {
+  font-size: 18px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.quick-emoji-char {
+  font-size: 20px;
 }
 
 .message-avatar {

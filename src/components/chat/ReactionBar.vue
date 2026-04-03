@@ -17,7 +17,7 @@
         />
         <span v-else class="emoji-placeholder">?</span>
       </template>
-      <img v-else class="twemoji" :src="twemojiUrl(reaction.emojiId)" :alt="unicodeChar(reaction.emojiId)" />
+      <span v-else class="native-emoji">{{ unicodeChar(reaction.emojiId) }}</span>
       <span class="reaction-count">{{ reaction.count }}</span>
     </button>
     <button
@@ -38,7 +38,6 @@ import { mdiEmoticonPlus } from '@mdi/js'
 import { useEmojiStore } from '@/stores/emojiStore'
 import { useMessagesStore } from '@/stores/messagesStore'
 import emojiData from '@/assets/emoji-data.json'
-import { twemojiUrl } from '@/utils/twemoji'
 
 const props = defineProps<{
   messageId: string
@@ -150,10 +149,10 @@ async function toggleReaction(reaction: ReactionSummary) {
   color: var(--text-tertiary);
 }
 
-.twemoji {
-  width: 18px;
-  height: 18px;
-  vertical-align: -0.2em;
+.native-emoji {
+  font-size: 18px;
+  line-height: 1;
+  vertical-align: -0.1em;
 }
 
 .reaction-add-btn {

@@ -42,7 +42,7 @@
               :title="emoji.name"
               @click="selectEmoji(emoji)"
             >
-              <img :src="twemojiUrl(emoji.id)" :alt="emoji.char" class="twemoji-btn" />
+              <span class="native-emoji">{{ emoji.char }}</span>
             </button>
             <div v-if="searchResults.length === 0" class="picker-empty">No results</div>
           </div>
@@ -72,7 +72,7 @@
                 :title="unicodeName(id)"
                 @click="selectUnicodeById(id)"
             >
-              <img :src="twemojiUrl(id)" :alt="unicodeChar(id)" class="twemoji-btn" />
+              <span class="native-emoji">{{ unicodeChar(id) }}</span>
             </button>
             </template>
             <div v-if="recentEmoji.length === 0" class="picker-empty">No recent emoji</div>
@@ -111,7 +111,7 @@
                 :title="emoji.name"
                 @click="selectEmoji(emoji)"
               >
-                <img :src="twemojiUrl(emoji.id)" :alt="emoji.char" class="twemoji-btn" />
+                <span class="native-emoji">{{ emoji.char }}</span>
               </button>
             </div>
           </div>
@@ -131,7 +131,6 @@ import {
 import { useEmojiStore } from '@/stores/emojiStore'
 import { useServersStore } from '@/stores/serversStore'
 import emojiData from '@/assets/emoji-data.json'
-import { twemojiUrl } from '@/utils/twemoji'
 
 type EmojiEntry = { id: string; char: string; name: string; category: string }
 
@@ -403,9 +402,9 @@ defineExpose({ open, close, isOpen })
 
 .emoji-btn:hover { background: var(--bg-secondary); }
 
-.twemoji-btn {
-  width: 20px;
-  height: 20px;
+.native-emoji {
+  font-size: 20px;
+  line-height: 1;
   pointer-events: none;
 }
 

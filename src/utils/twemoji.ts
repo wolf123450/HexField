@@ -1,11 +1,11 @@
 /**
- * Returns the Twemoji CDN URL for a given emoji codepoint string.
+ * Converts a Twemoji codepoint string to a Unicode emoji character.
  * The codepoint format matches the `id` field in src/assets/emoji-data.json
  * (e.g., "1f600", "1f1e6-1f1fa", "2764-fe0f-200d-1f525").
  *
- * Twemoji is open source (CC-BY 4.0) by Twitter/X.
- * Served via jsDelivr CDN (allowed in tauri.conf.json img-src CSP).
+ * Used to render emoji as native text instead of loading remote images,
+ * which avoids CDN/tracking-prevention issues in Tauri's WebView.
  */
-export function twemojiUrl(codepoint: string): string {
-  return `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/${codepoint}.svg`
+export function codepointToChar(codepoint: string): string {
+  return codepoint.split('-').map(cp => String.fromCodePoint(parseInt(cp, 16))).join('')
 }

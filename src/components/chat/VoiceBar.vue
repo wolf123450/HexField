@@ -1,6 +1,5 @@
 <template>
-  <Teleport to="body">
-    <div v-if="voiceStore.session" class="voice-bar">
+  <div v-if="voiceStore.session" class="voice-bar">
       <!-- Left: connection info -->
       <div class="voice-status">
         <span class="voice-channel-name">
@@ -66,7 +65,6 @@
         </button>
       </div>
     </div>
-  </Teleport>
 </template>
 
 <script setup lang="ts">
@@ -112,25 +110,18 @@ async function toggleScreenShare() {
 
 <style scoped>
 .voice-bar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 48px;
-  background: var(--bg-secondary);
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: var(--bg-tertiary);
+  border-top: 1px solid var(--border-color);
   display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  padding: 0 var(--spacing-md);
-  z-index: 200;
-  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.3);
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) var(--spacing-md);
+  flex-shrink: 0;
 }
 
 .voice-status {
   display: flex;
   flex-direction: column;
-  min-width: 120px;
 }
 
 .voice-channel-name {
@@ -151,16 +142,13 @@ async function toggleScreenShare() {
 }
 
 .voice-divider {
-  width: 1px;
-  height: 28px;
-  background: rgba(255, 255, 255, 0.1);
-  flex-shrink: 0;
+  display: none;
 }
 
 .voice-peers {
-  flex: 1;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 2px;
   overflow: hidden;
 }
@@ -180,7 +168,7 @@ async function toggleScreenShare() {
   display: flex;
   align-items: center;
   gap: 4px;
-  flex-shrink: 0;
+  margin-top: var(--spacing-xs);
 }
 
 .ctrl-btn {

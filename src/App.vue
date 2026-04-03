@@ -8,7 +8,6 @@
   <InviteModal />
   <JoinModal />
   <DeviceLinkModal />
-  <VoiceBar />
 </template>
 
 <script setup lang="ts">
@@ -22,7 +21,6 @@ import ServerCreateModal from '@/components/modals/ServerCreateModal.vue'
 import InviteModal from '@/components/modals/InviteModal.vue'
 import JoinModal from '@/components/modals/JoinModal.vue'
 import DeviceLinkModal from '@/components/modals/DeviceLinkModal.vue'
-import VoiceBar from '@/components/chat/VoiceBar.vue'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useIdentityStore } from '@/stores/identityStore'
