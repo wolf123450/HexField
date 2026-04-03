@@ -11,11 +11,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { invoke } from '@tauri-apps/api/core'
 import { useServersStore } from '@/stores/serversStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import { useUIStore } from '@/stores/uiStore'
-import type { ServerManifest } from '@/types/core'
+import type { PeerInvite } from '@/types/core'
 
 const route     = useRoute()
 const router    = useRouter()
@@ -23,16 +24,16 @@ const uiStore   = useUIStore()
 const statusMsg = ref('Parsing invite link…')
 const isError   = ref(false)
 
-function decodeManifest(raw: string): ServerManifest {
+function decodeInvite(raw: string): PeerInvite {
   let encoded = raw.trim()
   const prefix = 'gamechat://join/'
   if (encoded.startsWith(prefix)) encoded = encoded.slice(prefix.length)
   const pad = (4 - (encoded.length % 4)) % 4
   const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat(pad)
-  const manifest = JSON.parse(atob(b64)) as ServerManifest
-  if (manifest.v !== 1) throw new Error('Unrecognised invite version')
-  if (!manifest.server?.id) throw new Error('Invite link is missing server data')
-  return manifest
+  const invite = JSON.parse(atob(b64)) as PeerInvite
+  if (invite.v !== 2) throw new Error('This invite link is outdated. Ask the server owner to generate a new one.')
+  if (!invite.userId || !invite.serverId) throw new Error('Invite link is malformed.')
+  return invite
 }
 
 onMounted(async () => {
@@ -44,27 +45,31 @@ onMounted(async () => {
     const param = route.params.inviteCode as string
     if (!param) throw new Error('No invite code provided.')
 
-    const manifest = decodeManifest(param)
+    const invite = decodeInvite(param)
 
-    statusMsg.value = `Joining ${manifest.server.name}…`
-    const server    = await serversStore.joinFromManifest(manifest)
-
-    if (manifest.rendezvousUrl) {
-      statusMsg.value = 'Connecting to relay…'
-      if (networkStore.signalingState !== 'connected') {
-        await networkStore.connect(manifest.rendezvousUrl)
-      }
+    // Try each endpoint until one connects
+    let connected = false
+    for (const ep of invite.endpoints) {
       try {
-        await networkStore.waitForConnected(12000)
-        statusMsg.value = 'Connecting to peer…'
-        await networkStore.connectToPeer(manifest.owner.userId)
+        statusMsg.value = `Connecting via ${ep.type === 'lan' ? 'local network' : 'direct'}…`
+        await invoke('lan_connect_peer', { userId: invite.userId, addr: ep.addr, port: ep.port })
+        connected = true
+        break
       } catch {
-        uiStore.showNotification(
-          `Joined ${server.name} locally. Could not reach relay server — start chatting when online.`,
-          'info', 6000,
-        )
+        // try next endpoint
       }
     }
+    if (!connected) throw new Error('Could not reach the server owner. Make sure you\'re on the same network.')
+
+    statusMsg.value = 'Establishing encrypted connection…'
+    await networkStore.connectToPeer(invite.userId)
+    await networkStore.waitForPeer(invite.userId, 15000)
+
+    statusMsg.value = `Requesting server info for "${invite.serverName}"…`
+    const manifest = await networkStore.requestServerManifest(invite.userId, invite.serverId, invite.inviteToken)
+
+    statusMsg.value = `Joining ${manifest.server.name}…`
+    const server = await serversStore.joinFromManifest(manifest)
 
     serversStore.setActiveServer(server.id)
     await channelsStore.loadChannels(server.id)

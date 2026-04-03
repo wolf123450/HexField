@@ -1,10 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { signalingService } from '@/services/signalingService'
 import type { SignalPayload } from '@/services/signalingService'
 import { webrtcService } from '@/services/webrtcService'
 import { startSync, handleSyncMessage, setSendFn } from '@/services/syncService'
 import type { SyncWireMessage } from '@/services/syncService'
+import type { ServerManifest } from '@/types/core'
 
 export type SignalingState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -16,6 +19,12 @@ export const useNetworkStore = defineStore('network', () => {
   const connectedPeers   = ref<string[]>([])
   // userId -> { channelId, timestamp }
   const typingUsers      = ref<Record<string, { channelId: string; timeout: ReturnType<typeof setTimeout> }>>({})
+
+  // Pending server-join request: resolve/reject when server_manifest arrives
+  let _pendingServerJoin: {
+    resolve: (m: ServerManifest) => void
+    reject:  (e: Error) => void
+  } | null = null
 
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let initialized = false
@@ -57,6 +66,15 @@ export const useNetworkStore = defineStore('network', () => {
       },
       handleRemoteTrack,
     )
+
+    // Listen for mDNS-discovered peers (auto-connect on same LAN).
+    await listen<{ userId: string; addr: string; port: number }>(
+      'lan_peer_discovered',
+      ({ payload }) => handleLanPeerDiscovered(payload.userId, payload.addr, payload.port, localUserId),
+    )
+
+    // lan_peer_lost is handled implicitly — WebRTC disconnection fires
+    // the onPeerDisconnected callback above; no extra action needed.
   }
 
   /**
@@ -219,6 +237,14 @@ export const useNetworkStore = defineStore('network', () => {
         handleSyncMessage(userId, msg as unknown as SyncWireMessage).catch(e =>
           console.warn('[network] sync message error:', e)
         )
+        break
+      case 'server_join_request':
+        handleServerJoinRequest(userId, msg).catch(e =>
+          console.warn('[network] server_join_request error:', e)
+        )
+        break
+      case 'server_manifest':
+        handleServerManifestReceived(msg)
         break
       default:
         console.debug('[network] unhandled data message type:', msg.type)
@@ -438,6 +464,132 @@ export const useNetworkStore = defineStore('network', () => {
     })
   }
 
+  /**
+   * Resolves when a specific peer appears in `connectedPeers` (WebRTC connected).
+   */
+  function waitForPeer(userId: string, timeoutMs = 15000): Promise<void> {
+    if (connectedPeers.value.includes(userId)) return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      const start = Date.now()
+      const check = () => {
+        if (connectedPeers.value.includes(userId)) return resolve()
+        if (Date.now() - start >= timeoutMs) return reject(new Error('Peer connection timed out'))
+        setTimeout(check, 200)
+      }
+      check()
+    })
+  }
+
+  /**
+   * Connect to a peer's LAN signal server, then initiate WebRTC.
+   * Called from JoinModal (Priority 2) and mDNS auto-discover (Priority 1).
+   */
+  async function connectViaDirect(userId: string, addr: string, port: number): Promise<void> {
+    await invoke('lan_connect_peer', { userId, addr, port })
+  }
+
+  /**
+   * Send a `server_join_request` to a peer and wait for them to respond with
+   * the full `ServerManifest`. Resolves with the manifest or rejects on timeout.
+   */
+  function requestServerManifest(
+    peerId: string,
+    serverId: string,
+    inviteToken: string,
+    timeoutMs = 20000,
+  ): Promise<ServerManifest> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        _pendingServerJoin = null
+        reject(new Error('Server manifest request timed out'))
+      }, timeoutMs)
+
+      _pendingServerJoin = {
+        resolve: (manifest) => { clearTimeout(timer); resolve(manifest) },
+        reject:  (err)      => { clearTimeout(timer); reject(err)      },
+      }
+
+      sendToPeer(peerId, { type: 'server_join_request', inviteToken, serverId })
+    })
+  }
+
+  // ── New data-channel handlers ────────────────────────────────────────────
+
+  /** Received by the server owner — validate token, send back full manifest. */
+  async function handleServerJoinRequest(
+    fromUserId: string,
+    msg: Record<string, unknown>,
+  ) {
+    const { useServersStore }  = await import('./serversStore')
+    const { useChannelsStore } = await import('./channelsStore')
+    const { useIdentityStore } = await import('./identityStore')
+
+    const serversStore  = useServersStore()
+    const channelsStore = useChannelsStore()
+    const identityStore = useIdentityStore()
+
+    const token    = msg.inviteToken as string
+    const serverId = msg.serverId   as string
+
+    if (!serversStore.validateInviteToken(token, serverId)) {
+      sendToPeer(fromUserId, { type: 'server_join_error', error: 'Invalid or expired invite token' })
+      return
+    }
+
+    const server = serversStore.servers[serverId]
+    if (!server) {
+      sendToPeer(fromUserId, { type: 'server_join_error', error: 'Server not found' })
+      return
+    }
+
+    const manifest: ServerManifest = {
+      v:        1,
+      server,
+      channels: channelsStore.channels[serverId] ?? [],
+      owner: {
+        userId:        identityStore.userId        ?? '',
+        displayName:   identityStore.displayName,
+        publicSignKey: identityStore.publicSignKey ?? '',
+        publicDHKey:   identityStore.publicDHKey   ?? '',
+      },
+    }
+
+    sendToPeer(fromUserId, { type: 'server_manifest', manifest })
+  }
+
+  /** Received by the joiner — resolve the pending join promise. */
+  function handleServerManifestReceived(msg: Record<string, unknown>) {
+    const manifest = msg.manifest as ServerManifest | undefined
+    if (!manifest || !manifest.server?.id) {
+      _pendingServerJoin?.reject(new Error('Received invalid server manifest'))
+      _pendingServerJoin = null
+      return
+    }
+    _pendingServerJoin?.resolve(manifest)
+    _pendingServerJoin = null
+  }
+
+  /** Auto-connect when mDNS discovers a peer on the same network. */
+  async function handleLanPeerDiscovered(
+    userId: string,
+    addr: string,
+    port: number,
+    localUserId: string,
+  ) {
+    if (connectedPeers.value.includes(userId)) return
+
+    try {
+      await invoke('lan_connect_peer', { userId, addr, port })
+      // Perfect negotiation: lower userId is "impolite" and initiates.
+      // Higher userId is "polite" and waits for an offer.
+      if (localUserId < userId) {
+        await connectToPeer(userId)
+      }
+    } catch (e) {
+      console.warn('[network] LAN auto-connect failed:', e)
+    }
+  }
+
   return {
     signalingState,
     serverUrl,
@@ -449,6 +601,9 @@ export const useNetworkStore = defineStore('network', () => {
     connect,
     disconnect,
     waitForConnected,
+    waitForPeer,
+    connectViaDirect,
+    requestServerManifest,
     sendSignal,
     sendToPeer,
     broadcast,

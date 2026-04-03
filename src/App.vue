@@ -30,6 +30,7 @@ import { useServersStore } from '@/stores/serversStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import { useMessagesStore } from '@/stores/messagesStore'
 import { useVoiceStore } from '@/stores/voiceStore'
+import { invoke } from '@tauri-apps/api/core'
 import { autoCheckForUpdate } from '@/utils/updateService'
 import { initializeKeyboardShortcuts, registerDefaultShortcuts, keyboardShortcutManager } from '@/utils/keyboard'
 import { createContextMenuResolver } from '@/utils/contextMenuResolver'
@@ -62,6 +63,12 @@ onMounted(async () => {
   // Initialize P2P networking layer
   if (identityStore.userId) {
     await networkStore.init(identityStore.userId)
+
+    // Start LAN signal server + mDNS (idempotent, non-fatal).
+    invoke('lan_start', { userId: identityStore.userId }).catch(() => {
+      // LAN discovery is optional — app works without it.
+    })
+
     // Connect to rendezvous server if configured
     const rendezvousUrl = settingsStore.settings.rendezvousServerUrl
     if (rendezvousUrl) {

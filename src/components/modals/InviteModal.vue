@@ -12,7 +12,8 @@
         </div>
 
         <p class="modal-hint">
-          Share this link with friends. They can join directly when P2P networking is available (Phase 3).
+          Share this link with someone nearby. They can scan the QR code or paste
+          the link to join directly over your local network.
         </p>
 
         <div v-if="qrSvg" class="qr-wrapper" v-html="qrSvg" />
@@ -44,49 +45,63 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import QRCode from 'qrcode'
 import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
-import { useChannelsStore } from '@/stores/channelsStore'
 import { useIdentityStore } from '@/stores/identityStore'
-import { useSettingsStore } from '@/stores/settingsStore'
-import type { ServerManifest } from '@/types/core'
+import type { PeerInvite, PeerEndpoint } from '@/types/core'
 
 const uiStore        = useUIStore()
 const serversStore   = useServersStore()
-const channelsStore  = useChannelsStore()
 const identityStore  = useIdentityStore()
-const settingsStore  = useSettingsStore()
 
-const qrSvg = ref<string>('')
-const copied = ref(false)
+const qrSvg    = ref<string>('')
+const copied   = ref(false)
+const inviteToken = ref<string>('')
+const endpoints   = ref<PeerEndpoint[]>([])
 
 const server = computed(() =>
   uiStore.inviteServerId ? serversStore.servers[uiStore.inviteServerId] : null
 )
 
-const inviteLink = computed(() => {
-  if (!server.value) return ''
-  const manifest: ServerManifest = {
-    v:        1,
-    server:   server.value,
-    channels: channelsStore.channels[server.value.id] ?? [],
-    rendezvousUrl: settingsStore.settings.rendezvousServerUrl || undefined,
-    owner: {
-      userId:        identityStore.userId        ?? '',
-      displayName:   identityStore.displayName,
-      publicSignKey: identityStore.publicSignKey ?? '',
-      publicDHKey:   identityStore.publicDHKey   ?? '',
-    },
+const inviteLink = computed((): string => {
+  if (!server.value || !inviteToken.value) return ''
+
+  const invite: PeerInvite = {
+    v:             2,
+    userId:        identityStore.userId        ?? '',
+    displayName:   identityStore.displayName,
+    publicSignKey: identityStore.publicSignKey ?? '',
+    publicDHKey:   identityStore.publicDHKey   ?? '',
+    endpoints:     endpoints.value,
+    serverId:      server.value.id,
+    serverName:    server.value.name,
+    inviteToken:   inviteToken.value,
   }
-  // URL-safe base64 (no padding) so the code survives copy-paste and deep links
-  const encoded = btoa(JSON.stringify(manifest))
+
+  const encoded = btoa(JSON.stringify(invite))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
   return `gamechat://join/${encoded}`
 })
 
 watch(() => uiStore.showInviteModal, async (open) => {
-  if (open && inviteLink.value) {
+  if (!open) return
+  if (!server.value) return
+
+  // Generate a fresh invite token for this session.
+  inviteToken.value = serversStore.createInviteToken(server.value.id)
+
+  // Discover local endpoints (LAN IP:port from the signal server).
+  try {
+    const raw = await invoke<Array<{ type: string; addr: string; port: number }>>('lan_get_local_addrs')
+    endpoints.value = raw.map(e => ({ type: e.type as PeerEndpoint['type'], addr: e.addr, port: e.port }))
+  } catch {
+    endpoints.value = []
+  }
+
+  // Render QR code once we have everything.
+  if (inviteLink.value) {
     try {
       qrSvg.value = await QRCode.toString(inviteLink.value, { type: 'svg', margin: 1 })
     } catch {

@@ -114,20 +114,42 @@ export interface CustomEmoji {
 }
 
 // ── Server join manifest ───────────────────────────────────────────────────────
-// Self-contained bundle encoded in invite links so peers can bootstrap a server
-// locally without P2P networking.  Encoded as URL-safe base64 JSON in the path:
-//   gamechat://join/<base64url(JSON(ServerManifest))>
+// Self-contained bundle sent over the WebRTC data channel after a joiner
+// presents a valid invite token.  NOT embedded in QR codes (too large).
 export interface ServerManifest {
-  v:             1
-  server:        Server
-  channels:      Channel[]
-  rendezvousUrl?: string        // signaling server both peers must connect to
+  v:        1
+  server:   Server
+  channels: Channel[]
   owner: {
     userId:        string
     displayName:   string
     publicSignKey: string
     publicDHKey:   string
   }
+}
+
+// ── Peer invite (QR code / invite link) ───────────────────────────────────
+// Small self-describing token that fits in a QR code.  Carries just enough
+// information to establish a direct P2P connection; full server data is
+// transferred over the WebRTC data channel after connection.
+//
+// Encoded as URL-safe base64 JSON in the gamechat://join/<b64> link.
+export interface PeerEndpoint {
+  type: 'lan' | 'direct'
+  addr: string
+  port: number
+}
+
+export interface PeerInvite {
+  v:            2
+  userId:       string          // inviter's userId
+  displayName:  string
+  publicSignKey: string
+  publicDHKey:   string
+  endpoints:    PeerEndpoint[]  // LAN endpoints first, then public IPs
+  serverId:     string
+  serverName:   string          // display-only, for join confirmation UI
+  inviteToken:  string          // random nonce validated on the owner side
 }
 
 // ── Encryption envelope ────────────────────────────────────────────────────────
