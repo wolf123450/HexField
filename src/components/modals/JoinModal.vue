@@ -5,14 +5,12 @@
         <div class="modal-header">
           <h2>Join a Server</h2>
           <button class="close-btn" @click="close">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-            </svg>
+            <AppIcon :path="mdiClose" :size="16" />
           </button>
         </div>
 
         <p class="modal-hint">
-          Paste an invite link or enter an invite code to join a server.
+          Paste an invite link or scan a QR code to join a server.
         </p>
 
         <label class="field-label">INVITE LINK OR CODE</label>
@@ -20,22 +18,17 @@
           ref="inputRef"
           v-model="code"
           class="text-input"
-          placeholder="gamechat://join/... or 12-digit code"
+          placeholder="gamechat://join/…"
           :disabled="joining"
           @keydown.enter="join"
         />
 
-        <div class="phase-notice">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
-          </svg>
-          P2P joining is implemented in Phase 3. For now, share the invite code out-of-band and have your peer paste it manually.
-        </div>
+        <p v-if="statusMsg" class="status-msg" :class="{ error: isError }">{{ statusMsg }}</p>
 
         <div class="modal-actions">
           <button class="btn-secondary" :disabled="joining" @click="close">Cancel</button>
           <button class="btn-primary" :disabled="!code.trim() || joining" @click="join">
-            {{ joining ? 'Joining…' : 'Join Server' }}
+            {{ joining ? joiningLabel : 'Join Server' }}
           </button>
         </div>
       </div>
@@ -45,28 +38,111 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
+import { mdiClose } from '@mdi/js'
 import { useUIStore } from '@/stores/uiStore'
+import { useServersStore } from '@/stores/serversStore'
+import { useChannelsStore } from '@/stores/channelsStore'
+import { useNetworkStore } from '@/stores/networkStore'
+import type { ServerManifest } from '@/types/core'
 
-const uiStore  = useUIStore()
-const code     = ref('')
-const joining  = ref(false)
-const inputRef = ref<HTMLInputElement | null>(null)
+const uiStore        = useUIStore()
+const serversStore   = useServersStore()
+const channelsStore  = useChannelsStore()
+const networkStore   = useNetworkStore()
+
+const code        = ref('')
+const joining     = ref(false)
+const joiningLabel = ref('Joining…')
+const statusMsg   = ref('')
+const isError     = ref(false)
+const inputRef    = ref<HTMLInputElement | null>(null)
 
 watch(() => uiStore.showJoinModal, async (open) => {
   if (open) {
-    code.value = ''
-    joining.value = false
+    code.value      = ''
+    joining.value   = false
+    statusMsg.value = ''
+    isError.value   = false
     await nextTick()
     inputRef.value?.focus()
   }
 })
 
+function decodeManifest(raw: string): ServerManifest {
+  let encoded = raw.trim()
+  const prefix = 'gamechat://join/'
+  if (encoded.startsWith(prefix)) encoded = encoded.slice(prefix.length)
+
+  // Re-pad base64url → standard base64
+  const pad = (4 - (encoded.length % 4)) % 4
+  const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat(pad)
+  const manifest = JSON.parse(atob(b64)) as ServerManifest
+  if (manifest.v !== 1) throw new Error('Unrecognised invite version')
+  if (!manifest.server?.id) throw new Error('Invite link is missing server data')
+  return manifest
+}
+
 async function join() {
   if (!code.value.trim() || joining.value) return
   joining.value = true
-  // Phase 3: real P2P join will resolve peer, exchange keys, and upsert server
-  uiStore.showNotification('P2P join coming in Phase 3. Share the invite code out-of-band for now.', 'info', 5000)
-  joining.value = false
+  statusMsg.value = ''
+  isError.value  = false
+
+  try {
+    // ── Step 1: decode manifest ──────────────────────────────────────
+    let manifest: ServerManifest
+    try {
+      manifest = decodeManifest(code.value)
+    } catch {
+      throw new Error('Invalid invite link — make sure you pasted the full link.')
+    }
+
+    // ── Step 2: bootstrap server locally ────────────────────────────
+    joiningLabel.value = 'Saving server…'
+    const server = await serversStore.joinFromManifest(manifest)
+
+    // ── Step 3: connect to signaling server ─────────────────────────
+    if (manifest.rendezvousUrl) {
+      joiningLabel.value = 'Connecting to relay…'
+      if (networkStore.signalingState !== 'connected') {
+        await networkStore.connect(manifest.rendezvousUrl)
+      }
+      try {
+        await networkStore.waitForConnected(12000)
+      } catch {
+        // Non-fatal: server is saved locally; P2P will work next time both are online
+        uiStore.showNotification(
+          `Joined ${server.name} locally. Could not reach relay server — start chatting when online.`,
+          'info', 6000,
+        )
+        navigateToServer(server.id)
+        return
+      }
+
+      // ── Step 4: initiate WebRTC handshake with the server owner ───
+      joiningLabel.value = 'Connecting to peer…'
+      await networkStore.connectToPeer(manifest.owner.userId)
+    }
+
+    // ── Step 5: navigate ─────────────────────────────────────────────
+    navigateToServer(server.id)
+    uiStore.showNotification(`Joined ${server.name}!`, 'success', 3000)
+  } catch (e: unknown) {
+    joiningLabel.value = 'Joining…'
+    statusMsg.value = e instanceof Error ? e.message : 'Could not join server.'
+    isError.value   = true
+    joining.value   = false
+  }
+}
+
+function navigateToServer(serverId: string) {
+  serversStore.setActiveServer(serverId)
+  channelsStore.loadChannels(serverId).then(() => {
+    const first = channelsStore.channels[serverId]?.find(c => c.type === 'text')
+    if (first) channelsStore.setActiveChannel(first.id)
+  })
+  joining.value        = false
+  joiningLabel.value   = 'Joining…'
   uiStore.showJoinModal = false
 }
 
@@ -110,7 +186,8 @@ function close() {
   border: none;
   cursor: pointer;
   color: var(--text-secondary);
-  padding: 4px;
+  padding: 0;
+  transform: none;
   border-radius: 4px;
   display: flex;
 }
@@ -142,18 +219,12 @@ function close() {
 }
 .text-input:focus { border-color: var(--accent-color); }
 
-.phase-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--spacing-sm);
-  background: var(--bg-tertiary);
-  border-radius: 4px;
-  padding: var(--spacing-sm) var(--spacing-md);
-  font-size: 12px;
+.status-msg {
+  font-size: 13px;
   color: var(--text-secondary);
-  line-height: 1.5;
+  margin: 0;
 }
-.phase-notice svg { flex-shrink: 0; margin-top: 1px; color: var(--accent-color); }
+.status-msg.error { color: var(--error-color); }
 
 .modal-actions {
   display: flex;

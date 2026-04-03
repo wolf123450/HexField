@@ -421,6 +421,23 @@ export const useNetworkStore = defineStore('network', () => {
     }
   }
 
+  /**
+   * Returns a promise that resolves once signalingState === 'connected',
+   * or rejects if the timeout elapses first.
+   */
+  function waitForConnected(timeoutMs = 12000): Promise<void> {
+    if (signalingState.value === 'connected') return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      const start = Date.now()
+      const check = () => {
+        if (signalingState.value === 'connected') return resolve()
+        if (Date.now() - start >= timeoutMs) return reject(new Error('Signaling connection timed out'))
+        setTimeout(check, 150)
+      }
+      check()
+    })
+  }
+
   return {
     signalingState,
     serverUrl,
@@ -431,6 +448,7 @@ export const useNetworkStore = defineStore('network', () => {
     init,
     connect,
     disconnect,
+    waitForConnected,
     sendSignal,
     sendToPeer,
     broadcast,
