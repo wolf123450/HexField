@@ -1,0 +1,99 @@
+// @vitest-environment node
+import { describe, it, expect, beforeAll } from 'vitest'
+import { cryptoService } from '@/services/cryptoService'
+
+// cryptoService is a module-level singleton. We init once for all tests.
+// Keys are generated fresh on each test run, so all tests share the same
+// alice/bob key pairs for the duration of this suite.
+let aliceDHPub: string
+let aliceSignPub: string
+
+// A second in-process "recipient" reuses the same CryptoService singleton
+// after loading a distinct key set, then restores Alice's keys after the
+// test block.  For round-trip tests we use self-encryption (sender === recipient)
+// which is valid with X25519 box: shared_key = scalarmult(pub, priv).
+
+describe('cryptoService', () => {
+  beforeAll(async () => {
+    await cryptoService.init()
+    await cryptoService.generateKeys()
+    aliceDHPub   = cryptoService.getPublicDHKey()
+    aliceSignPub = cryptoService.getPublicSignKey()
+  })
+
+  // ── Round-trip ─────────────────────────────────────────────────────────────
+
+  it('encrypt → decrypt round-trip (self-encryption)', () => {
+    const plaintext = 'Hello, secure world! 🔒'
+    const envelope  = cryptoService.encryptMessage(plaintext, 'alice', 'alice', aliceDHPub)
+    const result    = cryptoService.decryptMessage(envelope, aliceDHPub, aliceSignPub)
+    expect(result).toBe(plaintext)
+  })
+
+  it('round-trips an empty string', () => {
+    const envelope = cryptoService.encryptMessage('', 'alice', 'alice', aliceDHPub)
+    expect(cryptoService.decryptMessage(envelope, aliceDHPub, aliceSignPub)).toBe('')
+  })
+
+  it('round-trips a long message', () => {
+    const plaintext = 'x'.repeat(10_000)
+    const envelope  = cryptoService.encryptMessage(plaintext, 'alice', 'alice', aliceDHPub)
+    expect(cryptoService.decryptMessage(envelope, aliceDHPub, aliceSignPub)).toBe(plaintext)
+  })
+
+  // ── Tamper detection ───────────────────────────────────────────────────────
+
+  it('returns null when ciphertext is tampered', () => {
+    const envelope  = cryptoService.encryptMessage('secret', 'alice', 'alice', aliceDHPub)
+    // Corrupt the last 4 base64 characters of the ciphertext
+    const tampered  = { ...envelope, ciphertext: envelope.ciphertext.slice(0, -4) + 'AAAA' }
+    expect(cryptoService.decryptMessage(tampered, aliceDHPub, aliceSignPub)).toBeNull()
+  })
+
+  it('returns null when the nonce is tampered', () => {
+    const envelope = cryptoService.encryptMessage('secret', 'alice', 'alice', aliceDHPub)
+    const tampered = { ...envelope, nonce: envelope.nonce.slice(0, -4) + 'BBBB' }
+    expect(cryptoService.decryptMessage(tampered, aliceDHPub, aliceSignPub)).toBeNull()
+  })
+
+  it('returns null when the sender sign key is wrong', () => {
+    const envelope = cryptoService.encryptMessage('secret', 'alice', 'alice', aliceDHPub)
+    // All-zeros 32-byte Ed25519 public key (44-char base64) — valid length, wrong key
+    const wrongSignKey = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+    expect(cryptoService.decryptMessage(envelope, aliceDHPub, wrongSignKey)).toBeNull()
+  })
+
+  // ── Non-determinism ────────────────────────────────────────────────────────
+
+  it('produces a different ciphertext for the same plaintext each time (random nonce)', () => {
+    const env1 = cryptoService.encryptMessage('same plaintext', 'alice', 'alice', aliceDHPub)
+    const env2 = cryptoService.encryptMessage('same plaintext', 'alice', 'alice', aliceDHPub)
+    expect(env1.ciphertext).not.toBe(env2.ciphertext)
+    expect(env1.nonce).not.toBe(env2.nonce)
+  })
+
+  // ── Envelope shape ─────────────────────────────────────────────────────────
+
+  it('envelope has the expected fields', () => {
+    const env = cryptoService.encryptMessage('hi', 'alice', 'bob', aliceDHPub)
+    expect(env.version).toBe(1)
+    expect(env.senderId).toBe('alice')
+    expect(env.recipientId).toBe('bob')
+    expect(typeof env.ciphertext).toBe('string')
+    expect(typeof env.nonce).toBe('string')
+    expect(typeof env.senderSignature).toBe('string')
+  })
+
+  // ── Device key round-trip ──────────────────────────────────────────────────
+
+  it('generateDeviceKeys + loadDeviceKeys + getDevicePublicSignKey/DHKey', async () => {
+    const { deviceSignSecret, deviceDHSecret } = await cryptoService.generateDeviceKeys()
+    const signPub = cryptoService.getDevicePublicSignKey()
+    const dhPub   = cryptoService.getDevicePublicDHKey()
+
+    // Reload from secrets — should reproduce the same public keys
+    await cryptoService.loadDeviceKeys(deviceSignSecret, deviceDHSecret)
+    expect(cryptoService.getDevicePublicSignKey()).toBe(signPub)
+    expect(cryptoService.getDevicePublicDHKey()).toBe(dhPub)
+  })
+})

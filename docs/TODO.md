@@ -163,10 +163,10 @@
 > Convention: `src/<path>/__tests__/<file>.test.ts` for frontend; `#[cfg(test)]` blocks in the same Rust file.
 
 ### `cryptoService.ts`
-- [ ] `encryptMessage` → `decryptMessage` round-trip (X25519 ECDH + XSalsa20-Poly1305)
+- [x] `encryptMessage` → `decryptMessage` round-trip (X25519 ECDH + XSalsa20-Poly1305)
 - [ ] Ed25519 `signMessage` → `verifyMessage` round-trip
-- [ ] `decryptMessage` rejects tampered ciphertext (returns null / throws)
-- [ ] `decryptMessage` rejects mismatched signature
+- [x] `decryptMessage` rejects tampered ciphertext (returns null / throws)
+- [x] `decryptMessage` rejects mismatched signature
 - [ ] Key derivation is deterministic for the same seed
 
 ### `identityStore`
@@ -176,51 +176,51 @@
 
 ### `serversStore`
 - [ ] `createServer` writes to DB and populates `servers` reactive map
-- [ ] `upsertMember` preserves existing `avatarDataUrl` when caller omits it
-- [ ] `upsertMember` silently rejects unknown `serverId`
-- [ ] `upsertMember` applies incoming `avatarDataUrl` when provided
+- [x] `upsertMember` preserves existing `avatarDataUrl` when caller omits it
+- [x] `upsertMember` silently rejects unknown `serverId`
+- [x] `upsertMember` applies incoming `avatarDataUrl` when provided
 
 ### `channelsStore`
-- [ ] `createChannel` appears in `channels[serverId]` sorted by position
-- [ ] `renameChannel` updates DB and reactive state atomically
-- [ ] `deleteChannel` removes entry from map and DB
+- [x] `createChannel` appears in `channels[serverId]` sorted by position
+- [x] `renameChannel` updates DB and reactive state atomically
+- [x] `deleteChannel` removes entry from map and DB
 
 ### `messagesStore`
 - [ ] `sendMessage` adds optimistic entry then DB-persisted entry with same `id`
 - [ ] `getMessagesWithMutations`: `edit` mutation applies last-write-wins (HLC order)
 - [ ] `getMessagesWithMutations`: `delete` mutation nulls `content`
-- [ ] `getMessagesWithMutations`: `reaction_add` / `reaction_remove` fold correctly
+- [x] `getMessagesWithMutations`: `reaction_add` / `reaction_remove` fold correctly
 - [ ] Cursor pagination: `loadMessages` returns correct window and advances cursor
 - [ ] `loadMessages` on empty channel returns empty array without error
 
 ### `hlc.ts`
-- [ ] `generateHLC` produces monotonically increasing values within the same millisecond
-- [ ] `compareHLC` orders by wall time first, then by sequence counter
-- [ ] `advanceHLC` advances past a remote HLC that is strictly ahead of local clock
+- [x] `generateHLC` produces monotonically increasing values within the same millisecond
+- [x] `compareHLC` orders by wall time first, then by sequence counter
+- [x] `advanceHLC` advances past a remote HLC that is strictly ahead of local clock
 
 ### `devicesStore`
 - [ ] `receiveAttestedDevice` persists device with `revoked: false` (not integer `0`)
 - [ ] `revokeDevice` marks device `revoked: true` in DB and reactive state
 
 ### Rust — `db_save_message` / `db_load_messages`
-- [ ] Save a message then load it back: returned row is field-for-field identical
-- [ ] Cursor pagination: `before_ts` excludes messages at or after the cursor
-- [ ] Loading an empty channel returns an empty vec without error
+- [x] Save a message then load it back: returned row is field-for-field identical
+- [x] Cursor pagination: `before_ts` excludes messages at or after the cursor
+- [x] Loading an empty channel returns an empty vec without error
 
 ### Rust — `db_save_mutation` side effects
-- [ ] `delete` mutation causes subsequent `db_load_messages` to return `content = NULL` for target
-- [ ] `edit` mutation: later HLC timestamp wins over an earlier one for the same `message_id`
+- [x] `delete` mutation causes subsequent `db_load_messages` to return `content = NULL` for target
+- [x] `edit` mutation: later HLC timestamp wins over an earlier one for the same `message_id`
 - [ ] `reaction_add` mutation is idempotent (same user + emoji stored once)
 - [ ] `reaction_remove` after `reaction_add` cancels it in the materialized view
 
 ### Rust — `db_upsert_member`
-- [ ] Insert new member then upsert with different `display_name` — row is updated, not duplicated
+- [x] Insert new member then upsert with different `display_name` — row is updated, not duplicated
 - [ ] Upsert preserves all fields when updating only `display_name`
 
 ### Rust — `db_save_device` / `db_load_devices`
-- [ ] Save `revoked: false`, load back → `revoked` is `false` (bool, not `0`)
-- [ ] Save `revoked: true`, load back → `revoked` is `true`
-- [ ] Saving two devices for the same user; load returns both
+- [x] Save `revoked: false`, load back → `revoked` is `false` (bool, not `0`)
+- [x] Save `revoked: true`, load back → `revoked` is `true`
+- [x] Saving two devices for the same user; load returns both
 
 ---
 

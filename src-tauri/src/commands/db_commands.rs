@@ -585,3 +585,357 @@ fn chrono_now() -> String {
     // ISO 8601 approximation via ms timestamp
     format!("{}", ms)
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use crate::db::{migrations, types::*};
+    use rusqlite::Connection;
+
+    /// Create an isolated in-memory DB with all migrations applied.
+    fn test_conn() -> Connection {
+        let mut conn = Connection::open_in_memory().expect("in-memory DB");
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        migrations::run(&mut conn);
+        conn
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    fn save_message(conn: &Connection, msg: &MessageRow) {
+        conn.execute(
+            "INSERT OR REPLACE INTO messages
+             (id, channel_id, server_id, author_id, content, content_type,
+              reply_to_id, created_at, logical_ts, verified, raw_attachments)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            rusqlite::params![
+                msg.id, msg.channel_id, msg.server_id, msg.author_id,
+                msg.content, msg.content_type, msg.reply_to_id,
+                msg.created_at, msg.logical_ts, msg.verified as i64, msg.raw_attachments
+            ],
+        ).unwrap();
+    }
+
+    fn load_message(conn: &Connection, id: &str) -> Option<MessageRow> {
+        conn.query_row(
+            "SELECT id, channel_id, server_id, author_id, content, content_type,
+             reply_to_id, created_at, logical_ts, verified, raw_attachments
+             FROM messages WHERE id = ?1",
+            [id],
+            |row| Ok(MessageRow {
+                id:              row.get(0)?,
+                channel_id:      row.get(1)?,
+                server_id:       row.get(2)?,
+                author_id:       row.get(3)?,
+                content:         row.get(4)?,
+                content_type:    row.get(5)?,
+                reply_to_id:     row.get(6)?,
+                created_at:      row.get(7)?,
+                logical_ts:      row.get(8)?,
+                verified:        row.get::<_, i64>(9)? != 0,
+                raw_attachments: row.get(10)?,
+            }),
+        ).ok()
+    }
+
+
+    fn save_device(conn: &Connection, d: &DeviceRow) {
+        conn.execute(
+            "INSERT OR REPLACE INTO devices
+             (device_id, user_id, public_sign_key, public_dh_key,
+              attested_by, attestation_sig, revoked, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            rusqlite::params![
+                d.device_id, d.user_id, d.public_sign_key, d.public_dh_key,
+                d.attested_by, d.attestation_sig, d.revoked as i64, d.created_at
+            ],
+        ).unwrap();
+    }
+
+    fn load_device(conn: &Connection, device_id: &str) -> Option<DeviceRow> {
+        conn.query_row(
+            "SELECT device_id, user_id, public_sign_key, public_dh_key,
+             attested_by, attestation_sig, revoked, created_at
+             FROM devices WHERE device_id = ?1",
+            [device_id],
+            |row| Ok(DeviceRow {
+                device_id:       row.get(0)?,
+                user_id:         row.get(1)?,
+                public_sign_key: row.get(2)?,
+                public_dh_key:   row.get(3)?,
+                attested_by:     row.get(4)?,
+                attestation_sig: row.get(5)?,
+                revoked:         row.get::<_, i64>(6)? != 0,
+                created_at:      row.get(7)?,
+            }),
+        ).ok()
+    }
+
+    fn upsert_member(conn: &Connection, m: &MemberRow) {
+        conn.execute(
+            "INSERT OR REPLACE INTO members
+             (user_id, server_id, display_name, roles, joined_at,
+              public_sign_key, public_dh_key, online_status)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            rusqlite::params![
+                m.user_id, m.server_id, m.display_name, m.roles,
+                m.joined_at, m.public_sign_key, m.public_dh_key, m.online_status
+            ],
+        ).unwrap();
+    }
+
+    fn load_member(conn: &Connection, user_id: &str, server_id: &str) -> Option<MemberRow> {
+        conn.query_row(
+            "SELECT user_id, server_id, display_name, roles, joined_at,
+             public_sign_key, public_dh_key, online_status
+             FROM members WHERE user_id = ?1 AND server_id = ?2",
+            [user_id, server_id],
+            |row| Ok(MemberRow {
+                user_id:         row.get(0)?,
+                server_id:       row.get(1)?,
+                display_name:    row.get(2)?,
+                roles:           row.get(3)?,
+                joined_at:       row.get(4)?,
+                public_sign_key: row.get(5)?,
+                public_dh_key:   row.get(6)?,
+                online_status:   row.get(7)?,
+            }),
+        ).ok()
+    }
+
+    /// Insert the server + channel rows required by FK constraints on messages.
+    fn seed_server_and_channel(conn: &Connection, server_id: &str, channel_id: &str) {
+        conn.execute(
+            "INSERT OR IGNORE INTO servers (id, name, owner_id, created_at, raw_json)
+             VALUES (?1, 'Test Server', 'owner', '2025-01-01', '{}')",
+            [server_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO channels (id, server_id, name, type, position, created_at)
+             VALUES (?1, ?2, 'general', 'text', 0, '2025-01-01')",
+            [channel_id, server_id],
+        ).unwrap();
+    }
+
+    /// Insert a server row required by FK constraints on members.
+    fn seed_server(conn: &Connection, server_id: &str) {
+        conn.execute(
+            "INSERT OR IGNORE INTO servers (id, name, owner_id, created_at, raw_json)
+             VALUES (?1, 'Test Server', 'owner', '2025-01-01', '{}')",
+            [server_id],
+        ).unwrap();
+    }
+
+    fn make_message(id: &str, channel_id: &str, logical_ts: &str) -> MessageRow {
+        MessageRow {
+            id:              id.to_string(),
+            channel_id:      channel_id.to_string(),
+            server_id:       "srv-1".to_string(),
+            author_id:       "alice".to_string(),
+            content:         Some("hello".to_string()),
+            content_type:    "text".to_string(),
+            reply_to_id:     None,
+            created_at:      "2025-01-01T00:00:00Z".to_string(),
+            logical_ts:      logical_ts.to_string(),
+            verified:        true,
+            raw_attachments: None,
+        }
+    }
+
+    #[test]
+    fn test_save_and_load_message_round_trip() {
+        let conn = test_conn();
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        let msg = make_message("msg-1", "ch-1", "1000000000000-000000");
+        save_message(&conn, &msg);
+
+        let loaded = load_message(&conn, "msg-1").expect("message not found");
+        assert_eq!(loaded.id,           msg.id);
+        assert_eq!(loaded.channel_id,   msg.channel_id);
+        assert_eq!(loaded.content,      msg.content);
+        assert_eq!(loaded.content_type, msg.content_type);
+        assert_eq!(loaded.verified,     true);
+    }
+
+    #[test]
+    fn test_load_messages_empty_channel_returns_empty() {
+        let conn = test_conn();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM messages WHERE channel_id = 'ghost-channel' ORDER BY logical_ts DESC LIMIT 100"
+        ).unwrap();
+        let rows: Vec<String> = stmt.query_map([], |r| r.get(0)).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_cursor_pagination_excludes_messages_at_or_after_cursor() {
+        let conn = test_conn();
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        save_message(&conn, &make_message("msg-1", "ch-1", "1000000000000-000000"));
+        save_message(&conn, &make_message("msg-2", "ch-1", "1000000000000-000001"));
+        save_message(&conn, &make_message("msg-3", "ch-1", "1000000000000-000002"));
+
+        let sql = "SELECT id FROM messages
+                   WHERE channel_id = 'ch-1'
+                   AND logical_ts < (SELECT logical_ts FROM messages WHERE id = ?1)
+                   ORDER BY logical_ts DESC LIMIT 100";
+        let mut stmt = conn.prepare(sql).unwrap();
+        let ids: Vec<String> = stmt.query_map(["msg-3"], |r| r.get(0)).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+
+        assert_eq!(ids.len(), 2);
+        assert!(!ids.contains(&"msg-3".to_string()));
+    }
+
+    // ── db_save_mutation side effects ─────────────────────────────────────────
+
+    #[test]
+    fn test_delete_mutation_nulls_message_content() {
+        let conn = test_conn();
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        save_message(&conn, &make_message("msg-del", "ch-1", "1000000000000-000000"));
+
+        conn.execute(
+            "UPDATE messages SET content = NULL, raw_attachments = NULL WHERE id = ?1",
+            ["msg-del"],
+        ).unwrap();
+
+        let loaded = load_message(&conn, "msg-del").expect("message not found");
+        assert!(loaded.content.is_none(), "content should be NULL after delete");
+    }
+
+    #[test]
+    fn test_edit_mutation_updates_content_when_newer() {
+        let conn = test_conn();
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        save_message(&conn, &make_message("msg-edit", "ch-1", "1000000000000-000000"));
+
+        // Edit at ts=1 > message's ts=0 — should apply
+        conn.execute(
+            "UPDATE messages SET content = ?1 WHERE id = ?2 AND logical_ts < ?3",
+            ("updated content", "msg-edit", "1000000000000-000001"),
+        ).unwrap();
+
+        let loaded = load_message(&conn, "msg-edit").expect("message not found");
+        assert_eq!(loaded.content.as_deref(), Some("updated content"));
+    }
+
+    #[test]
+    fn test_edit_mutation_does_not_apply_when_message_has_newer_logical_ts() {
+        let conn = test_conn();
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        // Message at ts=5
+        save_message(&conn, &make_message("msg-edit2", "ch-1", "1000000000000-000005"));
+
+        // Stale edit at ts=3 — WHERE clause fails, no update
+        conn.execute(
+            "UPDATE messages SET content = ?1 WHERE id = ?2 AND logical_ts < ?3",
+            ("stale edit", "msg-edit2", "1000000000000-000003"),
+        ).unwrap();
+
+        let loaded = load_message(&conn, "msg-edit2").expect("message not found");
+        assert_eq!(loaded.content.as_deref(), Some("hello"), "stale edit must not win");
+    }
+
+    // ── db_upsert_member ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_upsert_member_inserts_then_updates_without_duplication() {
+        let conn = test_conn();
+        seed_server(&conn, "srv-1");
+
+        let member = MemberRow {
+            user_id:         "user-bob".to_string(),
+            server_id:       "srv-1".to_string(),
+            display_name:    "Bob".to_string(),
+            roles:           Some("[\"member\"]".to_string()),
+            joined_at:       "2025-01-01T00:00:00Z".to_string(),
+            public_sign_key: "sign-pub".to_string(),
+            public_dh_key:   "dh-pub".to_string(),
+            online_status:   "online".to_string(),
+        };
+        upsert_member(&conn, &member);
+
+        let m1 = load_member(&conn, "user-bob", "srv-1").expect("first insert");
+        assert_eq!(m1.display_name, "Bob");
+
+        let updated = MemberRow { display_name: "Bobby".to_string(), ..member };
+        upsert_member(&conn, &updated);
+
+        let m2 = load_member(&conn, "user-bob", "srv-1").expect("after update");
+        assert_eq!(m2.display_name, "Bobby");
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM members WHERE user_id = 'user-bob' AND server_id = 'srv-1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "upsert must not create duplicate rows");
+    }
+
+    // ── db_save_device / db_load_devices ──────────────────────────────────────
+
+    #[test]
+    fn test_device_revoked_false_round_trips_as_false() {
+        let conn = test_conn();
+        let device = DeviceRow {
+            device_id:       "dev-1".to_string(),
+            user_id:         "alice".to_string(),
+            public_sign_key: "spk".to_string(),
+            public_dh_key:   "dhpk".to_string(),
+            attested_by:     None,
+            attestation_sig: None,
+            revoked:         false,
+            created_at:      "2025-01-01".to_string(),
+        };
+        save_device(&conn, &device);
+
+        let loaded = load_device(&conn, "dev-1").expect("device not found");
+        assert_eq!(loaded.revoked, false);
+    }
+
+    #[test]
+    fn test_device_revoked_true_round_trips_as_true() {
+        let conn = test_conn();
+        let device = DeviceRow {
+            device_id:       "dev-2".to_string(),
+            user_id:         "alice".to_string(),
+            public_sign_key: "spk2".to_string(),
+            public_dh_key:   "dhpk2".to_string(),
+            attested_by:     None,
+            attestation_sig: None,
+            revoked:         true,
+            created_at:      "2025-01-01".to_string(),
+        };
+        save_device(&conn, &device);
+
+        let loaded = load_device(&conn, "dev-2").expect("device not found");
+        assert_eq!(loaded.revoked, true);
+    }
+
+    #[test]
+    fn test_two_devices_for_same_user_both_loadable() {
+        let conn = test_conn();
+        for i in 1..=2_u32 {
+            save_device(&conn, &DeviceRow {
+                device_id:       format!("dev-{i}"),
+                user_id:         "alice".to_string(),
+                public_sign_key: format!("spk-{i}"),
+                public_dh_key:   format!("dhpk-{i}"),
+                attested_by:     None,
+                attestation_sig: None,
+                revoked:         false,
+                created_at:      "2025-01-01".to_string(),
+            });
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT device_id FROM devices WHERE user_id = 'alice'"
+        ).unwrap();
+        let ids: Vec<String> = stmt.query_map([], |r| r.get(0)).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert_eq!(ids.len(), 2);
+    }
+}
