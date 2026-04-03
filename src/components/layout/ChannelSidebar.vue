@@ -116,11 +116,12 @@
       <div class="self-info">
         <div
           class="self-avatar-wrap"
-          title="View profile"
+          title="View profile (right-click to set status)"
           @click="uiStore.openUserProfile(identityStore.userId ?? '', serversStore.activeServerId ?? '')"
+          @contextmenu.prevent="openStatusPicker"
         >
           <div class="self-avatar">{{ identityInitials }}</div>
-          <div class="self-status-dot" :class="ownStatus" @click.stop="openStatusPicker" title="Set status" />
+          <div class="self-status-dot" :class="ownStatus" :title="ownStatus" />
         </div>
         <div class="self-name">{{ identityStore.displayName }}</div>
       </div>

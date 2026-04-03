@@ -112,6 +112,12 @@ export const useServersStore = defineStore('servers', () => {
     }
   }
 
+  function updateMemberDisplayName(serverId: string, userId: string, displayName: string) {
+    if (members.value[serverId]?.[userId]) {
+      members.value[serverId][userId].displayName = displayName
+    }
+  }
+
   function applyServerMutation(mutation: Mutation) {
     if (mutation.type === 'server_update' && mutation.newContent) {
       const patch = JSON.parse(mutation.newContent)
@@ -144,6 +150,7 @@ export const useServersStore = defineStore('servers', () => {
     fetchMembers,
     setActiveServer,
     updateMemberStatus,
+    updateMemberDisplayName,
     applyServerMutation,
   }
 })
