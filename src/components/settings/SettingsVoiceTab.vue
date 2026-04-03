@@ -3,6 +3,20 @@
     <h3>Voice & Video</h3>
 
     <div class="form-row">
+      <label class="form-label">Noise Suppression</label>
+      <label class="toggle-row">
+        <input type="checkbox" v-model="noiseSuppression" @change="saveNoiseSuppression" />
+        <span>Reduce background noise and echo</span>
+      </label>
+      <p class="form-hint">Applies noiseSuppression, echoCancellation, and autoGainControl on the microphone input. Takes effect on next voice channel join.</p>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label">Voice Loopback Test</label>
+      <p class="form-hint">While in a voice session, click the headset icon in the voice bar to hear your own microphone output. Use this to verify that your mic and audio settings are correct before calling others.</p>
+    </div>
+
+    <div class="form-row">
       <label class="form-label">Input Device (Microphone)</label>
       <select v-model="inputDevice" class="form-select" @change="saveInputDevice">
         <option value="">Default</option>
@@ -52,6 +66,7 @@ const settingsStore = useSettingsStore()
 const inputDevice   = ref(settingsStore.settings.inputDeviceId)
 const outputDevice  = ref(settingsStore.settings.outputDeviceId)
 const rendezvousUrl = ref(settingsStore.settings.rendezvousServerUrl)
+const noiseSuppression = ref(settingsStore.settings.noiseSuppression)
 const audioInputs   = ref<MediaDeviceInfo[]>([])
 const audioOutputs  = ref<MediaDeviceInfo[]>([])
 const turnServersText = ref(
@@ -71,6 +86,7 @@ onMounted(async () => {
 function saveInputDevice()   { settingsStore.updateSetting('inputDeviceId', inputDevice.value) }
 function saveOutputDevice()  { settingsStore.updateSetting('outputDeviceId', outputDevice.value) }
 function saveRendezvousUrl() { settingsStore.updateSetting('rendezvousServerUrl', rendezvousUrl.value.trim()) }
+function saveNoiseSuppression() { settingsStore.updateSetting('noiseSuppression', noiseSuppression.value) }
 function saveTURNServers() {
   try {
     const servers = turnServersText.value.trim() ? JSON.parse(turnServersText.value) : []
@@ -88,4 +104,6 @@ function saveTURNServers() {
 .form-textarea { width: 100%; padding: 8px var(--spacing-sm); background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 13px; font-family: monospace; resize: vertical; }
 .form-textarea:focus { outline: none; border-color: var(--accent-color); }
 .form-hint { font-size: 11px; color: var(--text-tertiary); margin-top: var(--spacing-xs); }
+.toggle-row { display: flex; align-items: center; gap: var(--spacing-sm); cursor: pointer; font-size: 14px; color: var(--text-primary); }
+.toggle-row input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent-color); }
 </style>

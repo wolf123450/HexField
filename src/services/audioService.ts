@@ -11,6 +11,7 @@ export type SpeakingChangeCallback = (userId: string, speaking: boolean) => void
 interface PeerAudio {
   element:    HTMLAudioElement
   context:    AudioContext
+  gainNode:   GainNode
   analyser:   AnalyserNode
   interval:   ReturnType<typeof setInterval>
   notSpeakingTimer: ReturnType<typeof setTimeout> | null
@@ -21,6 +22,10 @@ class AudioService {
   private deafened = false
   private onSpeakingChange: SpeakingChangeCallback | null = null
   private localStream: MediaStream | null = null
+  private loopbackCtx:     AudioContext | null = null
+  private loopbackSource:  MediaStreamAudioSourceNode | null = null
+  private loopbackDest:    MediaStreamAudioDestinationNode | null = null
+  private loopbackElement: HTMLAudioElement | null = null
 
   // ── Initialise ─────────────────────────────────────────────────────────────
 
@@ -56,9 +61,12 @@ class AudioService {
 
     const context  = new AudioContext()
     const src      = context.createMediaStreamSource(stream)
+    const gainNode = context.createGain()
     const analyser = context.createAnalyser()
     analyser.fftSize = 512
-    src.connect(analyser)
+    src.connect(gainNode)
+    gainNode.connect(analyser)
+    gainNode.connect(context.destination)
 
     const data: Float32Array = new Float32Array(analyser.fftSize)
     let notSpeakingTimer: ReturnType<typeof setTimeout> | null = null
@@ -88,7 +96,12 @@ class AudioService {
       }
     }, 100)
 
-    this.peers.set(userId, { element, context, analyser, interval, notSpeakingTimer })
+    this.peers.set(userId, { element, context, gainNode, analyser, interval, notSpeakingTimer })
+  }
+
+  setPeerVolume(userId: string, volume: number): void {
+    const entry = this.peers.get(userId)
+    if (entry) entry.gainNode.gain.value = Math.max(0, volume)
   }
 
   detachRemoteStream(userId: string): void {
@@ -107,6 +120,39 @@ class AudioService {
     for (const userId of [...this.peers.keys()]) {
       this.detachRemoteStream(userId)
     }
+    this.setLoopback(false)
+  }
+
+  // ── Loopback ───────────────────────────────────────────────────────────────
+
+  setLoopback(enabled: boolean): void {
+    if (!enabled) {
+      if (this.loopbackElement) {
+        this.loopbackElement.srcObject = null
+        this.loopbackElement.remove()
+        this.loopbackElement = null
+      }
+      this.loopbackSource?.disconnect()
+      this.loopbackDest = null
+      this.loopbackSource = null
+      this.loopbackCtx?.close().catch(() => {})
+      this.loopbackCtx = null
+      return
+    }
+    if (!this.localStream) return
+    // Create a short-delay AudioContext route: mic → delay(50ms) → audio element
+    this.loopbackCtx    = new AudioContext()
+    this.loopbackSource = this.loopbackCtx.createMediaStreamSource(this.localStream)
+    const delay         = this.loopbackCtx.createDelay(0.1)
+    delay.delayTime.value = 0.05
+    this.loopbackDest   = this.loopbackCtx.createMediaStreamDestination()
+    this.loopbackSource.connect(delay)
+    delay.connect(this.loopbackDest)
+    this.loopbackElement = document.createElement('audio')
+    this.loopbackElement.srcObject = this.loopbackDest.stream
+    this.loopbackElement.autoplay  = true
+    this.loopbackElement.style.display = 'none'
+    document.body.appendChild(this.loopbackElement)
   }
 
   // ── Deafen ─────────────────────────────────────────────────────────────────
@@ -116,13 +162,6 @@ class AudioService {
     for (const { element } of this.peers.values()) {
       element.muted = deafened
     }
-  }
-
-  // ── Per-peer volume ────────────────────────────────────────────────────────
-
-  setPeerVolume(userId: string, volume: number): void {
-    const entry = this.peers.get(userId)
-    if (entry) entry.element.volume = Math.max(0, Math.min(1, volume))
   }
 
   // ── Input device change ────────────────────────────────────────────────────

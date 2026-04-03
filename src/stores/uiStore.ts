@@ -120,6 +120,21 @@ export const useUIStore = defineStore("ui", () => {
     showDeviceLinkModal.value = true
   }
 
+  // ─── User profile modal ────────────────────────────────────────────
+  const showUserProfile    = ref(false)
+  const userProfileUserId  = ref<string | null>(null)
+  const userProfileServerId = ref<string | null>(null)
+
+  function openUserProfile(userId: string, serverId: string | null) {
+    userProfileUserId.value   = userId
+    userProfileServerId.value = serverId
+    showUserProfile.value     = true
+  }
+
+  function closeUserProfile() {
+    showUserProfile.value = false
+  }
+
   return {
     // State
     sidebarOpen,
@@ -159,5 +174,11 @@ export const useUIStore = defineStore("ui", () => {
     openInviteModal,
     showDeviceLinkModal,
     openDeviceLinkModal,
+    // User profile
+    showUserProfile,
+    userProfileUserId,
+    userProfileServerId,
+    openUserProfile,
+    closeUserProfile,
   };
 });

@@ -42,9 +42,8 @@
           @click="promptAddChannel('voice')"
         >+</button>
       </div>
+      <template v-for="ch in voiceChannels" :key="ch.id">
       <div
-        v-for="ch in voiceChannels"
-        :key="ch.id"
         class="channel-item channel-voice"
         :class="{ active: voiceStore.session?.channelId === ch.id }"
         @click="selectVoiceChannel(ch.id)"
@@ -56,7 +55,39 @@
         <span class="channel-name">{{ ch.name }}</span>
         <span v-if="voiceStore.session?.channelId === ch.id" class="voice-live-dot" title="Connected" />
       </div>
-    </div>
+
+      <!-- Voice participants sub-list -->
+      <template v-if="voiceStore.session?.channelId === ch.id">
+        <!-- Local user (self) -->
+        <div class="voice-participant" :class="{ speaking: voiceStore.speakingPeers.has('self') }">
+          <div class="vp-avatar-wrap">
+            <div class="vp-speaking-ring" />
+            <div class="vp-avatar">{{ identityInitials }}</div>
+            <div v-if="voiceStore.isMuted" class="vp-mute">
+              <AppIcon :path="mdiMicrophoneOff" :size="8" />
+            </div>
+          </div>
+          <span class="vp-name">{{ identityStore.displayName }} <em class="vp-you">(you)</em></span>
+        </div>
+        <!-- Remote peers -->
+        <div
+          v-for="peer in Object.values(voiceStore.peers)"
+          :key="peer.userId"
+          class="voice-participant"
+          :class="{ speaking: voiceStore.speakingPeers.has(peer.userId) }"
+        >
+          <div class="vp-avatar-wrap">
+            <div class="vp-speaking-ring" />
+            <div class="vp-avatar">{{ peerInitials(peer.userId) }}</div>
+            <div v-if="!peer.audioEnabled" class="vp-mute">
+              <AppIcon :path="mdiMicrophoneOff" :size="8" />
+            </div>
+          </div>
+          <span class="vp-name">{{ peerDisplayName(peer.userId) }}</span>
+        </div>
+      </template>
+      </template>
+    </div><!-- end .channel-list -->
 
     <!-- Inline rename input (shown below the renamed channel) -->
     <Teleport to="body">
@@ -83,7 +114,7 @@
 
     <div class="self-panel">
       <div class="self-info">
-        <div class="self-avatar">{{ identityInitials }}</div>
+        <div class="self-avatar" title="View profile" @click="uiStore.openUserProfile(identityStore.userId ?? '', serversStore.activeServerId ?? '')">{{ identityInitials }}</div>
         <div class="self-name">{{ identityStore.displayName }}</div>
       </div>
       <div class="self-controls">
@@ -122,6 +153,17 @@ const messagesStore = useMessagesStore()
 const identityStore = useIdentityStore()
 const voiceStore    = useVoiceStore()
 const uiStore       = useUIStore()
+
+function peerDisplayName(userId: string): string {
+  const sid = voiceStore.session?.serverId
+  if (!sid) return userId.slice(0, 8)
+  return serversStore.members[sid]?.[userId]?.displayName ?? userId.slice(0, 8)
+}
+
+function peerInitials(userId: string): string {
+  const name = peerDisplayName(userId)
+  return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+}
 
 const activeServer = computed(() =>
   serversStore.activeServerId ? serversStore.servers[serversStore.activeServerId] : null
@@ -388,7 +430,9 @@ function openServerSettings() {
   font-size: 12px;
   font-weight: 700;
   flex-shrink: 0;
+  cursor: pointer;
 }
+.self-avatar:hover { opacity: 0.85; }
 
 .self-name {
   font-size: 14px;
@@ -423,6 +467,85 @@ function openServerSettings() {
 
 .icon-btn--active {
   color: var(--error-color);
+}
+
+/* Voice participant sub-list */
+.voice-participant {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 3px var(--spacing-sm) 3px 28px;
+  border-radius: 4px;
+  cursor: default;
+}
+
+.vp-avatar-wrap {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.vp-speaking-ring {
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  pointer-events: none;
+  transition: border-color 0.15s;
+}
+
+.voice-participant.speaking .vp-speaking-ring {
+  border-color: #3ba55d;
+  box-shadow: 0 0 0 2px rgba(59, 165, 93, 0.35);
+  animation: pulse-ring 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-ring {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(59, 165, 93, 0.35); }
+  50%       { box-shadow: 0 0 0 4px rgba(59, 165, 93, 0.12); }
+}
+
+.vp-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent-color);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  user-select: none;
+}
+
+.vp-mute {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 12px;
+  height: 12px;
+  background: #ed4245;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--bg-secondary);
+}
+
+.vp-name {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vp-you {
+  font-style: italic;
+  font-size: 10px;
+  color: var(--text-tertiary);
 }
 
 /* Rename popup */

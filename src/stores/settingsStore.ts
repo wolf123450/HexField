@@ -54,6 +54,7 @@ export interface UserSettings {
   inputDeviceId: string;
   outputDeviceId: string;
   pushToTalkKey: string | null;
+  noiseSuppression: boolean;
   customTURNServers: RTCIceServer[];
   // Network
   rendezvousServerUrl: string;
@@ -89,6 +90,7 @@ const defaultSettings: UserSettings = {
   inputDeviceId: '',
   outputDeviceId: '',
   pushToTalkKey: null,
+  noiseSuppression: true,
   customTURNServers: [],
   // Network
   rendezvousServerUrl: '',

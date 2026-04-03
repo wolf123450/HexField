@@ -1,6 +1,10 @@
 <template>
   <main class="main-pane">
-    <template v-if="activeChannel">
+    <!-- Voice content pane takes over when in a voice session -->
+    <VoiceContentPane v-if="voiceStore.session" />
+
+    <!-- Normal text channel view -->
+    <template v-else-if="activeChannel">
       <div class="channel-header">
         <span class="channel-hash">#</span>
         <span class="channel-name">{{ activeChannel.name }}</span>
@@ -30,11 +34,14 @@
 import { computed } from 'vue'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useVoiceStore } from '@/stores/voiceStore'
 import MessageHistory from '@/components/chat/MessageHistory.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
+import VoiceContentPane from '@/components/chat/VoiceContentPane.vue'
 
 const channelsStore = useChannelsStore()
 const uiStore       = useUIStore()
+const voiceStore    = useVoiceStore()
 
 const activeChannel = computed(() => {
   const id = channelsStore.activeChannelId

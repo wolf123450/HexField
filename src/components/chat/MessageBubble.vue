@@ -31,7 +31,7 @@
     </div>
 
     <template v-if="showHeader">
-      <div class="message-avatar">{{ authorInitials }}</div>
+      <div class="message-avatar" style="cursor:pointer" title="View profile" @click="uiStore.openUserProfile(message.authorId, message.serverId)">{{ authorInitials }}</div>
       <div class="message-main">
         <div class="message-header">
           <span class="author-name">{{ authorName }}</span>
@@ -82,6 +82,7 @@ import { computed, ref } from 'vue'
 import { formatDistanceToNow } from 'date-fns'
 import type { Message } from '@/types/core'
 import { mdiEmoticonPlus } from '@mdi/js'
+import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import { useMessagesStore } from '@/stores/messagesStore'
@@ -98,6 +99,7 @@ const props = defineProps<{
 
 const serversStore  = useServersStore()
 const identityStore = useIdentityStore()
+const uiStore       = useUIStore()
 const messagesStore = useMessagesStore()
 const emojiStore    = useEmojiStore()
 
