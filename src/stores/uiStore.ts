@@ -124,10 +124,12 @@ export const useUIStore = defineStore("ui", () => {
   const showUserProfile    = ref(false)
   const userProfileUserId  = ref<string | null>(null)
   const userProfileServerId = ref<string | null>(null)
+  const userProfileReadOnly = ref(false)
 
-  function openUserProfile(userId: string, serverId: string | null) {
+  function openUserProfile(userId: string, serverId: string | null, readOnly = false) {
     userProfileUserId.value   = userId
     userProfileServerId.value = serverId
+    userProfileReadOnly.value = readOnly
     showUserProfile.value     = true
   }
 
@@ -178,6 +180,7 @@ export const useUIStore = defineStore("ui", () => {
     showUserProfile,
     userProfileUserId,
     userProfileServerId,
+    userProfileReadOnly,
     openUserProfile,
     closeUserProfile,
   };

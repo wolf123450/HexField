@@ -10,7 +10,7 @@
         <!-- Body -->
         <div class="profile-body">
           <!-- Name -->
-          <div v-if="isSelf" class="profile-name-row">
+          <div v-if="isEditable" class="profile-name-row">
             <input
               v-model="editName"
               class="name-input"
@@ -83,6 +83,7 @@ const peerVolume = ref(100)
 
 const userId = computed(() => uiStore.userProfileUserId ?? '')
 const isSelf = computed(() => userId.value === identityStore.userId)
+const isEditable = computed(() => isSelf.value && !uiStore.userProfileReadOnly)
 
 const member = computed(() => {
   const sid = uiStore.userProfileServerId
@@ -102,7 +103,7 @@ const initials = computed(() => {
 
 // Sync editName when modal opens
 watch(() => uiStore.showUserProfile, open => {
-  if (open && isSelf.value) editName.value = identityStore.displayName
+  if (open && isEditable.value) editName.value = identityStore.displayName
   if (open && !isSelf.value) peerVolume.value = 100
 })
 
@@ -110,6 +111,13 @@ async function saveName() {
   const name = editName.value.trim()
   if (!name) return
   await identityStore.updateDisplayName(name)
+  // Propagate new display name to local member records for all joined servers
+  const uid = identityStore.userId
+  if (uid) {
+    for (const sid of serversStore.joinedServerIds) {
+      serversStore.updateMemberDisplayName(sid, uid, name)
+    }
+  }
   uiStore.closeUserProfile()
 }
 

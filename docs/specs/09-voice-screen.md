@@ -368,8 +368,9 @@ Clicking a user's avatar anywhere in the app (member list, sidebar, message head
 
 ---
 
-## 16. Custom Avatar & Animated GIF Support
+## 16. Custom User & Server Avatars (including Animated GIF)
 
+### 16a. User Avatars
 ### Goal
 Users can upload a static image or animated GIF as their avatar. The image is stored locally in SQLite and broadcast to peers so all users in a server see the custom avatar wherever avatars appear.
 
@@ -420,6 +421,33 @@ interface ProfileUpdatePayload {
 
 On receipt, call `serversStore.updateMemberProfile(serverId, userId, payload)` which updates `members.value[serverId][userId]` and triggers reactive re-renders everywhere the avatar is shown.
 
+### 16b. Server Avatars
+
+#### Goal
+Each server has a configurable avatar image shown in `ServerRail` as the server icon. Currently the rail shows colored initials circles. Server avatars replace these with a user-uploaded image (static PNG/JPG) or short animated GIF.
+
+#### Storage
+- Key: `server_avatar_{serverId}` in the key-value store.
+- Static images: canvas-downsampled to **64×64 px**, stored as PNG data URL.
+- Animated GIFs: stored as-is, hard cap **256 KB**.
+- `serversStore.servers[id].avatarDataUrl?: string` — loaded alongside server metadata on startup.
+
+#### Upload flow
+- Admin-only action via a new "Server Settings" modal (or extended invite/settings modal).
+- File picker `accept="image/*,.gif"` → same Canvas downsample / GIF size-check as user avatars.
+- Persisted via `db_set_kv` and replaces the initials circle in `ServerRail`.
+
+#### Rendering in ServerRail
+```vue
+<img v-if="server.avatarDataUrl" :src="server.avatarDataUrl" class="server-icon-img" />
+<span v-else class="server-initials">{{ getInitials(server.name) }}</span>
+```
+
+GIF animation: same hover-freeze technique as user avatars (swap `src` on `mouseenter`/`mouseleave`). GIF always animates when the server is the active server.
+
+#### Broadcast
+Server avatar is included in the existing `server_update` mutation broadcast as part of the server manifest. Peers receiving a `server_update` mutation with `avatarDataUrl` should store it locally and update `serversStore.servers[id].avatarDataUrl`.
+
 ---
 
 ## 17. User Presence & Status
@@ -450,6 +478,22 @@ Sent over the existing data channel when status changes or when a new peer joins
 - `ServerMember.status: UserStatus` field (add to `types/core.ts` and `serversStore`).
 - `MemberRow.vue` renders a `.status-dot` (CSS already present) using the same colour scheme as the self-panel: online=`#3ba55d`, idle=`#faa61a`, dnd=`#ed4245`, offline=`#747f8d`.
 - Status dot also shown on avatar in `VoicePeerTile`.
+
+### Colorblind-friendly status indicator (accessibility)
+Color alone is insufficient for users with red-green or blue-yellow color vision deficiencies. Each status must be distinguishable by **shape** as well as color.
+
+Replace the plain circle dot with a small SVG icon per status. These map to well-established conventions (Discord-style) and are recognisable at 10–12 px:
+
+| Status | Shape | Color |
+|--------|-------|-------|
+| `online` | Filled circle | `#3ba55d` |
+| `idle` | Crescent / half-moon | `#faa61a` |
+| `dnd` | Circle with horizontal bar (minus sign) | `#ed4245` |
+| `offline` | Empty circle (hollow) | `#747f8d` |
+
+**Implementation:** Create a tiny `<StatusBadge status="...">` component that renders the correct inline SVG at the requested size (default 10 px). Replace all `.status-dot` CSS-circle usages in `MemberRow`, `ChannelSidebar` self-panel, and `VoicePeerTile` with `<StatusBadge>`. The SVG paths are simple enough to inline (no icon library dependency needed for 4 shapes).
+
+Also include a `title` attribute (e.g. `title="Online"`) on the badge element for screen-reader and tooltip support.
 
 ### Idle auto-detection (Phase 6 stretch)
 Detect mouse/keyboard inactivity > 10 min → auto-set `idle`. Restore to `online` on activity. Implement as a composable `useIdleDetection()` registered globally in `App.vue`.

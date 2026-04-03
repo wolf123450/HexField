@@ -35,9 +35,9 @@
     <div class="voice-pane-body">
       <!-- Video grid -->
       <div class="video-grid" :class="`grid-${activeTiles.length}`">
-        <!-- Self avatar tile (voice-only, not sharing screen) -->
+        <!-- Self avatar tile (voice-only, not sharing screen, video-only mode is off) -->
         <div
-          v-if="!voiceStore.screenStream && !hiddenStreams.has('self')"
+          v-if="!voiceStore.screenStream && !hiddenStreams.has('self') && !hideNonVideo"
           class="video-tile avatar-tile"
           :class="{ speaking: voiceStore.speakingPeers.has('self') }"
         >
@@ -201,7 +201,7 @@ const nonVideoPeers = computed(() =>
 // Total active tiles (for grid sizing) — self is always counted (voice-only or sharing)
 const activeTiles = computed(() => {
   const tiles: string[] = []
-  if (!voiceStore.screenStream && !hiddenStreams.has('self')) tiles.push('self')
+  if (!voiceStore.screenStream && !hiddenStreams.has('self') && !hideNonVideo.value) tiles.push('self')
   if (voiceStore.screenStream && !hiddenStreams.has('local')) tiles.push('local')
   for (const [userId] of remoteShares.value) tiles.push(userId)
   if (!hideNonVideo.value) nonVideoPeers.value.forEach(p => tiles.push(p.userId))
@@ -311,6 +311,8 @@ function peerInitials(userId: string): string {
   display: flex;
   overflow: hidden;
   position: relative;
+  z-index: 0; /* contain child stacking contexts so message-actions (z-index:10) can't bleed above toolbar */
+  isolation: isolate;
 }
 
 /* Video grid */

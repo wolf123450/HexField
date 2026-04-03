@@ -23,7 +23,9 @@ const initials = computed(() => {
 })
 
 function openProfile() {
-  uiStore.openUserProfile(props.member.userId, props.serverId)
+  // Always open read-only from the member list — even for own profile.
+  // The self-panel (ChannelSidebar) is the designated place to edit your own profile.
+  uiStore.openUserProfile(props.member.userId, props.serverId, true)
 }
 </script>
 
