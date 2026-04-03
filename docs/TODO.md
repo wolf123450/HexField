@@ -137,12 +137,12 @@
   - [ ] Plan Rust `CGDisplayStream` fallback (Phase 6) for macOS < 12.3
 - [x] `addScreenShareTrack` — `replaceTrack()` on existing peer connections
 - [x] Mesh voice limit: warn UI at >8 participants; note SFU as future work
-- [ ] Apply browser-native noise suppression / echo cancellation constraints on `getUserMedia` (spec §12)
-- [ ] Voice loopback (hear own voice) toggle in VoiceBar and Settings > Voice (spec §10)
-- [ ] Voice participants shown in ChannelSidebar under their channel with speaking ring (spec §11)
-- [ ] `VoiceContentPane.vue` — screen share live video in content pane, per-sharer show/hide (spec §13)
-- [ ] `voiceStore.screenStreams` map — store remote video tracks keyed by userId (spec §13)
-- [ ] `UserProfileModal.vue` — click avatar to open profile; own profile editable; per-peer volume slider (spec §15)
+- [x] Apply browser-native noise suppression / echo cancellation constraints on `getUserMedia` (spec §12)
+- [x] Voice loopback (hear own voice) toggle in VoiceBar and Settings > Voice (spec §10)
+- [x] Voice participants shown in ChannelSidebar under their channel with speaking ring (spec §11)
+- [x] `VoiceContentPane.vue` — screen share live video in content pane, per-sharer show/hide (spec §13)
+- [x] `voiceStore.screenStreams` map — store remote video tracks keyed by userId (spec §13)
+- [x] `UserProfileModal.vue` — click avatar to open profile; own profile editable; per-peer volume slider (spec §15)
 - [ ] Video quality + bitrate settings in Settings > Voice & Video (spec §14)
 
 ---
