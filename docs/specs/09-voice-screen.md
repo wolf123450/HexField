@@ -195,3 +195,174 @@ Bottom strip, displayed when `voiceStore.session !== null`:
 - Grid of source thumbnails (256×144 PNG from Rust)
 - Filter tabs: Windows / Screens
 - Displayed when `get_screen_sources()` returns results and `chromeMediaSourceId` is confirmed working
+
+---
+
+## 10. Voice Loopback (Voice Feedback)
+
+Allow users to hear their own mic output to verify audio settings without needing a second participant.
+
+**Implementation:**
+- `audioService.setLoopback(enabled: boolean)` — routes the local `MediaStream` track to a hidden `<audio>` element with a short delay (50ms via AudioContext delayNode) to break the feedback loop
+- Toggle available in two places:
+  - **VoiceBar controls**: small headphone-with-mic icon button (e.g., `mdiHeadset`) visible while in a voice session
+  - **Settings > Voice tab**: persistent toggle "Hear my own voice" — useful for testing mic before joining a channel
+- Must auto-disable when leaving voice channel
+
+---
+
+## 11. Voice Participants in Channel Sidebar
+
+When users are connected to a voice channel, show them in the ChannelSidebar below the channel entry.
+
+**Layout:**
+```
+VOICE CHANNELS
+  🔊 General      🟢
+    👤 Alice     (speaking ring when speaking)
+    👤 Bob       🎤✗ (muted badge)
+```
+
+**Implementation:**
+- `voiceStore.peers` map (already exists) — iterate for each connected voice channel
+- Show local identity as first entry with `(You)` suffix
+- Speaking indicator: 2px green border ring on the 24px avatar circle, animated with `pulse-ring` keyframes from `VoicePeerTile.vue`  
+- Muted badge: small red `mdiMicrophoneOff` icon overlay (bottom-right corner of avatar)
+- Avatar circle: initials from `serversStore.members[serverId][userId].displayName`
+
+**Store requirements:**
+- `voiceStore.peers` already tracks `audioEnabled`, `speaking` per peer
+- Need to add local user's own entry to the sidebar display (not in `peers` which is remote-only)
+- `voiceStore.session` provides `channelId` and `serverId`
+
+---
+
+## 12. Noise Suppression / Auto Levelling
+
+Reduce background noise (fans, keyboard, ambient sound) before it is transmitted over WebRTC.
+
+**Implementation options (in order of preference):**
+
+1. **Browser built-in constraints (zero-cost):**
+   ```typescript
+   navigator.mediaDevices.getUserMedia({
+     audio: {
+       noiseSuppression: true,
+       echoCancellation: true,
+       autoGainControl: true,
+       deviceId: selectedDeviceId,
+     }
+   })
+   ```
+   Already available in Chromium (WebView2/WKWebView). Apply these constraints in `voiceStore.joinVoiceChannel()`. This alone handles most background noise at no extra complexity cost.
+
+2. **RNNoise / Krisp-style WebAssembly (Phase 6 enhancement):**
+   If browser constraints are insufficient, pipe the mic stream through an AudioWorklet that runs `rnnoise-wasm` (open-source RNNoise compiled to WASM, ~80KB). The worklet outputs a processed stream used instead of the raw `getUserMedia` stream.
+   - Library: `@jitsi/rnnoise-wasm` or compile from https://github.com/xiph/rnnoise
+   - AudioWorklet registration via `audioContext.audioWorklet.addModule()`
+
+**Settings toggle:** `Settings > Voice` — "Noise suppression" on/off (mapped to `settingsStore.settings.noiseSuppression: boolean`). When off, `getUserMedia` uses `noiseSuppression: false`.
+
+---
+
+## 13. Screen Share in Content Pane
+
+When one or more peers are sharing their screen, display live video in the main content pane (`MainPane.vue`) instead of (or alongside) the chat.
+
+### Layout modes
+
+| Mode | Description |
+|------|-------------|
+| **Chat only** | No active screen shares |
+| **Share focus** | One or more screens are active — content pane switches to `VoiceContentPane.vue` |
+| **Grid view** | Multiple simultaneously active sharers shown in a grid |
+
+### VoiceContentPane.vue
+
+New component replacing `MainPane`'s inner content when `voiceStore.hasScreenShares` is true:
+
+```
+┌─────────────────────────────────────────────┐
+│  [📺 Alice's screen]  [📺 Bob's screen]     │  ← grid of active sharers
+│                                             │
+│  [👁 hide]  [⛶ fullscreen]  [💬 chat]      │  ← per-tile controls
+└─────────────────────────────────────────────┘
+```
+
+**Features:**
+- Each active screen share renders in a `<video>` element with `srcObject = peer.screenStream`
+- **Per-sharer hide toggle**: clicking a tile's hide button removes it from the grid (preference stored in `Set<userId>` reactive state, not persisted)
+- **Non-video participant hide**: toggle to show only peers currently screen sharing (hides avatar tiles for non-sharing peers)
+- **Focus tile**: clicking a tile expands it to fill the pane; sidebar hides tiles for others
+- **Chat overlay**: a collapsible `MessageHistory` + `MessageInput` panel slides in from the right (like Discord's chat overlay during screen share)
+- Local own screen share shows mirrored with a "Sharing" badge
+
+**Store additions to `voiceStore`:**
+```typescript
+hasScreenShares: computed(() => 
+  Object.values(peers.value).some(p => p.screenSharing) || !!screenStream.value
+)
+screenStreams: Map<userId, MediaStream>  // keyed by userId, populated by networkStore on remote track attach
+```
+
+**Track routing:** `networkStore.handleRemoteTrack()` already creates the `MediaStream`. Extend to:
+- If the track is `kind === 'video'`, store in `voiceStore.screenStreams[userId]`
+- When the peer's `screenSharing` flag is cleared, remove the entry
+
+---
+
+## 14. Video Quality & Bitrate Settings
+
+Add to `Settings > Voice & Video` tab.
+
+### New settings fields (`settingsStore`)
+
+```typescript
+interface VoiceVideoSettings {
+  videoQuality: 'auto' | '360p' | '720p' | '1080p'
+  videoBitrate:  'auto' | '500kbps' | '1mbps' | '2.5mbps' | '5mbps'
+  frameRate: 10 | 15 | 30
+}
+```
+
+### Enforcement
+
+**On screen share start** (`voiceStore.startScreenShare()`):
+```typescript
+const constraints = buildVideoConstraints(settingsStore.settings.videoQuality, settingsStore.settings.frameRate)
+// constraints = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+stream = await navigator.mediaDevices.getDisplayMedia({ video: constraints })
+```
+
+**RTCRtpSender bitrate cap** (after `addScreenShareTrack()`):
+```typescript
+const sender = pc.getSenders().find(s => s.track?.kind === 'video')
+const params = sender.getParameters()
+params.encodings[0].maxBitrate = parseBitrate(settingsStore.settings.videoBitrate) // bytes/s
+await sender.setParameters(params)
+```
+
+---
+
+## 15. User Profile Page
+
+Clicking a user's avatar anywhere in the app (member list, sidebar, message header) opens a profile panel/modal.
+
+### UserProfileModal.vue
+
+**Content:**
+- Avatar (initials circle, or future: uploaded photo)
+- Display name + user ID (truncated)
+- Server roles/badges (from `serversStore.members[serverId][userId]`)
+- "View devices" — shows attested device list from `identityStore` (own profile only)
+- "Adjust volume" slider (per-peer volume, stored in `voiceStore` / audioService)
+- "Copy User ID" button
+
+**Trigger points:**
+- `self-avatar` in `ChannelSidebar` self-panel → own profile
+- Member row in `MemberList.vue`
+- Author avatar in `MessageBubble.vue`
+- Voice peer tile in `VoicePeerTile.vue`
+
+**State:** managed in `uiStore` — `openUserProfile(userId: string, serverId: string | null)`. When `userId === identityStore.userId`, show editable name/avatar; otherwise read-only with the volume control.
+

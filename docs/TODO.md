@@ -124,9 +124,9 @@
 - [x] `voiceStore` — join/leave voice channel, local stream, session state
 - [x] `audioService.ts` — attach/detach remote streams, VAD (AnalyserNode RMS polling), mute/deafen
 - [x] `webrtcService` — add audio track to existing peer connections on join
-- [x] `VoiceBar.vue` — bottom strip, shown while in voice session
+- [x] `VoiceBar.vue` — bottom strip in channel sidebar (not fixed overlay), shown while in voice session
 - [x] `VoicePeerTile.vue` — speaking ring animation, video/screen share frame
-- [x] Mute / deafen controls with keyboard shortcut support
+- [x] Mute / deafen controls with keyboard shortcut support (Ctrl+Shift+M / Ctrl+Shift+D)
 - [ ] Screen share — Windows path:
   - [x] `get_screen_sources` Rust command stub (returns empty; Win32 enumeration deferred to Phase 6)
   - [ ] **Investigate `chromeMediaSourceId` in WebView2 first** — if it works, use custom picker; if not, fall back to `getDisplayMedia()` everywhere
@@ -137,6 +137,13 @@
   - [ ] Plan Rust `CGDisplayStream` fallback (Phase 6) for macOS < 12.3
 - [x] `addScreenShareTrack` — `replaceTrack()` on existing peer connections
 - [x] Mesh voice limit: warn UI at >8 participants; note SFU as future work
+- [ ] Apply browser-native noise suppression / echo cancellation constraints on `getUserMedia` (spec §12)
+- [ ] Voice loopback (hear own voice) toggle in VoiceBar and Settings > Voice (spec §10)
+- [ ] Voice participants shown in ChannelSidebar under their channel with speaking ring (spec §11)
+- [ ] `VoiceContentPane.vue` — screen share live video in content pane, per-sharer show/hide (spec §13)
+- [ ] `voiceStore.screenStreams` map — store remote video tracks keyed by userId (spec §13)
+- [ ] `UserProfileModal.vue` — click avatar to open profile; own profile editable; per-peer volume slider (spec §15)
+- [ ] Video quality + bitrate settings in Settings > Voice & Video (spec §14)
 
 ---
 
