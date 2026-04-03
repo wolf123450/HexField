@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+use std::sync::atomic::AtomicU16;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 mod db;
 mod commands;
+mod lan;
 
 use commands::db_commands::*;
 use commands::signal_commands::*;
@@ -10,7 +13,14 @@ use commands::sync_commands::*;
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
+    /// Sender to the rendezvous-server WS actor.
     pub signal_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<serde_json::Value>>>>,
+    /// Direct LAN WS senders: `userId → UnboundedSender`.
+    pub lan_peers: Arc<lan::LanPeers>,
+    /// Port our local LAN signal server is listening on (0 = not started).
+    pub lan_signal_port: Arc<AtomicU16>,
+    /// Local userId, set when `lan_start` is called.
+    pub local_user_id: Arc<Mutex<String>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -40,6 +50,9 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(conn),
                 signal_tx: Arc::new(Mutex::new(None)),
+                lan_peers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                lan_signal_port: Arc::new(AtomicU16::new(0)),
+                local_user_id: Arc::new(Mutex::new(String::new())),
             });
             Ok(())
         })
@@ -79,6 +92,10 @@ pub fn run() {
             signal_connect,
             signal_disconnect,
             signal_send,
+            // LAN discovery & direct signaling
+            lan_start,
+            lan_connect_peer,
+            lan_get_local_addrs,
             // Sync (negentropy set reconciliation)
             sync_initiate,
             sync_respond,

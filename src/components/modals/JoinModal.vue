@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <Teleport to="body">
     <div v-if="uiStore.showJoinModal" class="modal-backdrop" @click.self="close">
       <div class="modal-box" @keydown.esc="close">
@@ -18,7 +18,7 @@
           ref="inputRef"
           v-model="code"
           class="text-input"
-          placeholder="gamechat://join/…"
+          placeholder="gamechat://join/â€¦"
           :disabled="joining"
           @keydown.enter="join"
         />
@@ -39,23 +39,24 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
 import { mdiClose } from '@mdi/js'
+import { invoke } from '@tauri-apps/api/core'
 import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useNetworkStore } from '@/stores/networkStore'
-import type { ServerManifest } from '@/types/core'
+import type { PeerInvite } from '@/types/core'
 
 const uiStore        = useUIStore()
 const serversStore   = useServersStore()
 const channelsStore  = useChannelsStore()
 const networkStore   = useNetworkStore()
 
-const code        = ref('')
-const joining     = ref(false)
-const joiningLabel = ref('Joining…')
-const statusMsg   = ref('')
-const isError     = ref(false)
-const inputRef    = ref<HTMLInputElement | null>(null)
+const code         = ref('')
+const joining      = ref(false)
+const joiningLabel = ref('Joiningâ€¦')
+const statusMsg    = ref('')
+const isError      = ref(false)
+const inputRef     = ref<HTMLInputElement | null>(null)
 
 watch(() => uiStore.showJoinModal, async (open) => {
   if (open) {
@@ -68,82 +69,86 @@ watch(() => uiStore.showJoinModal, async (open) => {
   }
 })
 
-function decodeManifest(raw: string): ServerManifest {
+function decodeInvite(raw: string): PeerInvite {
   let encoded = raw.trim()
   const prefix = 'gamechat://join/'
   if (encoded.startsWith(prefix)) encoded = encoded.slice(prefix.length)
-
-  // Re-pad base64url → standard base64
   const pad = (4 - (encoded.length % 4)) % 4
   const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat(pad)
-  const manifest = JSON.parse(atob(b64)) as ServerManifest
-  if (manifest.v !== 1) throw new Error('Unrecognised invite version')
-  if (!manifest.server?.id) throw new Error('Invite link is missing server data')
-  return manifest
+  const invite = JSON.parse(atob(b64)) as PeerInvite | { v?: number }
+  if ((invite as PeerInvite).v !== 2) throw new Error('This invite link is from an older version. Ask the server owner to generate a new one.')
+  const pi = invite as PeerInvite
+  if (!pi.userId || !pi.serverId) throw new Error('Invite link is incomplete.')
+  return pi
 }
 
 async function join() {
   if (!code.value.trim() || joining.value) return
-  joining.value = true
+  joining.value  = true
   statusMsg.value = ''
-  isError.value  = false
+  isError.value   = false
 
   try {
-    // ── Step 1: decode manifest ──────────────────────────────────────
-    let manifest: ServerManifest
+    // â”€â”€ 1. Decode invite â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    let invite: PeerInvite
     try {
-      manifest = decodeManifest(code.value)
-    } catch {
-      throw new Error('Invalid invite link — make sure you pasted the full link.')
+      invite = decodeInvite(code.value)
+    } catch (e: unknown) {
+      throw new Error(e instanceof Error ? e.message : 'Invalid invite link.')
     }
 
-    // ── Step 2: bootstrap server locally ────────────────────────────
-    joiningLabel.value = 'Saving server…'
+    // â”€â”€ 2. Connect to the inviter's signal server (LAN endpoints) â”€â”€
+    let connected = false
+    for (const ep of invite.endpoints) {
+      joiningLabel.value = `Connecting via ${ep.type === 'lan' ? 'local network' : 'internet'}â€¦`
+      try {
+        await invoke('lan_connect_peer', { userId: invite.userId, addr: ep.addr, port: ep.port })
+        connected = true
+        break
+      } catch {
+        // Try next endpoint
+      }
+    }
+
+    if (!connected && invite.endpoints.length > 0) {
+      throw new Error(`Could not reach ${invite.displayName}'s device. Make sure you're on the same network and the invite is still open.`)
+    }
+    if (invite.endpoints.length === 0) {
+      throw new Error('Invite has no endpoints. Ask the server owner to regenerate the invite while their app is open.')
+    }
+
+    // â”€â”€ 3. WebRTC offer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    joiningLabel.value = 'Establishing secure connectionâ€¦'
+    await networkStore.connectToPeer(invite.userId)
+    await networkStore.waitForPeer(invite.userId, 15000)
+
+    // â”€â”€ 4. Request the full server manifest over the data channel â”€â”€
+    joiningLabel.value = 'Requesting server dataâ€¦'
+    const manifest = await networkStore.requestServerManifest(
+      invite.userId,
+      invite.serverId,
+      invite.inviteToken,
+    )
+
+    // â”€â”€ 5. Bootstrap server locally from the received manifest â”€â”€â”€â”€â”€
+    joiningLabel.value = 'Saving serverâ€¦'
     const server = await serversStore.joinFromManifest(manifest)
 
-    // ── Step 3: connect to signaling server ─────────────────────────
-    if (manifest.rendezvousUrl) {
-      joiningLabel.value = 'Connecting to relay…'
-      if (networkStore.signalingState !== 'connected') {
-        await networkStore.connect(manifest.rendezvousUrl)
-      }
-      try {
-        await networkStore.waitForConnected(12000)
-      } catch {
-        // Non-fatal: server is saved locally; P2P will work next time both are online
-        uiStore.showNotification(
-          `Joined ${server.name} locally. Could not reach relay server — start chatting when online.`,
-          'info', 6000,
-        )
-        navigateToServer(server.id)
-        return
-      }
+    // â”€â”€ 6. Navigate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    serversStore.setActiveServer(server.id)
+    await channelsStore.loadChannels(server.id)
+    const first = channelsStore.channels[server.id]?.find(c => c.type === 'text')
+    if (first) channelsStore.setActiveChannel(first.id)
 
-      // ── Step 4: initiate WebRTC handshake with the server owner ───
-      joiningLabel.value = 'Connecting to peer…'
-      await networkStore.connectToPeer(manifest.owner.userId)
-    }
-
-    // ── Step 5: navigate ─────────────────────────────────────────────
-    navigateToServer(server.id)
+    uiStore.showJoinModal = false
     uiStore.showNotification(`Joined ${server.name}!`, 'success', 3000)
   } catch (e: unknown) {
-    joiningLabel.value = 'Joining…'
     statusMsg.value = e instanceof Error ? e.message : 'Could not join server.'
     isError.value   = true
-    joining.value   = false
+  } finally {
+    joining.value      = false
+    joiningLabel.value = 'Joiningâ€¦'
   }
-}
-
-function navigateToServer(serverId: string) {
-  serversStore.setActiveServer(serverId)
-  channelsStore.loadChannels(serverId).then(() => {
-    const first = channelsStore.channels[serverId]?.find(c => c.type === 'text')
-    if (first) channelsStore.setActiveChannel(first.id)
-  })
-  joining.value        = false
-  joiningLabel.value   = 'Joining…'
-  uiStore.showJoinModal = false
 }
 
 function close() {

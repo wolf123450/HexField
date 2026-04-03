@@ -4,11 +4,15 @@ import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
 import type { Server, ServerMember, Mutation, ServerManifest } from '@/types/core'
 
+const INVITE_TOKEN_TTL_MS = 3_600_000 // 1 hour
+
 export const useServersStore = defineStore('servers', () => {
   const servers         = ref<Record<string, Server>>({})
   const members         = ref<Record<string, Record<string, ServerMember>>>({})
   const joinedServerIds = ref<string[]>([])
   const activeServerId  = ref<string | null>(null)
+  // invite token → { serverId, expiresAt }
+  const activeInviteTokens = ref<Map<string, { serverId: string; expiresAt: number }>>(new Map())
 
   async function loadServers() {
     const rows = await invoke<any[]>('db_load_servers')
@@ -234,6 +238,34 @@ export const useServersStore = defineStore('servers', () => {
     return server
   }
 
+  /**
+   * Generate and store a short-lived invite token for the given server.
+   * Tokens expire after 1 hour in-memory (no persistence needed).
+   */
+  function createInviteToken(serverId: string): string {
+    const token = uuidv7()
+    activeInviteTokens.value.set(token, {
+      serverId,
+      expiresAt: Date.now() + INVITE_TOKEN_TTL_MS,
+    })
+    return token
+  }
+
+  /**
+   * Returns true if the token is valid and matches the expected serverId.
+   * Does NOT consume the token (a single invite may be used by multiple peers).
+   */
+  function validateInviteToken(token: string, serverId: string): boolean {
+    const entry = activeInviteTokens.value.get(token)
+    if (!entry) return false
+    if (entry.serverId !== serverId) return false
+    if (entry.expiresAt < Date.now()) {
+      activeInviteTokens.value.delete(token)
+      return false
+    }
+    return true
+  }
+
   return {
     servers,
     members,
@@ -247,5 +279,7 @@ export const useServersStore = defineStore('servers', () => {
     updateMemberDisplayName,
     applyServerMutation,
     joinFromManifest,
+    createInviteToken,
+    validateInviteToken,
   }
 })

@@ -1,10 +1,12 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::AppState;
+use crate::lan;
 
 /// Connect to a WebSocket signaling server.
 /// Spawns a tokio task that reads incoming messages and emits them as Tauri events.
@@ -122,21 +124,117 @@ pub fn signal_disconnect(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Send a JSON payload through the signaling WebSocket.
+/// Send a JSON payload through the best available signaling path.
+///
+/// Routing priority:
+///   1. Direct LAN connection to the target peer (if `payload.to` is present)
+///   2. Rendezvous WebSocket (if connected)
+///   3. Error — no path available
 #[tauri::command]
 pub async fn signal_send(
     state: State<'_, AppState>,
     payload: serde_json::Value,
 ) -> Result<(), String> {
+    // Try LAN path first.
+    let to_user_id = payload.get("to").and_then(|v| v.as_str()).map(|s| s.to_string());
+    if let Some(ref to_id) = to_user_id {
+        let lan_sender = {
+            let peers = state.lan_peers.lock().await;
+            peers.get(to_id).cloned()
+        };
+        if let Some(sender) = lan_sender {
+            return sender.send(payload).map_err(|e| e.to_string());
+        }
+    }
+
+    // Fall through to rendezvous server.
     let tx = {
         let guard = state.signal_tx.lock().map_err(|e| e.to_string())?;
         guard.clone()
     };
     match tx {
-        Some(sender) => {
-            sender.send(payload).await.map_err(|e| e.to_string())?;
-            Ok(())
-        }
-        None => Err("Not connected to signaling server".to_string()),
+        Some(sender) => sender.send(payload).await.map_err(|e| e.to_string()),
+        None => Err("Not connected to any signaling server".to_string()),
     }
+}
+
+// ── LAN commands ──────────────────────────────────────────────────────────
+
+/// Start the local LAN signal server and register mDNS.
+/// Idempotent — safe to call multiple times (skips restart if already running).
+/// Returns the local signal port.
+#[tauri::command]
+pub async fn lan_start(
+    user_id: String,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<u16, String> {
+    // If already started, return existing port.
+    let existing = state.lan_signal_port.load(Ordering::Relaxed);
+    if existing != 0 {
+        return Ok(existing);
+    }
+
+    let port = lan::start_lan_server(
+        app_handle.clone(),
+        Arc::clone(&state.lan_peers),
+    ).await?;
+
+    state.lan_signal_port.store(port, Ordering::Relaxed);
+
+    {
+        let mut uid = state.local_user_id.lock().map_err(|e| e.to_string())?;
+        *uid = user_id.clone();
+    }
+
+    lan::start_mdns(user_id, port, app_handle)?;
+
+    Ok(port)
+}
+
+/// Connect directly to another peer's LAN signal server.
+/// After this call, `signal_send` will route to this peer via the direct
+/// WS connection instead of going through the rendezvous server.
+#[tauri::command]
+pub async fn lan_connect_peer(
+    user_id: String,
+    addr: String,
+    port: u16,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let local_user_id = state
+        .local_user_id
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+
+    if local_user_id.is_empty() {
+        return Err("LAN not started — call lan_start first".to_string());
+    }
+
+    lan::connect_to_lan_peer(
+        user_id,
+        addr,
+        port,
+        local_user_id,
+        Arc::clone(&state.lan_peers),
+        app_handle,
+    ).await
+}
+
+/// Return the local IP address and LAN signal port for embedding in invite links.
+/// Returns an empty array if LAN is not started yet.
+#[tauri::command]
+pub fn lan_get_local_addrs(state: State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let port = state.lan_signal_port.load(Ordering::Relaxed);
+    if port == 0 {
+        return Ok(vec![]);
+    }
+    let addr = lan::get_primary_local_ip();
+    Ok(vec![serde_json::json!({
+        "type": "lan",
+        "addr": addr.to_string(),
+        "port": port,
+    })])
 }
