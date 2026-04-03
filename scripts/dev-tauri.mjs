@@ -117,14 +117,20 @@ child.on('close', code => process.exit(code ?? 0))
 function waitForPort (port, timeoutSecs) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeoutSecs * 1000
+    // Try both IPv4 and IPv6 loopback — on Windows, Node/Vite can bind to
+    // either '127.0.0.1' or '::1' depending on how 'localhost' resolves.
+    const hosts = ['127.0.0.1', '::1']
+    let hostIdx = 0
     let dots = 0
 
     function attempt () {
-      const sock = createConnection({ port, host: '127.0.0.1' })
+      const host = hosts[hostIdx % hosts.length]
+      hostIdx++
+      const sock = createConnection({ port, host })
       sock.on('connect', () => {
         sock.destroy()
         process.stdout.write('\n')
-        console.log(`[dev:tauri] Vite ready on port ${port}`)
+        console.log(`[dev:tauri] Vite ready on port ${port} (${host})`)
         resolve()
       })
       sock.on('error',   retry)
@@ -134,7 +140,10 @@ function waitForPort (port, timeoutSecs) {
     function retry () {
       if (Date.now() > deadline) {
         process.stdout.write('\n')
-        reject(new Error(`[dev:tauri] Timed out waiting for Vite on port ${port}`))
+        reject(new Error(
+          `[dev:tauri] Timed out waiting for Vite on port ${port}.\n` +
+          `[dev:tauri] Make sure 'npm run dev:tauri' is running in another terminal.`
+        ))
         return
       }
       if (dots % 3 === 0) process.stdout.write('.')
