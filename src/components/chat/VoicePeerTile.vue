@@ -10,7 +10,7 @@
   >
     <div class="avatar-wrap">
       <div class="speaking-ring" />
-      <div class="avatar">{{ initials }}</div>
+      <AvatarImage :src="member?.avatarDataUrl ?? null" :name="displayName" :size="36" class="avatar" />
       <div v-if="!peer.audioEnabled" class="mute-indicator">
         <AppIcon :path="mdiMicrophoneOff" :size="10" />
       </div>
@@ -42,14 +42,6 @@ const isSpeaking = computed(() => voiceStore.speakingPeers.has(props.peer.userId
 const member = computed(() => serversStore.members[props.serverId]?.[props.peer.userId])
 
 const displayName = computed(() => member.value?.displayName ?? props.peer.userId.slice(0, 8))
-
-const initials = computed(() => {
-  const name = displayName.value
-  const parts = name.split(' ')
-  return parts.length >= 2
-    ? (parts[0][0] + parts[1][0]).toUpperCase()
-    : name.slice(0, 2).toUpperCase()
-})
 </script>
 
 <style scoped>

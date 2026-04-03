@@ -56,10 +56,10 @@
         <span v-if="voiceStore.session?.channelId === ch.id" class="voice-live-dot" title="Connected" />
       </div>
 
-      <!-- Voice participants sub-list -->
-      <template v-if="voiceStore.session?.channelId === ch.id">
-        <!-- Local user (self) -->
-        <div class="voice-participant" :class="{ speaking: voiceStore.speakingPeers.has('self') }">
+      <!-- Voice participants sub-list (visible to all users, not just participants) -->
+      <template v-if="voiceStore.session?.channelId === ch.id || voiceChannelPeerIds(ch.id).length > 0">
+        <!-- Local user (self) — only shown when we are in this channel -->
+        <div v-if="voiceStore.session?.channelId === ch.id" class="voice-participant" :class="{ speaking: voiceStore.speakingPeers.has('self') }">
           <div class="vp-avatar-wrap">
             <div class="vp-speaking-ring" />
             <div class="vp-avatar">{{ identityInitials }}</div>
@@ -71,19 +71,19 @@
         </div>
         <!-- Remote peers -->
         <div
-          v-for="peer in Object.values(voiceStore.peers)"
-          :key="peer.userId"
+          v-for="uid in voiceChannelPeerIds(ch.id)"
+          :key="uid"
           class="voice-participant"
-          :class="{ speaking: voiceStore.speakingPeers.has(peer.userId) }"
+          :class="{ speaking: voiceStore.speakingPeers.has(uid) }"
         >
           <div class="vp-avatar-wrap">
             <div class="vp-speaking-ring" />
-            <div class="vp-avatar">{{ peerInitials(peer.userId) }}</div>
-            <div v-if="!peer.audioEnabled" class="vp-mute">
+            <div class="vp-avatar">{{ peerInitials(uid) }}</div>
+            <div v-if="voiceStore.peers[uid] && !voiceStore.peers[uid].audioEnabled" class="vp-mute">
               <AppIcon :path="mdiMicrophoneOff" :size="8" />
             </div>
           </div>
-          <span class="vp-name">{{ peerDisplayName(peer.userId) }}</span>
+          <span class="vp-name">{{ peerDisplayName(uid) }}</span>
         </div>
       </template>
       </template>
@@ -167,7 +167,7 @@ const voiceStore    = useVoiceStore()
 const uiStore       = useUIStore()
 
 function peerDisplayName(userId: string): string {
-  const sid = voiceStore.session?.serverId
+  const sid = serversStore.activeServerId
   if (!sid) return userId.slice(0, 8)
   return serversStore.members[sid]?.[userId]?.displayName ?? userId.slice(0, 8)
 }
@@ -175,6 +175,21 @@ function peerDisplayName(userId: string): string {
 function peerInitials(userId: string): string {
   const name = peerDisplayName(userId)
   return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+}
+
+/**
+ * Returns the user IDs of remote peers currently in a given voice channel.
+ * When the local user is IN the channel, returns ids from voiceStore.peers (which
+ * have active WebRTC connections). When the local user is NOT in the channel,
+ * returns ids from peerVoiceChannels (presence gossiped via voice_join).
+ */
+function voiceChannelPeerIds(channelId: string): string[] {
+  if (voiceStore.session?.channelId === channelId) {
+    return Object.keys(voiceStore.peers)
+  }
+  return Object.entries(voiceStore.peerVoiceChannels)
+    .filter(([, cid]) => cid === channelId)
+    .map(([uid]) => uid)
 }
 
 const activeServer = computed(() =>
