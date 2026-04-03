@@ -49,6 +49,16 @@
           <AppIcon :path="voiceStore.isDeafened ? mdiHeadphonesOff : mdiHeadphones" :size="18" />
         </button>
 
+        <!-- Loopback -->
+        <button
+          class="ctrl-btn"
+          :class="{ active: voiceStore.loopbackEnabled }"
+          title="Hear your own voice (loopback)"
+          @click="voiceStore.toggleLoopback()"
+        >
+          <AppIcon :path="mdiHeadset" :size="18" />
+        </button>
+
         <!-- Screen share -->
         <button
           class="ctrl-btn"
@@ -75,6 +85,7 @@ import {
   mdiMicrophoneOff,
   mdiHeadphones,
   mdiHeadphonesOff,
+  mdiHeadset,
   mdiMonitorShare,
   mdiPhoneHangup,
   mdiAlertCircle,

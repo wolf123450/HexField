@@ -11,13 +11,18 @@ export const useVoiceStore = defineStore('voice', () => {
   const session       = ref<VoiceSession | null>(null)
   const localStream   = ref<MediaStream | null>(null)
   const screenStream  = ref<MediaStream | null>(null)
+  const screenStreams  = ref<Record<string, MediaStream>>({}) // remote screen shares keyed by userId
   const isMuted       = ref<boolean>(false)
   const isDeafened    = ref<boolean>(false)
+  const loopbackEnabled = ref<boolean>(false)
   const peers         = ref<Record<string, Peer>>({})
   const speakingPeers = ref<Set<string>>(new Set())
 
-  const peerCount  = computed(() => Object.keys(peers.value).length)
-  const meshWarning = computed(() => peerCount.value >= MESH_PEER_LIMIT)
+  const peerCount     = computed(() => Object.keys(peers.value).length)
+  const meshWarning   = computed(() => peerCount.value >= MESH_PEER_LIMIT)
+  const hasScreenShares = computed(() =>
+    !!screenStream.value || Object.keys(screenStreams.value).length > 0
+  )
 
   // Wire audioService VAD callbacks once on store creation
   audioService.init((userId, speaking) => setPeerSpeaking(userId, speaking))
@@ -36,11 +41,16 @@ export const useVoiceStore = defineStore('voice', () => {
     const { useSettingsStore } = await import('./settingsStore')
     const settingsStore = useSettingsStore()
     const deviceId = settingsStore.settings.inputDeviceId
+    const ns       = settingsStore.settings.noiseSuppression
 
-    const constraints: MediaStreamConstraints = {
-      audio: deviceId ? { deviceId: { exact: deviceId } } : true,
-      video: false,
+    const audioConstraints: MediaTrackConstraints = {
+      noiseSuppression:  ns,
+      echoCancellation:  ns,
+      autoGainControl:   ns,
     }
+    if (deviceId) audioConstraints.deviceId = { exact: deviceId }
+
+    const constraints: MediaStreamConstraints = { audio: audioConstraints, video: false }
     const stream = await navigator.mediaDevices.getUserMedia(constraints)
 
     localStream.value = stream
@@ -87,10 +97,12 @@ export const useVoiceStore = defineStore('voice', () => {
 
     localStream.value  = null
     screenStream.value = null
+    screenStreams.value = {}
     session.value      = null
     peers.value        = {}
     isMuted.value      = false
     isDeafened.value   = false
+    loopbackEnabled.value = false
     speakingPeers.value.clear()
   }
 
@@ -111,6 +123,11 @@ export const useVoiceStore = defineStore('voice', () => {
       isMuted.value = false
       audioService.setLocalMuted(false)
     }
+  }
+
+  function toggleLoopback(): void {
+    loopbackEnabled.value = !loopbackEnabled.value
+    audioService.setLoopback(loopbackEnabled.value)
   }
 
   // ── Screen share ──────────────────────────────────────────────────────────
@@ -195,6 +212,7 @@ export const useVoiceStore = defineStore('voice', () => {
 
   function removePeer(userId: string): void {
     delete peers.value[userId]
+    delete screenStreams.value[userId]
     speakingPeers.value.delete(userId)
     audioService.detachRemoteStream(userId)
   }
@@ -203,16 +221,20 @@ export const useVoiceStore = defineStore('voice', () => {
     session,
     localStream,
     screenStream,
+    screenStreams,
     isMuted,
     isDeafened,
+    loopbackEnabled,
     peers,
     speakingPeers,
     peerCount,
     meshWarning,
+    hasScreenShares,
     joinVoiceChannel,
     leaveVoiceChannel,
     toggleMute,
     toggleDeafen,
+    toggleLoopback,
     startScreenShare,
     stopScreenShare,
     setPeerSpeaking,

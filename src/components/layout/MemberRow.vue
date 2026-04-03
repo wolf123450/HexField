@@ -1,5 +1,5 @@
 <template>
-  <div class="member-row">
+  <div class="member-row" @click="openProfile">
     <div class="member-avatar-wrap">
       <div class="member-avatar">{{ initials }}</div>
       <div class="status-dot" :class="member.onlineStatus" />
@@ -12,12 +12,19 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { ServerMember } from '@/types/core'
+import { useUIStore } from '@/stores/uiStore'
 
-const props = defineProps<{ member: ServerMember }>()
+const props = defineProps<{ member: ServerMember; serverId: string }>()
+
+const uiStore = useUIStore()
 
 const initials = computed(() => {
   return props.member.displayName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
 })
+
+function openProfile() {
+  uiStore.openUserProfile(props.member.userId, props.serverId)
+}
 </script>
 
 <style scoped>

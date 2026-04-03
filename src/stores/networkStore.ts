@@ -366,15 +366,22 @@ export const useNetworkStore = defineStore('network', () => {
     await useDevicesStore().receiveAttestedDevice(device)
   }
 
-  async function handleRemoteTrack(_userId: string, stream: MediaStream, track: MediaStreamTrack) {
-    if (track.kind !== 'audio') return
+  async function handleRemoteTrack(userId: string, stream: MediaStream, track: MediaStreamTrack) {
     const { useVoiceStore } = await import('./voiceStore')
-    const { audioService }  = await import('@/services/audioService')
     const voiceStore = useVoiceStore()
-    // Only attach if the peer is in the same voice channel as us
     if (!voiceStore.session) return
-    audioService.attachRemoteStream(_userId, stream)
-    voiceStore.updatePeer(_userId, { audioEnabled: true })
+    if (track.kind === 'audio') {
+      const { audioService } = await import('@/services/audioService')
+      audioService.attachRemoteStream(userId, stream)
+      voiceStore.updatePeer(userId, { audioEnabled: true })
+    } else if (track.kind === 'video') {
+      voiceStore.screenStreams[userId] = stream
+      voiceStore.updatePeer(userId, { screenSharing: true })
+      track.onended = () => {
+        delete voiceStore.screenStreams[userId]
+        voiceStore.updatePeer(userId, { screenSharing: false })
+      }
+    }
   }
 
   async function handleVoiceJoin(userId: string, msg: Record<string, unknown>) {

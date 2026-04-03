@@ -5,12 +5,12 @@
     <div class="member-scroll">
       <template v-if="onlineMembers.length">
         <div class="member-category-label">ONLINE — {{ onlineMembers.length }}</div>
-        <MemberRow v-for="m in onlineMembers" :key="m.userId" :member="m" />
+        <MemberRow v-for="m in onlineMembers" :key="m.userId" :member="m" :server-id="serversStore.activeServerId ?? ''" />
       </template>
 
       <template v-if="offlineMembers.length">
         <div class="member-category-label">OFFLINE — {{ offlineMembers.length }}</div>
-        <MemberRow v-for="m in offlineMembers" :key="m.userId" :member="m" />
+        <MemberRow v-for="m in offlineMembers" :key="m.userId" :member="m" :server-id="serversStore.activeServerId ?? ''" />
       </template>
 
       <div v-if="!totalCount" class="no-members">
