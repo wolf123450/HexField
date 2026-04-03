@@ -49,25 +49,15 @@ class WebRTCService {
 
   /**
    * Create an outgoing connection to a peer.
-   * Generates an SDP offer and sends it via signaling.
+   * Sets up the RTCPeerConnection and data channel; onnegotiationneeded fires
+   * automatically and sends the actual SDP offer. If a connection already exists
+   * we do nothing — further renegotiation (e.g. adding voice tracks) is handled
+   * entirely by onnegotiationneeded to avoid m-line ordering violations.
    */
   async createOffer(userId: string): Promise<void> {
-    const state = this.getOrCreatePeer(userId, true)
-    state.makingOffer = true
-
-    try {
-      const offer = await state.pc.createOffer()
-      await state.pc.setLocalDescription(offer)
-
-      await signalingService.send({
-        type: 'signal_offer',
-        to: userId,
-        from: this.localUserId,
-        sdp: state.pc.localDescription!.sdp,
-      })
-    } finally {
-      state.makingOffer = false
-    }
+    if (this.peers.has(userId)) return
+    this.getOrCreatePeer(userId, true)
+    // onnegotiationneeded fires when the data channel is created and sends the offer.
   }
 
   /**

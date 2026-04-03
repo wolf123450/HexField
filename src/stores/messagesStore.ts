@@ -234,7 +234,10 @@ export const useMessagesStore = defineStore('messages', () => {
     const serversStore = useServersStore()
     const member = serversStore.members[wire.serverId]?.[wire.authorId]
     if (!member?.publicDHKey || !member?.publicSignKey) {
-      console.warn('[messages] unknown sender keys for', wire.authorId)
+      // Keys arrive via member_announce which has async DB writes; retry once
+      // after a short delay so the race doesn't silently lose the message.
+      console.warn('[messages] unknown sender keys for', wire.authorId, '— will retry')
+      setTimeout(() => receiveEncryptedMessage(rawMsg), 2000)
       return
     }
 
