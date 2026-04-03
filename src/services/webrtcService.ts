@@ -254,11 +254,11 @@ class WebRTCService {
       }
     }
 
-    // Connection state tracking
+    // Connection state tracking — disconnection only.
+    // onPeerConnected is fired from dc.onopen so the data channel
+    // is guaranteed open before gossip/sync sends anything.
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'connected') {
-        this.onPeerConnected?.(userId)
-      } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         this.onPeerDisconnected?.(userId)
       }
     }
@@ -311,6 +311,8 @@ class WebRTCService {
 
     dc.onopen = () => {
       console.debug(`[webrtc] Data channel open with ${userId}`)
+      // Fire connected callback now that the DC is actually open and sendToPeer works.
+      this.onPeerConnected?.(userId)
     }
 
     dc.onclose = () => {
