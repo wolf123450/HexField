@@ -48,14 +48,28 @@ const gifPlaying = ref(props.animate)
 
 watch(() => props.animate, v => { gifPlaying.value = v })
 
-/**
- * For GIFs: swap between the real src (animated) and a 1×1 transparent pixel
- * (frozen) to control playback — CSS animation-play-state doesn't work on GIFs.
- */
-const BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+// Capture the first frame of a GIF as a static PNG so the non-hover state
+// shows a meaningful thumbnail instead of a transparent/coloured placeholder.
+const firstFrameUrl = ref<string | null>(null)
+watch(resolvedSrc, (src) => {
+  if (!src?.startsWith('data:image/gif')) {
+    firstFrameUrl.value = null
+    return
+  }
+  const img = new Image()
+  img.onload = () => {
+    const canvas = document.createElement('canvas')
+    canvas.width  = img.naturalWidth
+    canvas.height = img.naturalHeight
+    canvas.getContext('2d')!.drawImage(img, 0, 0)
+    firstFrameUrl.value = canvas.toDataURL('image/png')
+  }
+  img.src = src
+}, { immediate: true })
+
 const displaySrc = computed(() => {
   if (!resolvedSrc.value) return ''
-  if (isGif.value && !gifPlaying.value && !props.animate) return BLANK
+  if (isGif.value && !gifPlaying.value && !props.animate) return firstFrameUrl.value ?? resolvedSrc.value
   return resolvedSrc.value
 })
 

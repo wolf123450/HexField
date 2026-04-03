@@ -31,7 +31,14 @@
     </div>
 
     <template v-if="showHeader">
-      <div class="message-avatar" style="cursor:pointer" title="View profile" @click="uiStore.openUserProfile(message.authorId, message.serverId)">{{ authorInitials }}</div>
+      <AvatarImage
+        :src="authorAvatarSrc"
+        :name="authorName"
+        :size="36"
+        class="message-avatar"
+        title="View profile"
+        @click="uiStore.openUserProfile(message.authorId, message.serverId)"
+      />
       <div class="message-main">
         <div class="message-header">
           <span class="author-name">{{ authorName }}</span>
@@ -121,13 +128,14 @@ const author = computed(() => {
   return members[props.message.authorId]
 })
 
+const authorAvatarSrc = computed(() => {
+  if (props.message.authorId === identityStore.userId) return identityStore.avatarDataUrl ?? null
+  return author.value?.avatarDataUrl ?? null
+})
+
 const authorName = computed(() => {
   if (props.message.authorId === identityStore.userId) return identityStore.displayName
   return author.value?.displayName ?? props.message.authorId.slice(0, 8)
-})
-
-const authorInitials = computed(() => {
-  return authorName.value.split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()
 })
 
 const formattedTime = computed(() => {
@@ -263,16 +271,7 @@ async function quickReact(emojiId: string) {
 }
 
 .message-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: var(--accent-color);
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
+  cursor: pointer;
   flex-shrink: 0;
   margin-top: 2px;
 }
@@ -331,16 +330,7 @@ async function quickReact(emojiId: string) {
 }
 
 .message-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: var(--accent-color);
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
+  cursor: pointer;
   flex-shrink: 0;
   margin-top: 2px;
 }

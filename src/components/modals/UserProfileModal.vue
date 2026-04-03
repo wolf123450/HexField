@@ -33,6 +33,9 @@
 
         <!-- Body -->
         <div class="profile-body">
+          <!-- Avatar upload error -->
+          <div v-if="uploadError" class="upload-error">{{ uploadError }}</div>
+
           <!-- Name -->
           <div v-if="isEditable" class="profile-name-row">
             <input
@@ -163,8 +166,9 @@ function setVolume(e: Event) {
 
 // ── Avatar upload ─────────────────────────────────────────────────────────────
 
-const MAX_GIF_BYTES  = 512 * 1024  // 512 KB
-const AVATAR_DIM     = 128
+const MAX_GIF_BYTES    = 20 * 1024 * 1024  // 20 MB
+const MAX_STATIC_BYTES = 25 * 1024 * 1024  // 25 MB
+const AVATAR_DIM       = 128
 
 function triggerAvatarUpload() {
   uploadError.value = ''
@@ -178,7 +182,7 @@ async function onAvatarFileSelected(e: Event) {
 
   if (file.type === 'image/gif') {
     if (file.size > MAX_GIF_BYTES) {
-      uploadError.value = `GIF too large (max ${MAX_GIF_BYTES / 1024} KB)`
+      uploadError.value = `GIF too large (max ${MAX_GIF_BYTES / 1024 / 1024} MB)`
       return
     }
     const dataUrl = await readFileAsDataUrl(file)
@@ -187,6 +191,10 @@ async function onAvatarFileSelected(e: Event) {
   }
 
   // For static images: downsample to 128×128 via canvas
+  if (file.size > MAX_STATIC_BYTES) {
+    uploadError.value = `Image too large (max ${MAX_STATIC_BYTES / 1024 / 1024} MB)`
+    return
+  }
   const imgEl = new Image()
   const objectUrl = URL.createObjectURL(file)
   imgEl.onload = async () => {
@@ -313,6 +321,14 @@ function readFileAsDataUrl(file: File): Promise<string> {
   transform: none;
 }
 .avatar-upload-btn:hover { background: var(--accent-hover); }
+
+.upload-error {
+  font-size: 12px;
+  color: var(--error-color);
+  background: color-mix(in srgb, var(--error-color) 12%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 6px var(--spacing-sm);
+}
 
 .profile-body {
   padding: calc(36px + var(--spacing-md)) var(--spacing-lg) var(--spacing-lg);
