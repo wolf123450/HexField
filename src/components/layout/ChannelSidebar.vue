@@ -114,7 +114,14 @@
 
     <div class="self-panel">
       <div class="self-info">
-        <div class="self-avatar" title="View profile" @click="uiStore.openUserProfile(identityStore.userId ?? '', serversStore.activeServerId ?? '')">{{ identityInitials }}</div>
+        <div
+          class="self-avatar-wrap"
+          title="View profile"
+          @click="uiStore.openUserProfile(identityStore.userId ?? '', serversStore.activeServerId ?? '')"
+        >
+          <div class="self-avatar">{{ identityInitials }}</div>
+          <div class="self-status-dot" :class="ownStatus" @click.stop="openStatusPicker" title="Set status" />
+        </div>
         <div class="self-name">{{ identityStore.displayName }}</div>
       </div>
       <div class="self-controls">
@@ -186,20 +193,23 @@ async function selectChannel(channelId: string) {
   messagesStore.markChannelRead(channelId)
   await messagesStore.loadMessages(channelId)
   await messagesStore.loadMutationsForChannel(channelId)
+  // Minimise voice view so the text channel is visible
+  if (voiceStore.session) voiceStore.voiceViewActive = false
 }
 
 async function selectVoiceChannel(channelId: string) {
   const serverId = serversStore.activeServerId
   if (!serverId) return
-  // Toggle: leave if already in this channel
+  // If already in this channel: toggle voice view active
   if (voiceStore.session?.channelId === channelId) {
-    await voiceStore.leaveVoiceChannel()
-  } else {
-    try {
-      await voiceStore.joinVoiceChannel(channelId, serverId)
-    } catch (e) {
-      console.error('[sidebar] failed to join voice channel:', e)
-    }
+    voiceStore.voiceViewActive = !voiceStore.voiceViewActive
+    return
+  }
+  // Leave current if in one, then join
+  try {
+    await voiceStore.joinVoiceChannel(channelId, serverId)
+  } catch (e) {
+    console.error('[sidebar] failed to join voice channel:', e)
   }
 }
 
@@ -274,6 +284,34 @@ function openServerSettings() {
   const sid = serversStore.activeServerId
   if (!sid) return
   uiStore.openInviteModal(sid)
+}
+
+// ── Own status ────────────────────────────────────────────────────────────────
+
+const STATUS_KEY = 'gamechat_own_status'
+const ownStatus = ref<'online' | 'idle' | 'dnd' | 'offline'>(
+  (localStorage.getItem(STATUS_KEY) as any) ?? 'online'
+)
+
+function openStatusPicker(e: MouseEvent) {
+  const items: MenuItem[] = [
+    { type: 'action', label: '\u25cf Online',         callback: () => setOwnStatus('online') },
+    { type: 'action', label: '\u25cf Idle',           callback: () => setOwnStatus('idle') },
+    { type: 'action', label: '\u25cf Do Not Disturb', callback: () => setOwnStatus('dnd') },
+    { type: 'action', label: '\u25cb Invisible',      callback: () => setOwnStatus('offline') },
+  ]
+  uiStore.showContextMenu(e.clientX, e.clientY, items)
+}
+
+function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline') {
+  ownStatus.value = status
+  localStorage.setItem(STATUS_KEY, status)
+  // Update member record for every joined server
+  const uid = identityStore.userId
+  if (!uid) return
+  for (const sid of serversStore.joinedServerIds) {
+    serversStore.updateMemberStatus(sid, uid, status)
+  }
 }
 </script>
 
@@ -418,6 +456,13 @@ function openServerSettings() {
   overflow: hidden;
 }
 
+.self-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.self-avatar-wrap:hover .self-avatar { opacity: 0.85; }
+
 .self-avatar {
   width: 32px;
   height: 32px;
@@ -429,10 +474,22 @@ function openServerSettings() {
   justify-content: center;
   font-size: 12px;
   font-weight: 700;
-  flex-shrink: 0;
+}
+
+.self-status-dot {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-tertiary);
   cursor: pointer;
 }
-.self-avatar:hover { opacity: 0.85; }
+.self-status-dot.online  { background: var(--success-color); }
+.self-status-dot.idle    { background: var(--warning-color); }
+.self-status-dot.dnd     { background: var(--error-color); }
+.self-status-dot.offline { background: var(--text-tertiary); }
 
 .self-name {
   font-size: 14px;

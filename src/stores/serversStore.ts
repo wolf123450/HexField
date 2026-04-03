@@ -54,6 +54,33 @@ export const useServersStore = defineStore('servers', () => {
     await invoke('db_save_server', { server: row })
     servers.value[server.id] = server
     joinedServerIds.value.push(server.id)
+
+    // Add self as admin member
+    const selfMember: ServerMember = {
+      userId:       identityStore.userId!,
+      serverId:     server.id,
+      displayName:  identityStore.displayName || 'Player',
+      roles:        ['admin'],
+      joinedAt:     server.createdAt,
+      publicSignKey: identityStore.publicSignKey ?? '',
+      publicDHKey:   identityStore.publicDHKey ?? '',
+      onlineStatus:  'online',
+    }
+    await invoke('db_upsert_member', {
+      member: {
+        user_id:        selfMember.userId,
+        server_id:      selfMember.serverId,
+        display_name:   selfMember.displayName,
+        roles:          JSON.stringify(selfMember.roles),
+        joined_at:      selfMember.joinedAt,
+        public_sign_key: selfMember.publicSignKey,
+        public_dh_key:  selfMember.publicDHKey,
+        online_status:  selfMember.onlineStatus,
+      },
+    })
+    if (!members.value[server.id]) members.value[server.id] = {}
+    members.value[server.id][selfMember.userId] = selfMember
+
     return server
   }
 

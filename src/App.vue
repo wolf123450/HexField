@@ -80,7 +80,10 @@ onMounted(async () => {
     serversStore.setActiveServer(firstId)
     const { useChannelsStore } = await import('@/stores/channelsStore')
     const channelsStore = useChannelsStore()
-    await channelsStore.loadChannels(firstId)
+    await Promise.all([
+      channelsStore.loadChannels(firstId),
+      serversStore.fetchMembers(firstId),
+    ])
     const first = channelsStore.channels[firstId]?.find(c => c.type === 'text')
     if (first) {
       channelsStore.setActiveChannel(first.id)

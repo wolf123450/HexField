@@ -366,3 +366,144 @@ Clicking a user's avatar anywhere in the app (member list, sidebar, message head
 
 **State:** managed in `uiStore` — `openUserProfile(userId: string, serverId: string | null)`. When `userId === identityStore.userId`, show editable name/avatar; otherwise read-only with the volume control.
 
+---
+
+## 16. Custom Avatar & Animated GIF Support
+
+### Goal
+Users can upload a static image or animated GIF as their avatar. The image is stored locally in SQLite and broadcast to peers so all users in a server see the custom avatar wherever avatars appear.
+
+### Storage
+- Key: `local_avatar_data` in the existing key-value store (`db_get_kv` / `db_set_kv`).
+- Value: a base64 data URL (`data:image/png;base64,...` or `data:image/gif;base64,...`).
+- Static images are canvas-downsampled to **128×128 px** before storage. GIFs are stored as-is with a hard cap of **512 KB** — larger uploads are rejected with a user-visible error.
+- `identityStore.avatarDataUrl: ref<string | null>(null)` — loaded from `db_get_kv('local_avatar_data')` on startup.
+
+### Upload flow (own profile in `UserProfileModal.vue`)
+1. "Change Avatar" button opens a hidden `<input type="file" accept="image/*,.gif">`.
+2. On selection, read as `ArrayBuffer` via `FileReader`.
+3. If MIME type is `image/gif`: check byte size ≤ 512 KB → store as-is.
+4. Otherwise: draw to an offscreen `<canvas>` sized 128×128 with `drawImage`, export as `image/png` at quality 0.92.
+5. Call `identityStore.setAvatar(dataUrl)` which persists via `db_set_kv` and updates the reactive ref.
+6. Broadcast a `profile_update` P2P mutation (see §16.4).
+
+### Rendering avatars
+Replace all existing "initials circle" avatar placeholders with a shared `<AvatarImage>` component:
+
+```vue
+<!-- src/components/AvatarImage.vue -->
+<img v-if="src" :src="src" class="avatar-img" :class="{ gif: isGif, animate: alwaysAnimate }" />
+<div v-else class="avatar-initials">{{ initials }}</div>
+```
+
+CSS rule to pause GIF animation by default and resume on hover or when `animate` class is set:
+
+```css
+.avatar-img.gif { animation-play-state: paused; }
+.avatar-img.gif:hover,
+.avatar-img.gif.animate { animation-play-state: running; }
+```
+
+> Note: Browsers don't expose CSS `animation-play-state` for GIF files natively. The actual technique is to swap between the data URL and a transparent pixel on `mouseenter`/`mouseleave` to freeze the GIF. The `<AvatarImage>` component should handle this via `@mouseenter`/`@mouseleave`.
+
+**Locations that use `<AvatarImage>`:** `ChannelSidebar` self-panel, `MemberRow`, `MessageBubble`, `VoicePeerTile` peer tile avatar, `VoiceContentPane` self tile.
+
+### P2P broadcast
+Define a new mutation type `profile_update` (joins the existing mutation stream):
+
+```ts
+interface ProfileUpdatePayload {
+  displayName?: string;
+  avatarDataUrl?: string | null;
+}
+```
+
+On receipt, call `serversStore.updateMemberProfile(serverId, userId, payload)` which updates `members.value[serverId][userId]` and triggers reactive re-renders everywhere the avatar is shown.
+
+---
+
+## 17. User Presence & Status
+
+### Status enum
+```ts
+type UserStatus = 'online' | 'idle' | 'dnd' | 'offline';
+```
+
+### Own status
+- Persisted in `localStorage` under key `gamechat_own_status` (default `'online'`).
+- **Already partially implemented** in `ChannelSidebar` — `ownStatus` ref, status dot, and context-menu picker were added in the Phase 5 UI polish pass.
+- `setOwnStatus(s)` updates `ownStatus.value`, saves to localStorage, calls `serversStore.updateMemberStatus(serverId, userId, s)` for every joined server, and broadcasts a `presence_update` P2P message.
+
+### Presence broadcast message
+```ts
+interface PresenceUpdate {
+  type: 'presence_update';
+  userId: string;
+  status: UserStatus;
+  timestamp: number; // ms since epoch
+}
+```
+
+Sent over the existing data channel when status changes or when a new peer joins (so they receive current status immediately).
+
+### Peer status display
+- `ServerMember.status: UserStatus` field (add to `types/core.ts` and `serversStore`).
+- `MemberRow.vue` renders a `.status-dot` (CSS already present) using the same colour scheme as the self-panel: online=`#3ba55d`, idle=`#faa61a`, dnd=`#ed4245`, offline=`#747f8d`.
+- Status dot also shown on avatar in `VoicePeerTile`.
+
+### Idle auto-detection (Phase 6 stretch)
+Detect mouse/keyboard inactivity > 10 min → auto-set `idle`. Restore to `online` on activity. Implement as a composable `useIdleDetection()` registered globally in `App.vue`.
+
+---
+
+## 18. User Profile: Banners, Bio & Social Info
+
+### Goal
+Each user has an enriched profile card showing a banner, bio text, and (future) linked social handles. Users can view their own profile to edit it, and view others' profiles in read-only mode.
+
+### Data model additions
+
+```ts
+// src/types/core.ts
+interface ServerMember {
+  // ... existing fields ...
+  bio?: string;            // up to 200 characters
+  bannerColor?: string;    // CSS gradient string or hex, e.g. "linear-gradient(135deg, #1a1a2e, #16213e)"
+  bannerDataUrl?: string;  // optional uploaded image, base64, max 256×128 px, ≤256 KB
+}
+```
+
+Store in the key-value table under keys `local_bio` and `local_banner_data`. Broadcast via `profile_update` mutation (same payload as §16.4 — extend `ProfileUpdatePayload` with `bio?` and `bannerDataUrl?`).
+
+### `UserProfileModal.vue` layout
+
+```
+┌──────────────────────────────────────────────────┐
+│  [Banner — gradient or image, 256×80 px strip]   │
+│  [Avatar — 64px, overlaps bottom of banner]      │
+│  Display Name          [Edit button if own]       │
+│  @userId (truncated)                              │
+│──────────────────────────────────────────────────│
+│  Bio (up to 200 chars)                            │
+│  ──────────────────────────────────────────────  │
+│  [Voice Volume slider — if other user in voice]  │
+│  [Block / Report — future]                       │
+└──────────────────────────────────────────────────┘
+```
+
+### Banner
+- **Own profile**: colour picker (6 preset gradients + custom hex) or image upload (≤ 256 KB, scaled to 512×200 px → stored at 256×100 px equivalent).
+- **Others' profiles**: display their broadcast banner. Fall back to a gradient derived from the first byte of their userId for visual variety.
+- No banner = default gradient from userId hash.
+
+### Bio
+- `<textarea maxlength="200">` in own-profile edit mode.
+- Plain text only (no markdown). Displayed as a `<p>` on others' profiles.
+- Shown in `MemberRow` tooltip (hover) as a truncated single line if set.
+
+### Trigger & state
+Same as §15 — `uiStore.openUserProfile(userId, serverId)`. The modal is already spec'd; these fields extend its content.
+
+### P2P profile fetch
+When a user clicks another user's profile and the profile data (bio, banner) has not yet been received via `profile_update` broadcast, send a `profile_request` P2P message to that peer. The recipient responds with a `profile_update` containing current profile data. This ensures profile data is available even for peers who haven't changed their profile during the current session.
+

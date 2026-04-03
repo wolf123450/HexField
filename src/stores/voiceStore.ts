@@ -8,15 +8,16 @@ import { webrtcService } from '@/services/webrtcService'
 const MESH_PEER_LIMIT = 8
 
 export const useVoiceStore = defineStore('voice', () => {
-  const session       = ref<VoiceSession | null>(null)
-  const localStream   = ref<MediaStream | null>(null)
-  const screenStream  = ref<MediaStream | null>(null)
-  const screenStreams  = ref<Record<string, MediaStream>>({}) // remote screen shares keyed by userId
-  const isMuted       = ref<boolean>(false)
-  const isDeafened    = ref<boolean>(false)
+  const session         = ref<VoiceSession | null>(null)
+  const localStream     = ref<MediaStream | null>(null)
+  const screenStream    = ref<MediaStream | null>(null)
+  const screenStreams    = ref<Record<string, MediaStream>>({}) // remote screen shares keyed by userId
+  const isMuted         = ref<boolean>(false)
+  const isDeafened      = ref<boolean>(false)
   const loopbackEnabled = ref<boolean>(false)
-  const peers         = ref<Record<string, Peer>>({})
-  const speakingPeers = ref<Set<string>>(new Set())
+  const voiceViewActive = ref<boolean>(false) // false = minimised → show text channel
+  const peers           = ref<Record<string, Peer>>({})
+  const speakingPeers   = ref<Set<string>>(new Set())
 
   const peerCount     = computed(() => Object.keys(peers.value).length)
   const meshWarning   = computed(() => peerCount.value >= MESH_PEER_LIMIT)
@@ -65,6 +66,7 @@ export const useVoiceStore = defineStore('voice', () => {
       webrtcService.addAudioTrack(track, stream)
     }
 
+    voiceViewActive.value = true
     session.value = {
       channelId,
       serverId,
@@ -95,15 +97,16 @@ export const useVoiceStore = defineStore('voice', () => {
     audioService.detachAll()
     audioService.setLocalStream(null as unknown as MediaStream)
 
-    localStream.value  = null
-    screenStream.value = null
-    screenStreams.value = {}
-    session.value      = null
-    peers.value        = {}
-    isMuted.value      = false
-    isDeafened.value   = false
+    localStream.value     = null
+    screenStream.value    = null
+    screenStreams.value    = {}
+    voiceViewActive.value = false
+    session.value         = null
+    peers.value           = {}
+    isMuted.value         = false
+    isDeafened.value      = false
     loopbackEnabled.value = false
-    speakingPeers.value.clear()
+    speakingPeers.value   = new Set()
   }
 
   // ── Mute / Deafen ─────────────────────────────────────────────────────────
@@ -201,8 +204,10 @@ export const useVoiceStore = defineStore('voice', () => {
   // ── Peer management ───────────────────────────────────────────────────────
 
   function setPeerSpeaking(userId: string, speaking: boolean): void {
-    if (speaking) speakingPeers.value.add(userId)
-    else          speakingPeers.value.delete(userId)
+    const next = new Set(speakingPeers.value)
+    if (speaking) next.add(userId)
+    else          next.delete(userId)
+    speakingPeers.value = next
     if (peers.value[userId]) peers.value[userId] = { ...peers.value[userId], speaking }
   }
 
@@ -213,7 +218,9 @@ export const useVoiceStore = defineStore('voice', () => {
   function removePeer(userId: string): void {
     delete peers.value[userId]
     delete screenStreams.value[userId]
-    speakingPeers.value.delete(userId)
+    const next = new Set(speakingPeers.value)
+    next.delete(userId)
+    speakingPeers.value = next
     audioService.detachRemoteStream(userId)
   }
 
@@ -225,6 +232,7 @@ export const useVoiceStore = defineStore('voice', () => {
     isMuted,
     isDeafened,
     loopbackEnabled,
+    voiceViewActive,
     peers,
     speakingPeers,
     peerCount,

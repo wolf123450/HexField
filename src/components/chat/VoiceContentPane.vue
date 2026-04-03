@@ -2,6 +2,9 @@
   <div class="voice-pane">
     <!-- Toolbar -->
     <div class="voice-pane-toolbar">
+      <button class="tb-btn" title="Minimise voice view" @click="voiceStore.voiceViewActive = false">
+        <AppIcon :path="mdiChevronDown" :size="16" />
+      </button>
       <span class="voice-pane-title">
         <AppIcon :path="mdiVolumeHigh" :size="16" />
         {{ channelName }}
@@ -32,6 +35,19 @@
     <div class="voice-pane-body">
       <!-- Video grid -->
       <div class="video-grid" :class="`grid-${activeTiles.length}`">
+        <!-- Self avatar tile (voice-only, not sharing screen) -->
+        <div
+          v-if="!voiceStore.screenStream && !hiddenStreams.has('self')"
+          class="video-tile avatar-tile"
+          :class="{ speaking: voiceStore.speakingPeers.has('self') }"
+        >
+          <div class="av-ring" />
+          <div class="av-avatar">{{ selfInitials }}</div>
+          <div class="tile-overlay">
+            <span class="tile-label">{{ identityStore.displayName || 'You' }} (you)</span>
+          </div>
+        </div>
+
         <!-- Own screen share -->
         <div
           v-if="voiceStore.screenStream && !hiddenStreams.has('local')"
@@ -44,13 +60,17 @@
             autoplay
             muted
             playsinline
-            class="video-el mirror"
+            class="video-el"
+            :class="{ mirror: flippedTiles.has('local') }"
           />
           <div class="tile-overlay">
             <span class="tile-label">
               <AppIcon :path="mdiMonitorShare" :size="12" />
               You (sharing)
             </span>
+            <button class="tile-flip-btn" :class="{ active: flippedTiles.has('local') }" title="Mirror" @click.stop="toggleFlip('local')">
+              <AppIcon :path="mdiMirrorVariant" :size="14" />
+            </button>
             <button class="tile-hide-btn" title="Hide" @click.stop="hiddenStreams.add('local')">
               <AppIcon :path="mdiEyeOff" :size="14" />
             </button>
@@ -70,19 +90,23 @@
             autoplay
             playsinline
             class="video-el"
+            :class="{ mirror: flippedTiles.has(userId) }"
           />
           <div class="tile-overlay">
             <span class="tile-label">
               <AppIcon :path="mdiMonitorShare" :size="12" />
               {{ peerName(userId) }}
             </span>
+            <button class="tile-flip-btn" :class="{ active: flippedTiles.has(userId) }" title="Mirror" @click.stop="toggleFlip(userId)">
+              <AppIcon :path="mdiMirrorVariant" :size="14" />
+            </button>
             <button class="tile-hide-btn" title="Hide" @click.stop="hiddenStreams.add(userId)">
               <AppIcon :path="mdiEyeOff" :size="14" />
             </button>
           </div>
         </div>
 
-        <!-- Non-video peers (shown unless hideNonVideo) -->
+        <!-- Non-video remote peers (shown unless hideNonVideo) -->
         <template v-if="!hideNonVideo">
           <div
             v-for="peer in nonVideoPeers"
@@ -101,14 +125,14 @@
         <!-- Empty state -->
         <div v-if="activeTiles.length === 0" class="empty-grid">
           <AppIcon :path="mdiVolumeHigh" :size="48" />
-          <p>No one is sharing their screen yet</p>
+          <p>Waiting for others to join&hellip;</p>
         </div>
       </div>
 
       <!-- Hidden tile restore bar -->
       <div v-if="hiddenStreams.size" class="hidden-bar">
         <span class="hidden-label">{{ hiddenStreams.size }} hidden</span>
-        <button class="tb-btn" @click="hiddenStreams.clear()">Show all</button>
+        <button class="tb-btn" @click="clearHidden">Show all</button>
       </div>
 
       <!-- Chat overlay panel -->
@@ -128,21 +152,26 @@ import {
   mdiEye,
   mdiEyeOff,
   mdiMessageText,
+  mdiChevronDown,
+  mdiMirrorVariant,
 } from '@mdi/js'
 import { useVoiceStore }    from '@/stores/voiceStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useServersStore }  from '@/stores/serversStore'
+import { useIdentityStore } from '@/stores/identityStore'
 import MessageHistory from '@/components/chat/MessageHistory.vue'
 import MessageInput   from '@/components/chat/MessageInput.vue'
 
 const voiceStore    = useVoiceStore()
 const channelsStore = useChannelsStore()
 const serversStore  = useServersStore()
+const identityStore = useIdentityStore()
 
-const chatOpen    = ref(false)
+const chatOpen     = ref(false)
 const hideNonVideo = ref(false)
-const focusedId   = ref<string | null>(null)
+const focusedId    = ref<string | null>(null)
 const hiddenStreams = reactive(new Set<string>())
+const flippedTiles = reactive(new Set<string>())
 
 const channelId = computed(() => voiceStore.session?.channelId ?? null)
 const serverId  = computed(() => voiceStore.session?.serverId  ?? '')
@@ -154,19 +183,25 @@ const channelName = computed(() => {
   return channelsStore.channels[sid]?.find(c => c.id === cid)?.name ?? ''
 })
 
+const selfInitials = computed(() => {
+  const name = identityStore.displayName || '?'
+  return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+})
+
 // Remote shares visible (not hidden)
 const remoteShares = computed<[string, MediaStream][]>(() =>
   Object.entries(voiceStore.screenStreams).filter(([userId]) => !hiddenStreams.has(userId))
 )
 
-// Non-video peers (in session, no screen share, not hidden)
+// Non-video remote peers (in session, no screen share)
 const nonVideoPeers = computed(() =>
   Object.values(voiceStore.peers).filter(p => !voiceStore.screenStreams[p.userId])
 )
 
-// Total active tiles (for grid sizing)
+// Total active tiles (for grid sizing) — self is always counted (voice-only or sharing)
 const activeTiles = computed(() => {
   const tiles: string[] = []
+  if (!voiceStore.screenStream && !hiddenStreams.has('self')) tiles.push('self')
   if (voiceStore.screenStream && !hiddenStreams.has('local')) tiles.push('local')
   for (const [userId] of remoteShares.value) tiles.push(userId)
   if (!hideNonVideo.value) nonVideoPeers.value.forEach(p => tiles.push(p.userId))
@@ -175,6 +210,15 @@ const activeTiles = computed(() => {
 
 function toggleFocus(id: string) {
   focusedId.value = focusedId.value === id ? null : id
+}
+
+function toggleFlip(id: string) {
+  if (flippedTiles.has(id)) flippedTiles.delete(id)
+  else flippedTiles.add(id)
+}
+
+function clearHidden() {
+  hiddenStreams.clear()
 }
 
 // Bind reactive MediaStream to <video> srcObject
@@ -226,6 +270,8 @@ function peerInitials(userId: string): string {
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
   gap: var(--spacing-md);
+  position: relative;
+  z-index: 1;
 }
 
 .voice-pane-title {
@@ -379,6 +425,7 @@ function peerInitials(userId: string): string {
   text-shadow: 0 1px 3px rgba(0,0,0,0.8);
 }
 
+.tile-flip-btn,
 .tile-hide-btn {
   background: rgba(255,255,255,0.15);
   border: none;
@@ -391,7 +438,8 @@ function peerInitials(userId: string): string {
   padding: 2px;
   transform: none;
 }
-.tile-hide-btn:hover { background: rgba(255,255,255,0.3); }
+.tile-flip-btn:hover, .tile-hide-btn:hover { background: rgba(255,255,255,0.3); }
+.tile-flip-btn.active { background: rgba(88,101,242,0.6); }
 
 /* Hidden bar */
 .hidden-bar {
