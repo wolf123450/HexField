@@ -2,11 +2,11 @@
   <div
     class="message-bubble"
     :class="{ 'has-header': showHeader }"
-    @mouseenter="isHovered = true"
+    @mouseenter="onBubbleEnter"
     @mouseleave="isHovered = false"
   >
     <!-- Hover action bar: quick-react + full picker button -->
-    <div v-if="isHovered && message.content !== null" class="message-actions">
+    <div v-if="isHovered && message.content !== null" class="message-actions" :class="{ 'actions-below': actionsBelow }">
       <button
         v-for="emojiId in emojiStore.topEmoji"
         :key="emojiId"
@@ -103,7 +103,15 @@ const uiStore       = useUIStore()
 const messagesStore = useMessagesStore()
 const emojiStore    = useEmojiStore()
 
-const isHovered = ref(false)
+const isHovered   = ref(false)
+const actionsBelow = ref(false)
+
+function onBubbleEnter(e: MouseEvent) {
+  isHovered.value = true
+  // If the message is within 60px of the top of the viewport the actions bar
+  // would be clipped by the scroll container — flip it below the bubble instead.
+  actionsBelow.value = (e.currentTarget as HTMLElement).getBoundingClientRect().top < 60
+}
 const picker    = ref<InstanceType<typeof EmojiPicker> | null>(null)
 const pickerX   = ref(0)
 const pickerY   = ref(0)
@@ -198,6 +206,18 @@ async function quickReact(emojiId: string) {
   padding: 2px;
   z-index: 10;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+/* Flip bar below the bubble when hovering near the top of the screen */
+.message-actions.actions-below {
+  top: auto;
+  bottom: -16px;
+}
+
+/* Flip bar below the bubble when near the top of the screen */
+.message-actions.actions-below {
+  top: auto;
+  bottom: -16px;
 }
 
 .action-btn {
