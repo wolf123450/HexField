@@ -157,6 +157,73 @@
 
 ---
 
+## Test Coverage — Retroactive (Phases 1–5)
+
+> No tests were written during implementation. The items below represent the full test debt for shipped code.
+> Convention: `src/<path>/__tests__/<file>.test.ts` for frontend; `#[cfg(test)]` blocks in the same Rust file.
+
+### `cryptoService.ts`
+- [ ] `encryptMessage` → `decryptMessage` round-trip (X25519 ECDH + XSalsa20-Poly1305)
+- [ ] Ed25519 `signMessage` → `verifyMessage` round-trip
+- [ ] `decryptMessage` rejects tampered ciphertext (returns null / throws)
+- [ ] `decryptMessage` rejects mismatched signature
+- [ ] Key derivation is deterministic for the same seed
+
+### `identityStore`
+- [ ] First launch: generates Ed25519/X25519 keypair and persists to DB
+- [ ] Subsequent launch: loads existing keys without generating new ones
+- [ ] `setAvatar` stores data URL and exposes it via `avatarDataUrl`
+
+### `serversStore`
+- [ ] `createServer` writes to DB and populates `servers` reactive map
+- [ ] `upsertMember` preserves existing `avatarDataUrl` when caller omits it
+- [ ] `upsertMember` silently rejects unknown `serverId`
+- [ ] `upsertMember` applies incoming `avatarDataUrl` when provided
+
+### `channelsStore`
+- [ ] `createChannel` appears in `channels[serverId]` sorted by position
+- [ ] `renameChannel` updates DB and reactive state atomically
+- [ ] `deleteChannel` removes entry from map and DB
+
+### `messagesStore`
+- [ ] `sendMessage` adds optimistic entry then DB-persisted entry with same `id`
+- [ ] `getMessagesWithMutations`: `edit` mutation applies last-write-wins (HLC order)
+- [ ] `getMessagesWithMutations`: `delete` mutation nulls `content`
+- [ ] `getMessagesWithMutations`: `reaction_add` / `reaction_remove` fold correctly
+- [ ] Cursor pagination: `loadMessages` returns correct window and advances cursor
+- [ ] `loadMessages` on empty channel returns empty array without error
+
+### `hlc.ts`
+- [ ] `generateHLC` produces monotonically increasing values within the same millisecond
+- [ ] `compareHLC` orders by wall time first, then by sequence counter
+- [ ] `advanceHLC` advances past a remote HLC that is strictly ahead of local clock
+
+### `devicesStore`
+- [ ] `receiveAttestedDevice` persists device with `revoked: false` (not integer `0`)
+- [ ] `revokeDevice` marks device `revoked: true` in DB and reactive state
+
+### Rust — `db_save_message` / `db_load_messages`
+- [ ] Save a message then load it back: returned row is field-for-field identical
+- [ ] Cursor pagination: `before_ts` excludes messages at or after the cursor
+- [ ] Loading an empty channel returns an empty vec without error
+
+### Rust — `db_save_mutation` side effects
+- [ ] `delete` mutation causes subsequent `db_load_messages` to return `content = NULL` for target
+- [ ] `edit` mutation: later HLC timestamp wins over an earlier one for the same `message_id`
+- [ ] `reaction_add` mutation is idempotent (same user + emoji stored once)
+- [ ] `reaction_remove` after `reaction_add` cancels it in the materialized view
+
+### Rust — `db_upsert_member`
+- [ ] Insert new member then upsert with different `display_name` — row is updated, not duplicated
+- [ ] Upsert preserves all fields when updating only `display_name`
+
+### Rust — `db_save_device` / `db_load_devices`
+- [ ] Save `revoked: false`, load back → `revoked` is `false` (bool, not `0`)
+- [ ] Save `revoked: true`, load back → `revoked` is `true`
+- [ ] Saving two devices for the same user; load returns both
+
+---
+
 ## Phase 5b — P2P File Attachments
 
 **Goal**: Large file transfers without a server, using content-addressed gossip.
@@ -169,6 +236,12 @@
 - [ ] Seeding: serve chunks from local cache to requesting peers
 - [ ] Retention setting (default 30 days) — wired to auto-pruning
 - [ ] Phase 1 inline base64 path remains active for ≤100KB
+- [ ] **Tests**
+  - [ ] BLAKE3 hash is deterministic for same content
+  - [ ] Chunk reassembly produces byte-identical file to original
+  - [ ] Partial download resumes from correct chunk offset
+  - [ ] Chunk integrity: corrupted chunk is rejected and re-requested
+  - [ ] Retention pruning removes files older than configured threshold
 
 ---
 
@@ -183,6 +256,10 @@
 - [ ] Rendezvous server TURN endpoint (if server configured)
 - [ ] Settings > Voice: manual TURN server entry
 - [ ] Test: symmetric NAT simulation (two clients behind carrier-grade NAT), verify relay fallback
+- [ ] **Tests**
+  - [ ] `detectNATType()` returns expected type for full-cone, port-restricted, and symmetric setups (mock STUN)
+  - [ ] `buildICEConfig` includes relay candidates when NAT type is symmetric
+  - [ ] Relay peer advertisement is included in gossip message schema
 
 ---
 
@@ -208,6 +285,17 @@
 - [ ] Auto-update flow (already in skeleton — verify works end-to-end)
 - [ ] Key export / import / device revocation UI in Settings > Privacy
 - [ ] Privacy settings: show-deleted-placeholder toggle, confirm-before-delete toggle
+- [ ] **Tests**
+  - [ ] FTS5 message search: exact match, partial match, no results
+  - [ ] FTS5 search excludes `content = NULL` (deleted) rows
+  - [ ] Passphrase key wrap: wrapped key cannot be decrypted with wrong passphrase
+  - [ ] Passphrase key wrap: correct passphrase recovers original keypair
+  - [ ] Storage pruning: oldest attachments deleted first; messages pruned only after attachments
+  - [ ] Storage usage calculation matches sum of attachment file sizes
+  - [ ] Archive export produces a valid signed bundle; import restores server state
+  - [ ] `server_rebaseline` mutation: messages before `historyStartsAt` are not synced to joining peers
+  - [ ] OS notification fires on mention; does not fire when window is focused
+  - [ ] Auto-update: version comparison correctly identifies when an update is available
 
 ---
 
@@ -218,3 +306,7 @@
 - [ ] `MatrixProvider` — `matrix-js-sdk`, map rooms → Channels, spaces → Servers
 - [ ] Settings toggle to switch providers
 - [ ] Preserve Vue UI layer unchanged across both providers
+- [ ] **Tests**
+  - [ ] `NativeP2PProvider` and `MatrixProvider` satisfy the `NetworkProvider` interface contract
+  - [ ] Switching providers: active channel messages remain visible and reactive
+  - [ ] `MatrixProvider`: room → Channel mapping is bijective (no duplicates, no gaps)
