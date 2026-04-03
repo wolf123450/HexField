@@ -46,7 +46,10 @@ function getInitials(name?: string): string {
 
 async function selectServer(serverId: string) {
   serversStore.setActiveServer(serverId)
-  await channelsStore.loadChannels(serverId)
+  await Promise.all([
+    channelsStore.loadChannels(serverId),
+    serversStore.fetchMembers(serverId),
+  ])
   const channels = channelsStore.channels[serverId] ?? []
   const first = channels.find(c => c.type === 'text')
   if (first) channelsStore.setActiveChannel(first.id)

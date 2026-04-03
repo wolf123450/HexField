@@ -26,6 +26,10 @@ class AudioService {
   private loopbackSource:  MediaStreamAudioSourceNode | null = null
   private loopbackDest:    MediaStreamAudioDestinationNode | null = null
   private loopbackElement: HTMLAudioElement | null = null
+  // Local VAD
+  private localVADCtx: AudioContext | null = null
+  private localVADInterval: ReturnType<typeof setInterval> | null = null
+  private localNotSpeakingTimer: ReturnType<typeof setTimeout> | null = null
 
   // ── Initialise ─────────────────────────────────────────────────────────────
 
@@ -36,7 +40,61 @@ class AudioService {
   // ── Local stream ───────────────────────────────────────────────────────────
 
   setLocalStream(stream: MediaStream): void {
+    // Stop any existing local VAD
+    this.stopLocalVAD()
     this.localStream = stream
+    if (!stream) return
+    // Start VAD for self-speaking indicator
+    const ctx     = new AudioContext()
+    const src     = ctx.createMediaStreamSource(stream)
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 512
+    src.connect(analyser)
+    this.localVADCtx = ctx
+    const data = new Float32Array(analyser.fftSize)
+    this.localVADInterval = setInterval(() => {
+      const trackEnabled = stream.getAudioTracks().some(t => t.enabled)
+      if (!trackEnabled) {
+        this.scheduleLocalNotSpeaking()
+        return
+      }
+      analyser.getFloatTimeDomainData(data)
+      let sum = 0
+      for (let i = 0; i < data.length; i++) sum += data[i] * data[i]
+      const rms = Math.sqrt(sum / data.length)
+      if (rms > 0.01) {
+        if (this.localNotSpeakingTimer !== null) {
+          clearTimeout(this.localNotSpeakingTimer)
+          this.localNotSpeakingTimer = null
+        }
+        this.onSpeakingChange?.('self', true)
+      } else {
+        this.scheduleLocalNotSpeaking()
+      }
+    }, 100)
+  }
+
+  private scheduleLocalNotSpeaking() {
+    if (this.localNotSpeakingTimer === null) {
+      this.localNotSpeakingTimer = setTimeout(() => {
+        this.onSpeakingChange?.('self', false)
+        this.localNotSpeakingTimer = null
+      }, 300)
+    }
+  }
+
+  private stopLocalVAD() {
+    if (this.localVADInterval !== null) {
+      clearInterval(this.localVADInterval)
+      this.localVADInterval = null
+    }
+    if (this.localNotSpeakingTimer !== null) {
+      clearTimeout(this.localNotSpeakingTimer)
+      this.localNotSpeakingTimer = null
+    }
+    this.localVADCtx?.close().catch(() => {})
+    this.localVADCtx = null
+    this.onSpeakingChange?.('self', false)
   }
 
   setLocalMuted(muted: boolean): void {
@@ -120,6 +178,7 @@ class AudioService {
     for (const userId of [...this.peers.keys()]) {
       this.detachRemoteStream(userId)
     }
+    this.stopLocalVAD()
     this.setLoopback(false)
   }
 

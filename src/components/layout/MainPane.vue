@@ -1,10 +1,16 @@
 <template>
   <main class="main-pane">
-    <!-- Voice content pane takes over when in a voice session -->
-    <VoiceContentPane v-if="voiceStore.session" />
+    <!-- Voice content pane: only while in voice AND voice view is active -->
+    <VoiceContentPane v-if="voiceStore.session && voiceStore.voiceViewActive" />
 
     <!-- Normal text channel view -->
     <template v-else-if="activeChannel">
+      <!-- Voice-active banner: click to return to voice pane -->
+      <div v-if="voiceStore.session" class="voice-active-bar" @click="voiceStore.voiceViewActive = true">
+        <AppIcon :path="mdiVolumeHigh" :size="14" />
+        <span>Connected to <strong>{{ voiceChannelName }}</strong></span>
+        <span class="vab-hint">Click to return</span>
+      </div>
       <div class="channel-header">
         <span class="channel-hash">#</span>
         <span class="channel-name">{{ activeChannel.name }}</span>
@@ -35,6 +41,7 @@ import { computed } from 'vue'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useVoiceStore } from '@/stores/voiceStore'
+import { mdiVolumeHigh } from '@mdi/js'
 import MessageHistory from '@/components/chat/MessageHistory.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
 import VoiceContentPane from '@/components/chat/VoiceContentPane.vue'
@@ -52,6 +59,13 @@ const activeChannel = computed(() => {
   }
   return null
 })
+
+const voiceChannelName = computed(() => {
+  const session = voiceStore.session
+  if (!session) return ''
+  const list = channelsStore.channels[session.serverId] ?? []
+  return list.find(c => c.id === session.channelId)?.name ?? 'voice'
+})
 </script>
 
 <style scoped>
@@ -61,6 +75,27 @@ const activeChannel = computed(() => {
   overflow: hidden;
   background: var(--bg-primary);
   min-width: 0;
+}
+
+.voice-active-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 0 var(--spacing-md);
+  height: 32px;
+  background: rgba(59,165,93,0.15);
+  border-bottom: 1px solid rgba(59,165,93,0.3);
+  font-size: 13px;
+  color: #3ba55d;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.voice-active-bar:hover { background: rgba(59,165,93,0.25); }
+.vab-hint {
+  margin-left: auto;
+  font-size: 11px;
+  opacity: 0.7;
 }
 
 .channel-header {

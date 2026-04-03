@@ -144,6 +144,13 @@
 - [x] `voiceStore.screenStreams` map — store remote video tracks keyed by userId (spec §13)
 - [x] `UserProfileModal.vue` — click avatar to open profile; own profile editable; per-peer volume slider (spec §15)
 - [ ] Video quality + bitrate settings in Settings > Voice & Video (spec §14)
+- [ ] Custom avatar upload (static + animated GIF) in own-profile view in `UserProfileModal` (spec §16)
+- [ ] `<AvatarImage>` component — replaces initials circles everywhere; GIF frozen by default, animates on hover (spec §16)
+- [ ] Broadcast avatar + profile changes to peers via `profile_update` P2P mutation (spec §16)
+- [ ] User presence status broadcast (`presence_update` P2P message) on status change and peer join (spec §17)
+- [ ] `ServerMember.status` field + `MemberRow` status dot wired to live presence data (spec §17)
+- [ ] Profile banners (gradient color picker or uploaded image) and bio text (≤200 chars) in `UserProfileModal` (spec §18)
+- [ ] P2P `profile_request` / `profile_update` protocol to fetch remote user's full profile on demand (spec §18)
 
 ---
 
