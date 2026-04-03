@@ -239,6 +239,46 @@ export const useServersStore = defineStore('servers', () => {
   }
 
   /**
+   * Upsert a single member by identity. Safe to call with data from a remote peer.
+   * Only accepts members for servers this instance already knows about.
+   */
+  async function upsertMember(m: {
+    userId: string
+    serverId: string
+    displayName: string
+    publicSignKey: string
+    publicDHKey: string
+    roles: string[]
+    joinedAt: string
+    onlineStatus: string
+  }) {
+    if (!servers.value[m.serverId]) return // Unknown server — reject silently
+    await invoke('db_upsert_member', {
+      member: {
+        user_id:         m.userId,
+        server_id:       m.serverId,
+        display_name:    m.displayName,
+        roles:           JSON.stringify(m.roles),
+        joined_at:       m.joinedAt,
+        public_sign_key: m.publicSignKey,
+        public_dh_key:   m.publicDHKey,
+        online_status:   m.onlineStatus,
+      },
+    })
+    if (!members.value[m.serverId]) members.value[m.serverId] = {}
+    members.value[m.serverId][m.userId] = {
+      userId:        m.userId,
+      serverId:      m.serverId,
+      displayName:   m.displayName,
+      publicSignKey: m.publicSignKey,
+      publicDHKey:   m.publicDHKey,
+      roles:         m.roles,
+      joinedAt:      m.joinedAt,
+      onlineStatus:  m.onlineStatus as ServerMember['onlineStatus'],
+    }
+  }
+
+  /**
    * Generate and store a short-lived invite token for the given server.
    * Tokens expire after 1 hour in-memory (no persistence needed).
    */
@@ -274,6 +314,7 @@ export const useServersStore = defineStore('servers', () => {
     loadServers,
     createServer,
     fetchMembers,
+    upsertMember,
     setActiveServer,
     updateMemberStatus,
     updateMemberDisplayName,

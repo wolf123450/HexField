@@ -290,18 +290,24 @@ class WebRTCService {
       this.setupDataChannel(userId, state!, event.channel)
     }
 
-    // Negotiation needed (for renegotiation)
+    // Negotiation needed (for renegotiation — fires when tracks are added/removed)
     pc.onnegotiationneeded = async () => {
+      // Guard: only create an offer when signaling state is stable to avoid
+      // m-line ordering violations that occur after perfect-negotiation rollbacks.
+      if (pc.signalingState !== 'stable') return
       try {
         state!.makingOffer = true
-        const offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
+        // Use implicit setLocalDescription() — browser handles offer creation
+        // internally, preserving existing m-line indices correctly.
+        await pc.setLocalDescription()
         await signalingService.send({
           type: 'signal_offer',
           to: userId,
           from: this.localUserId,
           sdp: pc.localDescription!.sdp,
         })
+      } catch (e) {
+        console.warn('[webrtc] onnegotiationneeded error:', e)
       } finally {
         state!.makingOffer = false
       }

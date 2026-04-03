@@ -103,7 +103,12 @@ watch(() => uiStore.showInviteModal, async (open) => {
   // Render QR code once we have everything.
   if (inviteLink.value) {
     try {
-      qrSvg.value = await QRCode.toString(inviteLink.value, { type: 'svg', margin: 1 })
+      qrSvg.value = await QRCode.toString(inviteLink.value, {
+        type: 'svg',
+        margin: 1,
+        width: 140,
+        errorCorrectionLevel: 'L',
+      })
     } catch {
       qrSvg.value = ''
     }
@@ -141,7 +146,7 @@ function close() {
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: var(--spacing-xl);
-  width: 480px;
+  width: 400px;
   max-width: 90vw;
   display: flex;
   flex-direction: column;
@@ -181,8 +186,8 @@ function close() {
   padding: var(--spacing-md);
 }
 .qr-wrapper :deep(svg) {
-  width: 160px;
-  height: 160px;
+  width: 140px;
+  height: 140px;
 }
 
 .field-label {
