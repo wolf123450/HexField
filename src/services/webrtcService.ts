@@ -139,17 +139,27 @@ class WebRTCService {
   }
 
   /**
-   * Add or replace the video (screen-share) track on all existing peer connections.
+   * Add or replace the video (screen-share) track on all existing peer connections,
+   * then optionally cap the outgoing bitrate.
    */
-  addScreenShareTrack(track: MediaStreamTrack): void {
+  addScreenShareTrack(track: MediaStreamTrack, maxBitrateKbps?: number): void {
     for (const [, state] of this.peers) {
       const sender = state.pc.getSenders().find(s => s.track?.kind === 'video')
       if (sender) {
         sender.replaceTrack(track).catch(e => console.error('[webrtc] replaceTrack error:', e))
+        if (maxBitrateKbps != null) this._applyBitrateCap(sender, maxBitrateKbps)
       } else {
-        state.pc.addTrack(track)
+        const newSender = state.pc.addTrack(track)
+        if (maxBitrateKbps != null) this._applyBitrateCap(newSender, maxBitrateKbps)
       }
     }
+  }
+
+  private _applyBitrateCap(sender: RTCRtpSender, maxBitrateKbps: number): void {
+    const params = sender.getParameters()
+    if (!params.encodings) params.encodings = [{}]
+    params.encodings[0].maxBitrate = maxBitrateKbps * 1000
+    sender.setParameters(params).catch(e => console.warn('[webrtc] setParameters error:', e))
   }
 
   /**

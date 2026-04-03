@@ -33,6 +33,38 @@
     </div>
 
     <div class="form-row">
+      <label class="form-label">Screen Share Resolution</label>
+      <select v-model="videoQuality" class="form-select" @change="saveVideoQuality">
+        <option value="auto">Auto (match source)</option>
+        <option value="360p">360p — Low bandwidth</option>
+        <option value="720p">720p — Balanced</option>
+        <option value="1080p">1080p — High quality</option>
+      </select>
+      <p class="form-hint">Maximum resolution when sharing your screen. Takes effect on next screen share.</p>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label">Screen Share Frame Rate</label>
+      <select v-model="videoFrameRate" class="form-select" @change="saveVideoFrameRate">
+        <option :value="10">10 fps — Minimal bandwidth</option>
+        <option :value="15">15 fps — Balanced</option>
+        <option :value="30">30 fps — Smooth</option>
+      </select>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label">Screen Share Bitrate Cap</label>
+      <select v-model="videoBitrate" class="form-select" @change="saveVideoBitrate">
+        <option value="auto">Auto</option>
+        <option value="500kbps">500 kbps — Low</option>
+        <option value="1mbps">1 Mbps — Balanced</option>
+        <option value="2.5mbps">2.5 Mbps — High</option>
+        <option value="5mbps">5 Mbps — Very High</option>
+      </select>
+      <p class="form-hint">Limits the maximum outgoing bitrate for screen sharing. Lower values reduce CPU and bandwidth usage.</p>
+    </div>
+
+    <div class="form-row">
       <label class="form-label">Custom TURN Servers</label>
       <textarea
         v-model="turnServersText"
@@ -67,6 +99,9 @@ const inputDevice   = ref(settingsStore.settings.inputDeviceId)
 const outputDevice  = ref(settingsStore.settings.outputDeviceId)
 const rendezvousUrl = ref(settingsStore.settings.rendezvousServerUrl)
 const noiseSuppression = ref(settingsStore.settings.noiseSuppression)
+const videoQuality  = ref(settingsStore.settings.videoQuality)
+const videoBitrate  = ref(settingsStore.settings.videoBitrate)
+const videoFrameRate = ref<10 | 15 | 30>(settingsStore.settings.videoFrameRate)
 const audioInputs   = ref<MediaDeviceInfo[]>([])
 const audioOutputs  = ref<MediaDeviceInfo[]>([])
 const turnServersText = ref(
@@ -87,6 +122,9 @@ function saveInputDevice()   { settingsStore.updateSetting('inputDeviceId', inpu
 function saveOutputDevice()  { settingsStore.updateSetting('outputDeviceId', outputDevice.value) }
 function saveRendezvousUrl() { settingsStore.updateSetting('rendezvousServerUrl', rendezvousUrl.value.trim()) }
 function saveNoiseSuppression() { settingsStore.updateSetting('noiseSuppression', noiseSuppression.value) }
+function saveVideoQuality()  { settingsStore.updateSetting('videoQuality', videoQuality.value) }
+function saveVideoBitrate()  { settingsStore.updateSetting('videoBitrate', videoBitrate.value) }
+function saveVideoFrameRate() { settingsStore.updateSetting('videoFrameRate', videoFrameRate.value) }
 function saveTURNServers() {
   try {
     const servers = turnServersText.value.trim() ? JSON.parse(turnServersText.value) : []

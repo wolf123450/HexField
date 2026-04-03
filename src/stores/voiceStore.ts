@@ -138,6 +138,25 @@ export const useVoiceStore = defineStore('voice', () => {
   async function startScreenShare(): Promise<void> {
     let stream: MediaStream
 
+    const { useSettingsStore } = await import('./settingsStore')
+    const settings = useSettingsStore().settings
+
+    // Build getDisplayMedia video constraints from user preferences
+    const qualityMap: Record<string, { width: number; height: number }> = {
+      '360p':  { width: 640,  height: 360  },
+      '720p':  { width: 1280, height: 720  },
+      '1080p': { width: 1920, height: 1080 },
+    }
+    const dim = qualityMap[settings.videoQuality]
+    const videoConstraints: MediaTrackConstraints = dim
+      ? { width: { ideal: dim.width }, height: { ideal: dim.height }, frameRate: { ideal: settings.videoFrameRate } }
+      : { frameRate: { ideal: settings.videoFrameRate } }
+
+    const bitrateMap: Record<string, number | undefined> = {
+      'auto': undefined, '500kbps': 500, '1mbps': 1000, '2.5mbps': 2500, '5mbps': 5000,
+    }
+    const maxBitrateKbps = bitrateMap[settings.videoBitrate]
+
     // On Windows/Linux try chromeMediaSourceId path; fall back to getDisplayMedia
     const isMacOS = navigator.platform.toLowerCase().includes('mac')
 
@@ -158,7 +177,7 @@ export const useVoiceStore = defineStore('voice', () => {
                 mandatory: {
                   chromeMediaSource: 'desktop',
                   chromeMediaSourceId: selected,
-                  maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30,
+                  maxWidth: dim?.width ?? 1920, maxHeight: dim?.height ?? 1080, maxFrameRate: settings.videoFrameRate,
                 },
               },
             })
@@ -166,19 +185,19 @@ export const useVoiceStore = defineStore('voice', () => {
             return // User cancelled picker
           }
         } else {
-          stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: true, audio: false })
+          stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: videoConstraints, audio: false })
         }
       } catch {
-        stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: true, audio: false })
+        stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: videoConstraints, audio: false })
       }
     } else {
-      stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: true, audio: false })
+      stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: videoConstraints, audio: false })
     }
 
     screenStream.value = stream
     const videoTrack = stream.getVideoTracks()[0]
     if (videoTrack) {
-      webrtcService.addScreenShareTrack(videoTrack)
+      webrtcService.addScreenShareTrack(videoTrack, maxBitrateKbps)
       // Auto-stop when the user ends the share via browser UI
       videoTrack.onended = () => stopScreenShare()
     }
