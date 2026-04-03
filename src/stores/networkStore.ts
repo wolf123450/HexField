@@ -56,8 +56,10 @@ export const useNetworkStore = defineStore('network', () => {
         }
         // Start history reconciliation with newly connected peer
         startSync(userId).catch(e => console.warn('[network] sync start error:', e))
-        // Gossip our own device attestation
+        // Gossip our own device attestation and server memberships so the peer
+        // can decrypt our messages and show our display name.
         gossipOwnDevice(userId)
+        gossipOwnMembership(userId)
       },
       (userId) => {
         connectedPeers.value = connectedPeers.value.filter(id => id !== userId)
@@ -218,6 +220,11 @@ export const useNetworkStore = defineStore('network', () => {
       case 'device_attest':
         handleDeviceAttest(msg)
         break
+      case 'member_announce':
+        handleMemberAnnounce(userId, msg).catch(e =>
+          console.warn('[network] member_announce error:', e)
+        )
+        break
       case 'voice_join':
         handleVoiceJoin(userId, msg)
         break
@@ -362,6 +369,42 @@ export const useNetworkStore = defineStore('network', () => {
     })
   }
 
+  /**
+   * Gossip our own membership records to a newly connected peer.
+   * This lets them populate their members map so they can decrypt our messages
+   * and display our name/avatar correctly.
+   */
+  async function gossipOwnMembership(peerId: string) {
+    const { useServersStore } = await import('./serversStore')
+    const { useIdentityStore } = await import('./identityStore')
+    const serversStore  = useServersStore()
+    const identityStore = useIdentityStore()
+    if (!identityStore.userId) return
+
+    const uid = identityStore.userId
+    const ownMemberships = Object.values(serversStore.members)
+      .flatMap(serverMembers => Object.values(serverMembers))
+      .filter(m => m.userId === uid)
+
+    if (ownMemberships.length === 0) return
+    webrtcService.sendToPeer(peerId, { type: 'member_announce', members: ownMemberships })
+  }
+
+  async function handleMemberAnnounce(fromUserId: string, msg: Record<string, unknown>) {
+    const memberList = msg.members as Array<{
+      userId: string; serverId: string; displayName: string
+      publicSignKey: string; publicDHKey: string
+      roles: string[]; joinedAt: string; onlineStatus: string
+    }>
+    if (!Array.isArray(memberList)) return
+    const { useServersStore } = await import('./serversStore')
+    const serversStore = useServersStore()
+    for (const m of memberList) {
+      if (m.userId !== fromUserId) continue // Only accept sender's own memberships
+      await serversStore.upsertMember(m)
+    }
+  }
+
   async function handleDeviceLinkRequest(_fromUserId: string, msg: Record<string, unknown>) {
     const { useDevicesStore } = await import('./devicesStore')
     const devicesStore = useDevicesStore()
@@ -416,6 +459,8 @@ export const useNetworkStore = defineStore('network', () => {
     const channelId  = msg.channelId as string | undefined
     if (channelId && voiceStore.session?.channelId === channelId) {
       voiceStore.updatePeer(userId, { audioEnabled: true })
+      // Reply so the joiner knows we're already in this channel.
+      sendToPeer(userId, { type: 'voice_join', channelId })
     }
   }
 
@@ -492,12 +537,16 @@ export const useNetworkStore = defineStore('network', () => {
    * Send a `server_join_request` to a peer and wait for them to respond with
    * the full `ServerManifest`. Resolves with the manifest or rejects on timeout.
    */
-  function requestServerManifest(
+  async function requestServerManifest(
     peerId: string,
     serverId: string,
     inviteToken: string,
     timeoutMs = 20000,
   ): Promise<ServerManifest> {
+    // Include our identity so the owner can upsert us as a member immediately.
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         _pendingServerJoin = null
@@ -509,7 +558,14 @@ export const useNetworkStore = defineStore('network', () => {
         reject:  (err)      => { clearTimeout(timer); reject(err)      },
       }
 
-      sendToPeer(peerId, { type: 'server_join_request', inviteToken, serverId })
+      sendToPeer(peerId, {
+        type:          'server_join_request',
+        inviteToken,
+        serverId,
+        displayName:   identityStore.displayName,
+        publicSignKey: identityStore.publicSignKey ?? '',
+        publicDHKey:   identityStore.publicDHKey   ?? '',
+      })
     })
   }
 
@@ -534,6 +590,23 @@ export const useNetworkStore = defineStore('network', () => {
     if (!serversStore.validateInviteToken(token, serverId)) {
       sendToPeer(fromUserId, { type: 'server_join_error', error: 'Invalid or expired invite token' })
       return
+    }
+
+    // Upsert the joiner as a member so we can encrypt messages to them.
+    const joinerDisplayName   = (msg.displayName   as string | undefined) ?? 'Player'
+    const joinerPublicSignKey = (msg.publicSignKey as string | undefined) ?? ''
+    const joinerPublicDHKey   = (msg.publicDHKey   as string | undefined) ?? ''
+    if (joinerPublicSignKey && joinerPublicDHKey) {
+      await serversStore.upsertMember({
+        userId:        fromUserId,
+        serverId,
+        displayName:   joinerDisplayName,
+        publicSignKey: joinerPublicSignKey,
+        publicDHKey:   joinerPublicDHKey,
+        roles:         ['member'],
+        joinedAt:      new Date().toISOString(),
+        onlineStatus:  'online',
+      })
     }
 
     const server = serversStore.servers[serverId]
