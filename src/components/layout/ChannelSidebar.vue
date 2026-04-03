@@ -120,8 +120,12 @@
           @click="uiStore.openUserProfile(identityStore.userId ?? '', serversStore.activeServerId ?? '')"
           @contextmenu.prevent="openStatusPicker"
         >
-          <div class="self-avatar">{{ identityInitials }}</div>
-          <div class="self-status-dot" :class="ownStatus" :title="ownStatus" />
+          <AvatarImage :src="identityStore.avatarDataUrl" :name="identityStore.displayName" :size="32" />
+          <StatusBadge
+            :status="ownStatus"
+            :size="12"
+            class="self-status-badge"
+          />
         </div>
         <div class="self-name">{{ identityStore.displayName }}</div>
       </div>
@@ -462,35 +466,17 @@ function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline') {
   flex-shrink: 0;
   cursor: pointer;
 }
-.self-avatar-wrap:hover .self-avatar { opacity: 0.85; }
+.self-avatar-wrap:hover :deep(.avatar-image) { opacity: 0.85; }
 
-.self-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--accent-color);
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.self-status-dot {
+.self-status-badge {
   position: absolute;
-  bottom: 0;
-  right: 0;
-  width: 11px;
-  height: 11px;
+  bottom: -1px;
+  right: -1px;
+  background: var(--bg-tertiary);
   border-radius: 50%;
-  border: 2px solid var(--bg-tertiary);
-  cursor: pointer;
+  padding: 1px;
+  box-sizing: content-box;
 }
-.self-status-dot.online  { background: var(--success-color); }
-.self-status-dot.idle    { background: var(--warning-color); }
-.self-status-dot.dnd     { background: var(--error-color); }
-.self-status-dot.offline { background: var(--text-tertiary); }
 
 .self-name {
   font-size: 14px;

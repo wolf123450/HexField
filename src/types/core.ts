@@ -31,6 +31,7 @@ export interface ServerMember {
   publicSignKey:   string
   publicDHKey:     string
   onlineStatus:    OnlineStatus
+  avatarDataUrl?:  string | null
 }
 
 export type OnlineStatus = 'online' | 'idle' | 'dnd' | 'offline'

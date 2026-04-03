@@ -56,6 +56,10 @@ export interface UserSettings {
   pushToTalkKey: string | null;
   noiseSuppression: boolean;
   customTURNServers: RTCIceServer[];
+  // Video quality (screen share)
+  videoQuality: 'auto' | '360p' | '720p' | '1080p';
+  videoBitrate: 'auto' | '500kbps' | '1mbps' | '2.5mbps' | '5mbps';
+  videoFrameRate: 10 | 15 | 30;
   // Network
   rendezvousServerUrl: string;
   soundEnabled: boolean;
@@ -92,6 +96,10 @@ const defaultSettings: UserSettings = {
   pushToTalkKey: null,
   noiseSuppression: true,
   customTURNServers: [],
+  // Video quality (screen share)
+  videoQuality: 'auto',
+  videoBitrate: 'auto',
+  videoFrameRate: 30,
   // Network
   rendezvousServerUrl: '',
   soundEnabled: true,

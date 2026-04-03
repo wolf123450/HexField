@@ -2,6 +2,8 @@ import { createApp } from "vue";
 import { createPinia } from "pinia";
 import App from "./App.vue";
 import AppIcon from "./components/AppIcon.vue";
+import StatusBadge from './components/StatusBadge.vue';
+import AvatarImage from './components/AvatarImage.vue';
 import router from "./router/index";
 import "./styles/global.css";
 import { APP_NAME } from "./appConfig";
@@ -49,4 +51,6 @@ if (import.meta.env.PROD) {
 app.use(pinia);
 app.use(router);
 app.component('AppIcon', AppIcon);
+app.component('StatusBadge', StatusBadge);
+app.component('AvatarImage', AvatarImage);
 app.mount("#app");

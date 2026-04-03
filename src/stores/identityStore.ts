@@ -16,10 +16,11 @@ export const useIdentityStore = defineStore('identity', () => {
     await cryptoService.init()
 
     // Try to load existing keys from SQLite
-    const existingSignKey = await invoke<string | null>('db_load_key', { keyId: 'local_sign_secret' })
-    const existingDHKey   = await invoke<string | null>('db_load_key', { keyId: 'local_dh_secret' })
-    const existingUserId  = await invoke<string | null>('db_load_key', { keyId: 'local_user_id' })
-    const existingName    = await invoke<string | null>('db_load_key', { keyId: 'local_display_name' })
+    const existingSignKey  = await invoke<string | null>('db_load_key', { keyId: 'local_sign_secret' })
+    const existingDHKey    = await invoke<string | null>('db_load_key', { keyId: 'local_dh_secret' })
+    const existingUserId   = await invoke<string | null>('db_load_key', { keyId: 'local_user_id' })
+    const existingName     = await invoke<string | null>('db_load_key', { keyId: 'local_display_name' })
+    const existingAvatar   = await invoke<string | null>('db_load_key', { keyId: 'local_avatar_data' })
 
     if (existingSignKey && existingDHKey && existingUserId) {
       // Load existing identity
@@ -28,6 +29,7 @@ export const useIdentityStore = defineStore('identity', () => {
       displayName.value   = existingName ?? 'Anonymous'
       publicSignKey.value = cryptoService.getPublicSignKey()
       publicDHKey.value   = cryptoService.getPublicDHKey()
+      if (existingAvatar) avatarDataUrl.value = existingAvatar
       isRegistered.value  = true
     } else {
       // First launch — generate new identity
