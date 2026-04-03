@@ -54,12 +54,13 @@ export const useNetworkStore = defineStore('network', () => {
         if (!connectedPeers.value.includes(userId)) {
           connectedPeers.value = [...connectedPeers.value, userId]
         }
-        // Start history reconciliation with newly connected peer
-        startSync(userId).catch(e => console.warn('[network] sync start error:', e))
-        // Gossip our own device attestation and server memberships so the peer
-        // can decrypt our messages and show our display name.
+        // Gossip identity first — member keys must be queued on the data channel
+        // before startSync sends sync_neg_init, so the remote decrypts our messages
+        // in the right order (SCTP preserves send order).
         gossipOwnDevice(userId)
         gossipOwnMembership(userId)
+        // Start history reconciliation with newly connected peer
+        startSync(userId).catch(e => console.warn('[network] sync start error:', e))
       },
       (userId) => {
         connectedPeers.value = connectedPeers.value.filter(id => id !== userId)
@@ -385,6 +386,8 @@ export const useNetworkStore = defineStore('network', () => {
     const ownMemberships = Object.values(serversStore.members)
       .flatMap(serverMembers => Object.values(serverMembers))
       .filter(m => m.userId === uid)
+      // Include avatar so the remote can render our image.
+      .map(m => ({ ...m, avatarDataUrl: identityStore.avatarDataUrl ?? undefined }))
 
     if (ownMemberships.length === 0) return
     webrtcService.sendToPeer(peerId, { type: 'member_announce', members: ownMemberships })
@@ -395,6 +398,7 @@ export const useNetworkStore = defineStore('network', () => {
       userId: string; serverId: string; displayName: string
       publicSignKey: string; publicDHKey: string
       roles: string[]; joinedAt: string; onlineStatus: string
+      avatarDataUrl?: string
     }>
     if (!Array.isArray(memberList)) return
     const { useServersStore } = await import('./serversStore')
@@ -402,6 +406,10 @@ export const useNetworkStore = defineStore('network', () => {
     for (const m of memberList) {
       if (m.userId !== fromUserId) continue // Only accept sender's own memberships
       await serversStore.upsertMember(m)
+      // Apply avatar in-memory (not persisted — re-gossiped on next connect).
+      if (m.avatarDataUrl && serversStore.members[m.serverId]?.[m.userId]) {
+        serversStore.members[m.serverId][m.userId].avatarDataUrl = m.avatarDataUrl
+      }
     }
   }
 
