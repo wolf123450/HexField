@@ -47,9 +47,16 @@ import { ref, computed, watch } from 'vue'
 import QRCode from 'qrcode'
 import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
+import { useChannelsStore } from '@/stores/channelsStore'
+import { useIdentityStore } from '@/stores/identityStore'
+import { useSettingsStore } from '@/stores/settingsStore'
+import type { ServerManifest } from '@/types/core'
 
-const uiStore      = useUIStore()
-const serversStore = useServersStore()
+const uiStore        = useUIStore()
+const serversStore   = useServersStore()
+const channelsStore  = useChannelsStore()
+const identityStore  = useIdentityStore()
+const settingsStore  = useSettingsStore()
 
 const qrSvg = ref<string>('')
 const copied = ref(false)
@@ -60,7 +67,22 @@ const server = computed(() =>
 
 const inviteLink = computed(() => {
   if (!server.value) return ''
-  return `gamechat://join/${server.value.id}/${server.value.inviteCode}`
+  const manifest: ServerManifest = {
+    v:        1,
+    server:   server.value,
+    channels: channelsStore.channels[server.value.id] ?? [],
+    rendezvousUrl: settingsStore.settings.rendezvousServerUrl || undefined,
+    owner: {
+      userId:        identityStore.userId        ?? '',
+      displayName:   identityStore.displayName,
+      publicSignKey: identityStore.publicSignKey ?? '',
+      publicDHKey:   identityStore.publicDHKey   ?? '',
+    },
+  }
+  // URL-safe base64 (no padding) so the code survives copy-paste and deep links
+  const encoded = btoa(JSON.stringify(manifest))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+  return `gamechat://join/${encoded}`
 })
 
 watch(() => uiStore.showInviteModal, async (open) => {

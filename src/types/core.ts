@@ -113,6 +113,23 @@ export interface CustomEmoji {
   createdAt:       string
 }
 
+// ── Server join manifest ───────────────────────────────────────────────────────
+// Self-contained bundle encoded in invite links so peers can bootstrap a server
+// locally without P2P networking.  Encoded as URL-safe base64 JSON in the path:
+//   gamechat://join/<base64url(JSON(ServerManifest))>
+export interface ServerManifest {
+  v:             1
+  server:        Server
+  channels:      Channel[]
+  rendezvousUrl?: string        // signaling server both peers must connect to
+  owner: {
+    userId:        string
+    displayName:   string
+    publicSignKey: string
+    publicDHKey:   string
+  }
+}
+
 // ── Encryption envelope ────────────────────────────────────────────────────────
 export interface EncryptedEnvelope {
   version:         1
