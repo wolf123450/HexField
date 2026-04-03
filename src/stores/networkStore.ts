@@ -59,6 +59,8 @@ export const useNetworkStore = defineStore('network', () => {
         // in the right order (SCTP preserves send order).
         gossipOwnDevice(userId)
         gossipOwnMembership(userId)
+        gossipOwnPresence(userId)
+        gossipOwnProfile(userId)
         // Start history reconciliation with newly connected peer
         startSync(userId).catch(e => console.warn('[network] sync start error:', e))
       },
@@ -226,6 +228,20 @@ export const useNetworkStore = defineStore('network', () => {
           console.warn('[network] member_announce error:', e)
         )
         break
+      case 'presence_update':
+        handlePresenceUpdate(userId, msg)
+        break
+      case 'profile_update':
+        handleProfileUpdate(userId, msg)
+        break
+      case 'profile_request':
+        handleProfileRequest(userId)
+        break
+      case 'server_avatar_update':
+        handleServerAvatarUpdate(msg).catch(e =>
+          console.warn('[network] server_avatar_update error:', e)
+        )
+        break
       case 'voice_join':
         handleVoiceJoin(userId, msg)
         break
@@ -270,7 +286,7 @@ export const useNetworkStore = defineStore('network', () => {
     if (!raw || typeof raw !== 'object') return
     const { useMessagesStore } = await import('./messagesStore')
     const messagesStore = useMessagesStore()
-    await messagesStore.applyMutation({
+    const mutation = {
       id:         raw.id as string,
       type:       raw.type as any,
       targetId:   raw.targetId as string,
@@ -281,7 +297,13 @@ export const useNetworkStore = defineStore('network', () => {
       logicalTs:  raw.logicalTs as string,
       createdAt:  raw.createdAt as string,
       verified:   true,
-    })
+    }
+    await messagesStore.applyMutation(mutation)
+    // Server-level mutations also update in-memory server/member state
+    if (['server_update', 'role_assign', 'role_revoke'].includes(mutation.type)) {
+      const { useServersStore } = await import('./serversStore')
+      useServersStore().applyServerMutation(mutation)
+    }
   }
 
   async function handleEmojiSync(msg: Record<string, unknown>) {
@@ -407,6 +429,113 @@ export const useNetworkStore = defineStore('network', () => {
       if (m.userId !== fromUserId) continue // Only accept sender's own memberships
       await serversStore.upsertMember(m)
     }
+  }
+
+  async function handlePresenceUpdate(fromUserId: string, msg: Record<string, unknown>) {
+    const status = msg.status as string
+    if (!status) return
+    const { useServersStore } = await import('./serversStore')
+    const serversStore = useServersStore()
+    for (const sid of serversStore.joinedServerIds) {
+      serversStore.updateMemberStatus(sid, fromUserId, status as any)
+    }
+  }
+
+  async function handleProfileUpdate(fromUserId: string, msg: Record<string, unknown>) {
+    const payload = msg.payload as Record<string, unknown> | undefined
+    if (!payload) return
+    const { useServersStore } = await import('./serversStore')
+    const serversStore = useServersStore()
+    for (const sid of serversStore.joinedServerIds) {
+      serversStore.updateMemberProfile(sid, fromUserId, {
+        displayName:   payload.displayName   as string | undefined,
+        avatarDataUrl: payload.avatarDataUrl as string | null | undefined,
+        bio:           payload.bio           as string | null | undefined,
+        bannerColor:   payload.bannerColor   as string | null | undefined,
+        bannerDataUrl: payload.bannerDataUrl as string | null | undefined,
+      })
+    }
+  }
+
+  async function handleProfileRequest(fromUserId: string) {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    webrtcService.sendToPeer(fromUserId, {
+      type:    'profile_update',
+      payload: {
+        displayName:   identityStore.displayName,
+        avatarDataUrl: identityStore.avatarDataUrl,
+        bio:           identityStore.bio,
+        bannerColor:   identityStore.bannerColor,
+        bannerDataUrl: identityStore.bannerDataUrl,
+      },
+    })
+  }
+
+  /** Send a presence_update to all connected peers. */
+  async function broadcastPresence(status: string) {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    if (!identityStore.userId) return
+    broadcast({ type: 'presence_update', userId: identityStore.userId, status, timestamp: Date.now() })
+  }
+
+  /** Send a profile_update to all connected peers. */
+  async function broadcastProfile(payload: {
+    displayName?:   string
+    avatarDataUrl?: string | null
+    bio?:           string | null
+    bannerColor?:   string | null
+    bannerDataUrl?: string | null
+  }) {
+    broadcast({ type: 'profile_update', payload })
+  }
+
+  /** Send own presence+profile to a single newly connected peer. */
+  async function gossipOwnPresence(peerId: string) {
+    const STATUS_KEY = 'gamechat_own_status'
+    const status = (localStorage.getItem(STATUS_KEY) as string | null) ?? 'online'
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    if (!identityStore.userId) return
+    webrtcService.sendToPeer(peerId, {
+      type:      'presence_update',
+      userId:    identityStore.userId,
+      status,
+      timestamp: Date.now(),
+    })
+  }
+
+  async function handleServerAvatarUpdate(msg: Record<string, unknown>) {
+    const serverId  = msg.serverId  as string | undefined
+    const avatarDataUrl = msg.avatarDataUrl as string | null | undefined
+    if (!serverId) return
+    const { useServersStore } = await import('./serversStore')
+    const serversStore = useServersStore()
+    if (serversStore.joinedServerIds.includes(serverId)) {
+      serversStore.updateServerAvatar(serverId, avatarDataUrl ?? null)
+    }
+  }
+
+  /** Broadcast a server avatar change to all peers. */
+  async function broadcastServerAvatar(serverId: string, avatarDataUrl: string | null) {
+    broadcast({ type: 'server_avatar_update', serverId, avatarDataUrl })
+  }
+
+  /** Send own full profile to a single newly connected peer. */
+  async function gossipOwnProfile(peerId: string) {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    webrtcService.sendToPeer(peerId, {
+      type:    'profile_update',
+      payload: {
+        displayName:   identityStore.displayName,
+        avatarDataUrl: identityStore.avatarDataUrl,
+        bio:           identityStore.bio,
+        bannerColor:   identityStore.bannerColor,
+        bannerDataUrl: identityStore.bannerDataUrl,
+      },
+    })
   }
 
   async function handleDeviceLinkRequest(_fromUserId: string, msg: Record<string, unknown>) {
@@ -695,5 +824,8 @@ export const useNetworkStore = defineStore('network', () => {
     sendTypingStart,
     sendTypingStop,
     getTypingUsers,
+    broadcastPresence,
+    broadcastProfile,
+    broadcastServerAvatar,
   }
 })

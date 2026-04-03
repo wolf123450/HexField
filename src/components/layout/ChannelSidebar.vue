@@ -112,6 +112,15 @@
 
     <VoiceBar />
 
+    <!-- Hidden file input for server icon upload -->
+    <input
+      ref="serverIconInput"
+      type="file"
+      accept="image/*,.gif"
+      style="display:none"
+      @change="onServerIconSelected"
+    />
+
     <div class="self-panel">
       <div class="self-info">
         <div
@@ -155,6 +164,7 @@ import { useMessagesStore } from '@/stores/messagesStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import { useVoiceStore } from '@/stores/voiceStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useNetworkStore } from '@/stores/networkStore'
 import VoiceBar from '@/components/chat/VoiceBar.vue'
 import type { ChannelType } from '@/types/core'
 import type { MenuItem } from '@/stores/uiStore'
@@ -165,6 +175,7 @@ const messagesStore = useMessagesStore()
 const identityStore = useIdentityStore()
 const voiceStore    = useVoiceStore()
 const uiStore       = useUIStore()
+const networkStore  = useNetworkStore()
 
 function peerDisplayName(userId: string): string {
   const sid = serversStore.activeServerId
@@ -253,8 +264,9 @@ async function promptAddChannel(type: ChannelType) {
 
 // ── Channel context menu ──────────────────────────────────────────────────────
 
-const renameState  = ref({ active: false, channelId: '', name: '' })
-const renameInput  = ref<HTMLInputElement | null>(null)
+const renameState        = ref({ active: false, channelId: '', name: '' })
+const renameInput        = ref<HTMLInputElement | null>(null)
+const serverIconInput    = ref<HTMLInputElement | null>(null)
 
 function openChannelMenu(e: MouseEvent, channelId: string) {
   const items: MenuItem[] = [
@@ -300,10 +312,75 @@ async function deleteChannel(channelId: string) {
 
 // ── Server settings ───────────────────────────────────────────────────────────
 
+const SERVER_ICON_DIM = 64
+const SERVER_ICON_MAX_GIF = 512 * 1024   // 512 KB
+const SERVER_ICON_MAX_STATIC = 4 * 1024 * 1024 // 4 MB
+
 function openServerSettings() {
   const sid = serversStore.activeServerId
   if (!sid) return
-  uiStore.openInviteModal(sid)
+  const uid = identityStore.userId
+  const isAdmin = uid ? (serversStore.members[sid]?.[uid]?.roles.includes('admin') ?? false) : false
+  const items: MenuItem[] = [
+    {
+      type: 'action',
+      label: 'Invite People',
+      callback: () => uiStore.openInviteModal(sid),
+    },
+  ]
+  if (isAdmin) {
+    items.push({
+      type: 'action',
+      label: 'Change Server Icon',
+      callback: () => { serverIconInput.value?.click() },
+    })
+  }
+  uiStore.showContextMenu(0, 48, items)
+}
+
+async function onServerIconSelected(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  ;(e.target as HTMLInputElement).value = ''
+  const sid = serversStore.activeServerId
+  if (!sid) return
+
+  if (file.type === 'image/gif') {
+    if (file.size > SERVER_ICON_MAX_GIF) return
+    const dataUrl = await readServerIconAsDataUrl(file)
+    await serversStore.updateServerAvatar(sid, dataUrl)
+    networkStore.broadcastServerAvatar(sid, dataUrl).catch(() => {})
+    return
+  }
+
+  if (file.size > SERVER_ICON_MAX_STATIC) return
+  const objectUrl = URL.createObjectURL(file)
+  const imgEl = new Image()
+  imgEl.onload = async () => {
+    URL.revokeObjectURL(objectUrl)
+    const canvas = document.createElement('canvas')
+    canvas.width  = SERVER_ICON_DIM
+    canvas.height = SERVER_ICON_DIM
+    const ctx = canvas.getContext('2d')!
+    const scale = Math.max(SERVER_ICON_DIM / imgEl.width, SERVER_ICON_DIM / imgEl.height)
+    const w = imgEl.width  * scale
+    const h = imgEl.height * scale
+    ctx.drawImage(imgEl, (SERVER_ICON_DIM - w) / 2, (SERVER_ICON_DIM - h) / 2, w, h)
+    const dataUrl = canvas.toDataURL('image/png', 0.9)
+    await serversStore.updateServerAvatar(sid, dataUrl)
+    networkStore.broadcastServerAvatar(sid, dataUrl).catch(() => {})
+  }
+  imgEl.onerror = () => URL.revokeObjectURL(objectUrl)
+  imgEl.src = objectUrl
+}
+
+function readServerIconAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload  = () => resolve(reader.result as string)
+    reader.onerror = () => reject(new Error('FileReader error'))
+    reader.readAsDataURL(file)
+  })
 }
 
 // ── Own status ────────────────────────────────────────────────────────────────
@@ -332,6 +409,8 @@ function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline') {
   for (const sid of serversStore.joinedServerIds) {
     serversStore.updateMemberStatus(sid, uid, status)
   }
+  // Broadcast to all connected peers
+  networkStore.broadcastPresence(status).catch(() => {})
 }
 </script>
 

@@ -9,7 +9,12 @@
         :title="serversStore.servers[serverId]?.name"
         @click="selectServer(serverId)"
       >
-        <span class="server-initials">{{ getInitials(serversStore.servers[serverId]?.name) }}</span>
+        <AvatarImage
+          :src="serversStore.servers[serverId]?.avatarDataUrl ?? null"
+          :name="serversStore.servers[serverId]?.name"
+          :size="48"
+          :animate="serverId === serversStore.activeServerId"
+        />
         <span
           v-if="unreadForServer(serverId) > 0"
           class="unread-badge"
@@ -38,11 +43,6 @@ const serversStore  = useServersStore()
 const channelsStore = useChannelsStore()
 const messagesStore = useMessagesStore()
 const uiStore       = useUIStore()
-
-function getInitials(name?: string): string {
-  if (!name) return '?'
-  return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
-}
 
 async function selectServer(serverId: string) {
   serversStore.setActiveServer(serverId)
@@ -117,6 +117,8 @@ const addServerMenu: MenuItem[] = [
   font-weight: 600;
   font-size: 14px;
   overflow: hidden;
+  padding: 0;
+  transform: none;
 }
 
 .server-icon:hover,

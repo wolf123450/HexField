@@ -3,7 +3,7 @@
     <div v-if="uiStore.showUserProfile" class="profile-backdrop" @click.self="uiStore.closeUserProfile()">
       <div class="profile-modal">
         <!-- Header / avatar banner -->
-        <div class="profile-banner">
+        <div class="profile-banner" :style="bannerStyle">
           <div class="profile-avatar-wrap">
             <AvatarImage
               :src="avatarSrc"
@@ -63,6 +63,21 @@
             <span v-for="role in member.roles" :key="role" class="role-badge">{{ role }}</span>
           </div>
 
+          <!-- Bio -->
+          <div v-if="isEditable || member?.bio" class="profile-section">
+            <label class="section-label">Bio</label>
+            <textarea
+              v-if="isEditable"
+              v-model="editBio"
+              class="bio-textarea"
+              maxlength="200"
+              rows="3"
+              placeholder="Tell others a bit about yourself…"
+              @blur="saveBio"
+            />
+            <p v-else class="bio-text">{{ member?.bio }}</p>
+          </div>
+
           <!-- Per-peer volume (only for remote users while in voice) -->
           <div v-if="!isSelf && voiceStore.session" class="profile-section">
             <label class="section-label">Volume</label>
@@ -97,16 +112,19 @@ import { useUIStore }       from '@/stores/uiStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import { useServersStore }  from '@/stores/serversStore'
 import { useVoiceStore }    from '@/stores/voiceStore'
+import { useNetworkStore }  from '@/stores/networkStore'
 import { audioService }     from '@/services/audioService'
 
 const uiStore       = useUIStore()
 const identityStore = useIdentityStore()
 const serversStore  = useServersStore()
 const voiceStore    = useVoiceStore()
+const networkStore  = useNetworkStore()
 
-const copied     = ref(false)
-const editName   = ref('')
-const peerVolume = ref(100)
+const copied      = ref(false)
+const editName    = ref('')
+const editBio     = ref('')
+const peerVolume  = ref(100)
 const avatarInput = ref<HTMLInputElement | null>(null)
 const uploadError = ref('')
 
@@ -132,9 +150,29 @@ const displayName = computed(() => {
   return member.value?.displayName ?? userId.value.slice(0, 8)
 })
 
-// Sync editName when modal opens
+const BANNER_PRESETS = ['#5865F2', '#3BA55D', '#ED4245', '#FAA61A', '#EB459E', '#9B59B6']
+
+function deriveUserGradient(uid: string): string {
+  const byte = uid.charCodeAt(0) % BANNER_PRESETS.length
+  const a = BANNER_PRESETS[byte]
+  const b = BANNER_PRESETS[(byte + 2) % BANNER_PRESETS.length]
+  return `linear-gradient(135deg, ${a}, ${b})`
+}
+
+const bannerStyle = computed(() => {
+  const src = isSelf.value ? identityStore.bannerDataUrl : (member.value?.bannerDataUrl ?? null)
+  if (src) return { backgroundImage: `url(${src})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+  const color = isSelf.value ? identityStore.bannerColor : (member.value?.bannerColor ?? null)
+  if (color) return { background: color }
+  return { background: deriveUserGradient(userId.value || 'a') }
+})
+
+// Sync editName + editBio when modal opens
 watch(() => uiStore.showUserProfile, open => {
-  if (open && isEditable.value) editName.value = identityStore.displayName
+  if (open && isEditable.value) {
+    editName.value = identityStore.displayName
+    editBio.value  = identityStore.bio ?? ''
+  }
   if (open && !isSelf.value) peerVolume.value = 100
 })
 
@@ -142,13 +180,13 @@ async function saveName() {
   const name = editName.value.trim()
   if (!name) return
   await identityStore.updateDisplayName(name)
-  // Propagate new display name to local member records for all joined servers
   const uid = identityStore.userId
   if (uid) {
     for (const sid of serversStore.joinedServerIds) {
       serversStore.updateMemberDisplayName(sid, uid, name)
     }
   }
+  networkStore.broadcastProfile({ displayName: name }).catch(() => {})
   uiStore.closeUserProfile()
 }
 
@@ -166,7 +204,7 @@ function setVolume(e: Event) {
 
 // ── Avatar upload ─────────────────────────────────────────────────────────────
 
-const MAX_GIF_BYTES    = 20 * 1024 * 1024  // 20 MB
+const MAX_GIF_BYTES    = 512 * 1024         // 512 KB — per spec §16a
 const MAX_STATIC_BYTES = 25 * 1024 * 1024  // 25 MB
 const AVATAR_DIM       = 128
 
@@ -182,7 +220,7 @@ async function onAvatarFileSelected(e: Event) {
 
   if (file.type === 'image/gif') {
     if (file.size > MAX_GIF_BYTES) {
-      uploadError.value = `GIF too large (max ${MAX_GIF_BYTES / 1024 / 1024} MB)`
+      uploadError.value = `GIF too large (max ${MAX_GIF_BYTES / 1024} KB)`
       return
     }
     const dataUrl = await readFileAsDataUrl(file)
@@ -222,8 +260,7 @@ async function saveAvatar(dataUrl: string) {
   await identityStore.updateAvatar(dataUrl)
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('db_save_key', { keyId: 'local_avatar_data', keyType: 'avatar', keyData: dataUrl })
-    .catch(() => {}) // store locally; P2P broadcast deferred to §16a P2P impl
-  // Update member record for all joined servers so it shows immediately in lists
+    .catch(() => {})
   const uid = identityStore.userId
   if (uid) {
     for (const sid of serversStore.joinedServerIds) {
@@ -231,6 +268,19 @@ async function saveAvatar(dataUrl: string) {
       if (m) m.avatarDataUrl = dataUrl
     }
   }
+  networkStore.broadcastProfile({ avatarDataUrl: dataUrl }).catch(() => {})
+}
+
+async function saveBio() {
+  const text = editBio.value.slice(0, 200)
+  await identityStore.updateBio(text)
+  const uid = identityStore.userId
+  if (uid) {
+    for (const sid of serversStore.joinedServerIds) {
+      serversStore.updateMemberProfile(sid, uid, { bio: text })
+    }
+  }
+  networkStore.broadcastProfile({ bio: text }).catch(() => {})
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -456,5 +506,29 @@ function readFileAsDataUrl(file: File): Promise<string> {
   color: var(--text-secondary);
   min-width: 36px;
   text-align: right;
+}
+
+.bio-textarea {
+  width: 100%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 6px var(--spacing-sm);
+  resize: vertical;
+  min-height: 56px;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+.bio-textarea:focus { outline: none; border-color: var(--accent-color); }
+
+.bio-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>
