@@ -84,6 +84,41 @@ describe('cryptoService', () => {
     expect(typeof env.senderSignature).toBe('string')
   })
 
+  // ── Ed25519 sign / verify ─────────────────────────────────────────────────
+
+  it('sign() + verify() round-trip on identity key', () => {
+    const data = new TextEncoder().encode('sign this payload')
+    const sig  = cryptoService.sign(data)
+    expect(cryptoService.verify(data, sig, aliceSignPub)).toBe(true)
+  })
+
+  it('verify() returns false for a tampered payload', () => {
+    const data    = new TextEncoder().encode('original payload')
+    const sig     = cryptoService.sign(data)
+    const tampered = new TextEncoder().encode('tampered payload')
+    expect(cryptoService.verify(tampered, sig, aliceSignPub)).toBe(false)
+  })
+
+  it('verify() returns false for the wrong public key', () => {
+    const data     = new TextEncoder().encode('some data')
+    const sig      = cryptoService.sign(data)
+    const wrongKey = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+    expect(cryptoService.verify(data, sig, wrongKey)).toBe(false)
+  })
+
+  // ── Key determinism ───────────────────────────────────────────────────────
+
+  it('loadKeys() reproduces the same public keys from the same secret bytes', async () => {
+    const { signSecret, dhSecret } = await cryptoService.generateKeys()
+    const signPub1 = cryptoService.getPublicSignKey()
+    const dhPub1   = cryptoService.getPublicDHKey()
+
+    // Re-load from the same secrets — public keys must be deterministic
+    await cryptoService.loadKeys(signSecret, dhSecret)
+    expect(cryptoService.getPublicSignKey()).toBe(signPub1)
+    expect(cryptoService.getPublicDHKey()).toBe(dhPub1)
+  })
+
   // ── Device key round-trip ──────────────────────────────────────────────────
 
   it('generateDeviceKeys + loadDeviceKeys + getDevicePublicSignKey/DHKey', async () => {

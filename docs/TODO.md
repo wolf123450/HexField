@@ -164,15 +164,15 @@
 
 ### `cryptoService.ts`
 - [x] `encryptMessage` → `decryptMessage` round-trip (X25519 ECDH + XSalsa20-Poly1305)
-- [ ] Ed25519 `signMessage` → `verifyMessage` round-trip
+- [x] Ed25519 `signMessage` → `verifyMessage` round-trip
 - [x] `decryptMessage` rejects tampered ciphertext (returns null / throws)
 - [x] `decryptMessage` rejects mismatched signature
-- [ ] Key derivation is deterministic for the same seed
+- [x] Key derivation is deterministic for the same seed
 
 ### `identityStore`
-- [ ] First launch: generates Ed25519/X25519 keypair and persists to DB
-- [ ] Subsequent launch: loads existing keys without generating new ones
-- [ ] `setAvatar` stores data URL and exposes it via `avatarDataUrl`
+- [x] First launch: generates Ed25519/X25519 keypair and persists to DB
+- [x] Subsequent launch: loads existing keys without generating new ones
+- [x] `setAvatar` stores data URL and exposes it via `avatarDataUrl`
 
 ### `serversStore`
 - [ ] `createServer` writes to DB and populates `servers` reactive map
@@ -186,12 +186,12 @@
 - [x] `deleteChannel` removes entry from map and DB
 
 ### `messagesStore`
-- [ ] `sendMessage` adds optimistic entry then DB-persisted entry with same `id`
-- [ ] `getMessagesWithMutations`: `edit` mutation applies last-write-wins (HLC order)
-- [ ] `getMessagesWithMutations`: `delete` mutation nulls `content`
+- [x] `sendMessage` adds optimistic entry then DB-persisted entry with same `id`
+- [x] `getMessagesWithMutations`: `edit` mutation applies last-write-wins (HLC order)
+- [x] `getMessagesWithMutations`: `delete` mutation nulls `content`
 - [x] `getMessagesWithMutations`: `reaction_add` / `reaction_remove` fold correctly
-- [ ] Cursor pagination: `loadMessages` returns correct window and advances cursor
-- [ ] `loadMessages` on empty channel returns empty array without error
+- [x] Cursor pagination: `loadMessages` returns correct window and advances cursor
+- [x] `loadMessages` on empty channel returns empty array without error
 
 ### `hlc.ts`
 - [x] `generateHLC` produces monotonically increasing values within the same millisecond
@@ -199,8 +199,8 @@
 - [x] `advanceHLC` advances past a remote HLC that is strictly ahead of local clock
 
 ### `devicesStore`
-- [ ] `receiveAttestedDevice` persists device with `revoked: false` (not integer `0`)
-- [ ] `revokeDevice` marks device `revoked: true` in DB and reactive state
+- [x] `receiveAttestedDevice` persists device with `revoked: false` (not integer `0`)
+- [x] `revokeDevice` marks device `revoked: true` in DB and reactive state
 
 ### Rust — `db_save_message` / `db_load_messages`
 - [x] Save a message then load it back: returned row is field-for-field identical
@@ -210,12 +210,12 @@
 ### Rust — `db_save_mutation` side effects
 - [x] `delete` mutation causes subsequent `db_load_messages` to return `content = NULL` for target
 - [x] `edit` mutation: later HLC timestamp wins over an earlier one for the same `message_id`
-- [ ] `reaction_add` mutation is idempotent (same user + emoji stored once)
-- [ ] `reaction_remove` after `reaction_add` cancels it in the materialized view
+- [x] `reaction_add` mutation is idempotent (same user + emoji stored once)
+- [x] `reaction_remove` after `reaction_add` cancels it in the materialized view
 
 ### Rust — `db_upsert_member`
 - [x] Insert new member then upsert with different `display_name` — row is updated, not duplicated
-- [ ] Upsert preserves all fields when updating only `display_name`
+- [x] Upsert preserves all fields when updating only `display_name`
 
 ### Rust — `db_save_device` / `db_load_devices`
 - [x] Save `revoked: false`, load back → `revoked` is `false` (bool, not `0`)

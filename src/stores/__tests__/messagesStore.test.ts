@@ -4,6 +4,33 @@ import type { Message, Mutation } from '@/types/core'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
+// Mock stores and crypto used inside sendMessage dynamic imports
+vi.mock('@/stores/identityStore', () => ({
+  useIdentityStore: () => ({
+    userId:        'user-alice',
+    publicDHKey:   'pub-dh-alice',
+    displayName:   'Alice',
+    isRegistered:  true,
+  }),
+}))
+vi.mock('@/stores/serversStore', () => ({
+  useServersStore: () => ({ members: {} }),
+}))
+vi.mock('@/stores/devicesStore', () => ({
+  useDevicesStore: () => ({ getActiveDevices: () => [], deviceDHKey: null }),
+}))
+vi.mock('@/stores/networkStore', () => ({
+  useNetworkStore: () => ({ broadcast: vi.fn() }),
+}))
+vi.mock('@/services/cryptoService', () => ({
+  cryptoService: {
+    encryptMessage: vi.fn().mockReturnValue({
+      version: 1, senderId: 'alice', recipientId: 'alice',
+      ciphertext: 'enc', nonce: 'nonce', senderSignature: 'sig',
+    }),
+  },
+}))
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function makeMessage(overrides: Partial<Message> = {}): Message {
@@ -178,5 +205,200 @@ describe('messagesStore.getMessagesWithMutations', () => {
     const msgB = result.find(m => m.id === 'msg-B')!
     expect(msgA.reactions).toHaveLength(1)
     expect(msgB.reactions).toHaveLength(0)
+  })
+})
+
+// ── applyMutation (edit / delete in-memory side effects) ──────────────────────
+
+describe('messagesStore.applyMutation', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('delete mutation nulls content in messages.value', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    store.messages['ch-1'] = [makeMessage({ id: 'msg-1', content: 'keep this' })]
+
+    await store.applyMutation(makeMutation({ type: 'delete', targetId: 'msg-1' }))
+
+    expect(store.messages['ch-1'][0].content).toBeNull()
+    expect(store.messages['ch-1'][0].attachments).toEqual([])
+  })
+
+  it('edit mutation with newer logicalTs updates content (LWW)', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    store.messages['ch-1'] = [makeMessage({ id: 'msg-1', logicalTs: '1000000000000-000000' })]
+
+    await store.applyMutation(makeMutation({
+      type:       'edit',
+      targetId:   'msg-1',
+      newContent: 'updated content',
+      logicalTs:  '2000000000000-000000',
+    }))
+
+    expect(store.messages['ch-1'][0].content).toBe('updated content')
+    expect(store.messages['ch-1'][0].isEdited).toBe(true)
+  })
+
+  it('stale edit mutation (older logicalTs) does not overwrite content', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    // Message already has a high-ts (it was already edited once on the DB side)
+    store.messages['ch-1'] = [
+      makeMessage({ id: 'msg-1', content: 'final version', logicalTs: '9000000000000-000000' }),
+    ]
+
+    await store.applyMutation(makeMutation({
+      type:       'edit',
+      targetId:   'msg-1',
+      newContent: 'stale edit',
+      logicalTs:  '1000000000000-000001',  // older than message ts
+    }))
+
+    expect(store.messages['ch-1'][0].content).toBe('final version')
+  })
+})
+
+// ── loadMessages ──────────────────────────────────────────────────────────────
+
+describe('messagesStore.loadMessages', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  function makeRow(id: string, logicalTs: string) {
+    return {
+      id,
+      channel_id:      'ch-1',
+      server_id:       'srv-1',
+      author_id:       'user-alice',
+      content:         'hello',
+      content_type:    'text',
+      reply_to_id:     null,
+      created_at:      '2025-01-01T00:00:00.000Z',
+      logical_ts:      logicalTs,
+      verified:        1,
+      raw_attachments: null,
+    }
+  }
+
+  it('populates messages[channelId] from DB rows (newest last)', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    // DB returns rows in DESC order (newest first) — loadMessages reverses them
+    vi.mocked(invoke).mockResolvedValue([
+      makeRow('msg-3', '1000000000000-000002'),
+      makeRow('msg-2', '1000000000000-000001'),
+      makeRow('msg-1', '1000000000000-000000'),
+    ])
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    await store.loadMessages('ch-1')
+
+    expect(store.messages['ch-1']).toHaveLength(3)
+    expect(store.messages['ch-1'][0].id).toBe('msg-1')  // oldest first after reverse
+    expect(store.messages['ch-1'][2].id).toBe('msg-3')
+  })
+
+  it('sets cursors[channelId] to the id of the oldest loaded message', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue([
+      makeRow('msg-3', '1000000000000-000002'),
+      makeRow('msg-2', '1000000000000-000001'),
+      makeRow('msg-1', '1000000000000-000000'),
+    ])
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    await store.loadMessages('ch-1')
+
+    // After reverse, loaded[0] is the oldest row — its id becomes the cursor
+    expect(store.cursors['ch-1']).toBe('msg-1')
+  })
+
+  it('loadMessages on empty channel sets messages to [] without throwing', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue([])
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    await expect(store.loadMessages('empty-channel')).resolves.not.toThrow()
+
+    expect(store.messages['empty-channel']).toEqual([])
+    expect(store.cursors['empty-channel']).toBeNull()
+  })
+
+  it('cursor load prepends older messages without replacing the existing window', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+
+    // Seed the current window with newer messages
+    store.messages['ch-1'] = [makeMessage({ id: 'msg-new', logicalTs: '2000000000000-000000' })]
+
+    // Cursor load returns older messages
+    vi.mocked(invoke).mockResolvedValue([
+      makeRow('msg-old', '1000000000000-000000'),
+    ])
+
+    await store.loadMessages('ch-1', 'msg-new')  // pass a cursor
+
+    expect(store.messages['ch-1']).toHaveLength(2)
+    expect(store.messages['ch-1'][0].id).toBe('msg-old')  // prepended
+    expect(store.messages['ch-1'][1].id).toBe('msg-new')
+  })
+})
+
+// ── sendMessage ───────────────────────────────────────────────────────────────
+
+describe('messagesStore.sendMessage', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('message appears in messages[channelId] with the same id after send', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+
+    const result = await store.sendMessage('ch-1', 'srv-1', 'Hello world!')
+
+    expect(result.id).toBeTruthy()
+    const found = store.messages['ch-1'].find(m => m.id === result.id)
+    expect(found).toBeDefined()
+    expect(found?.content).toBe('Hello world!')
+  })
+
+  it('sendMessage persists to DB via db_save_message', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+
+    await store.sendMessage('ch-1', 'srv-1', 'Persist me!')
+
+    expect(invoke).toHaveBeenCalledWith('db_save_message', expect.objectContaining({
+      msg: expect.objectContaining({
+        channel_id: 'ch-1',
+        content:    'Persist me!',
+      }),
+    }))
   })
 })
