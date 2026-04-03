@@ -26,7 +26,6 @@ import { spawn }                 from 'node:child_process'
 import { homedir }               from 'node:os'
 import { join }                  from 'node:path'
 import { mkdirSync, existsSync } from 'node:fs'
-import { createConnection }      from 'node:net'
 import { fileURLToPath }         from 'node:url'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -66,43 +65,43 @@ if (namespace) {
 }
 
 // ---------------------------------------------------------------------------
-// Detect whether Vite is already running on port 1420
-// ---------------------------------------------------------------------------
-function isPortOpen (port) {
-  return new Promise(resolve => {
-    const sock = createConnection({ port, host: '127.0.0.1' })
-    sock.on('connect', () => { sock.destroy(); resolve(true) })
-    sock.on('error',   () => resolve(false))
-    sock.setTimeout(400, () => { sock.destroy(); resolve(false) })
-  })
-}
-
-const viteRunning = await isPortOpen(1420)
-
-// ---------------------------------------------------------------------------
 // Choose launch strategy
+//
+// Default instance (no namespace):
+//   Use `tauri dev` — starts Vite + compiles + runs Rust. Normal workflow.
+//
+// Named instance (namespace given):
+//   NEVER use `tauri dev` — it always spawns beforeDevCommand which tries to
+//   bind Vite on port 1420 a second time and fails.  Instead, launch the
+//   compiled debug binary directly.  If the binary doesn't exist yet we run
+//   `cargo build` first (compiles without starting Vite).
 // ---------------------------------------------------------------------------
 const binaryName = process.platform === 'win32' ? 'gamechat.exe' : 'gamechat'
 const binaryPath = join(ROOT, 'src-tauri', 'target', 'debug', binaryName)
-const binaryExists = existsSync(binaryPath)
 
 let child
 
-if (viteRunning && binaryExists) {
-  // Vite already up — launch just the native binary so we don't try to
-  // start a second Vite server (which would fail with strictPort: true).
-  console.log('[dev:tauri] Vite already running → launching debug binary directly')
-  child = spawn(binaryPath, [], { stdio: 'inherit', env })
-} else {
-  if (viteRunning && !binaryExists) {
-    console.warn(
-      '[dev:tauri] Vite is running but the debug binary was not found.\n' +
-      `[dev:tauri] Expected: ${binaryPath}\n` +
-      '[dev:tauri] Falling back to `tauri dev` — this will (re)compile the binary first.'
-    )
-  }
-  // Normal full launch: Tauri CLI starts Vite and compiles/runs Rust.
+if (!namespace) {
+  // ── Default: full tauri dev (starts Vite + Rust) ────────────────────────
   child = spawn('npx', ['tauri', 'dev'], { stdio: 'inherit', env, shell: true })
+} else {
+  // ── Named instance: binary only ─────────────────────────────────────────
+  if (!existsSync(binaryPath)) {
+    console.log('[dev:tauri] Debug binary not found — running cargo build first...')
+    console.log('[dev:tauri] (Make sure `npm run dev:tauri` is running in another terminal)')
+    const build = spawn(
+      'cargo', ['build', '--manifest-path', join(ROOT, 'src-tauri', 'Cargo.toml')],
+      { stdio: 'inherit', shell: true }
+    )
+    const buildCode = await new Promise(resolve => build.on('close', resolve))
+    if (buildCode !== 0) {
+      console.error('[dev:tauri] cargo build failed — cannot launch instance')
+      process.exit(buildCode ?? 1)
+    }
+  }
+
+  console.log(`[dev:tauri] Launching binary: ${binaryPath}`)
+  child = spawn(binaryPath, [], { stdio: 'inherit', env })
 }
 
 child.on('close', code => process.exit(code ?? 0))
