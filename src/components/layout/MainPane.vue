@@ -69,7 +69,7 @@
 
       <!-- Normal chat view -->
       <template v-else>
-        <MessageHistory :channel-id="activeChannel.id" />
+        <MessageHistory ref="messageHistoryRef" :channel-id="activeChannel.id" :scroll-to-id="pendingScrollId" />
         <MessageInput :channel-id="activeChannel.id" :server-id="activeChannel.serverId" />
       </template>
     </template>
@@ -139,6 +139,8 @@ const scopeToChannel = ref(false)
 const searching      = ref(false)
 const searchResults  = ref<MessageRow[]>([])
 const searchInputEl  = ref<HTMLInputElement | null>(null)
+const messageHistoryRef = ref<InstanceType<typeof MessageHistory> | null>(null)
+const pendingScrollId   = ref<string | null>(null)
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -211,15 +213,29 @@ function highlightMatch(content: string, query: string): string {
 }
 
 async function jumpToResult(msg: MessageRow) {
-  // Switch to the message's channel, then close search
+  const { useMessagesStore } = await import('@/stores/messagesStore')
+  const messagesStore = useMessagesStore()
+
+  // Switch channel if needed
   if (msg.channel_id !== channelsStore.activeChannelId) {
     channelsStore.setActiveChannel(msg.channel_id)
-    const { useMessagesStore } = await import('@/stores/messagesStore')
-    const messagesStore = useMessagesStore()
-    await messagesStore.loadMessages(msg.channel_id)
-    await messagesStore.loadMutationsForChannel(msg.channel_id)
   }
+
+  // Load the message window ending at this message (so it's in the rendered list)
+  await messagesStore.loadMessagesAround(msg.channel_id, msg.id)
+  await messagesStore.loadMutationsForChannel(msg.channel_id)
+
+  // Set pending scroll target, then close search (which mounts MessageHistory)
+  pendingScrollId.value = msg.id
   closeSearch()
+
+  // Wait two ticks: (1) MessageHistory mounts, (2) virtualizer renders items
+  await nextTick()
+  await nextTick()
+  messageHistoryRef.value?.scrollToMessageId(msg.id)
+
+  // Clear so subsequent loadMessages/scroll-to-bottom works normally
+  pendingScrollId.value = null
 }
 </script>
 

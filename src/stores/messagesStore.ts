@@ -59,6 +59,18 @@ export const useMessagesStore = defineStore('messages', () => {
     cursors.value[channelId] = loaded[0]?.id ?? null
   }
 
+  /** Load the window of messages ending at (and including) nearId, for jump-to-message. */
+  async function loadMessagesAround(channelId: string, nearId: string) {
+    const rows = await invoke<any[]>('db_load_messages_around', {
+      channelId,
+      nearId,
+      limit: 100,
+    })
+    const loaded: Message[] = rows.map(rowToMessage).reverse()
+    messages.value[channelId] = loaded
+    cursors.value[channelId] = loaded[0]?.id ?? null
+  }
+
   async function loadMutationsForChannel(channelId: string) {
     const rows = await invoke<any[]>('db_load_mutations', { channelId, afterTs: null })
     mutations.value[channelId] = rows.map(rowToMutation)
@@ -496,6 +508,7 @@ export const useMessagesStore = defineStore('messages', () => {
     mutations,
     setMyUserId,
     loadMessages,
+    loadMessagesAround,
     loadMutationsForChannel,
     getMessagesWithMutations,
     sendMessage,

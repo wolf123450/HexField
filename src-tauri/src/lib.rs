@@ -126,6 +126,7 @@ pub fn run() {
             db_prune_expired_bans,
             db_prune_mod_log,
             db_search_messages,
+            db_load_messages_around,
             // Signaling
             signal_connect,
             signal_disconnect,

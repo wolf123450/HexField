@@ -57,6 +57,32 @@ fn row_to_message(row: &rusqlite::Row) -> rusqlite::Result<MessageRow> {
     })
 }
 
+/// Load up to `limit` messages ending at (and including) the message with id `near_id`.
+/// Returns them in ascending `logical_ts` order so the target is the last element.
+#[tauri::command]
+pub fn db_load_messages_around(
+    state: State<AppState>,
+    channel_id: String,
+    near_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<MessageRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let limit = limit.unwrap_or(100) as i64;
+
+    let sql = "SELECT id, channel_id, server_id, author_id, content, content_type,
+               reply_to_id, created_at, logical_ts, verified, raw_attachments
+               FROM messages
+               WHERE channel_id = ?1
+                 AND logical_ts <= (SELECT logical_ts FROM messages WHERE id = ?2)
+               ORDER BY logical_ts DESC LIMIT ?3";
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&channel_id, &near_id, &limit.to_string()], row_to_message)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
 #[tauri::command]
 pub fn db_save_message(state: State<AppState>, msg: MessageRow) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;

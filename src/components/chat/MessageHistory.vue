@@ -36,7 +36,7 @@ import { usePersonalBlocksStore } from '@/stores/personalBlocksStore'
 import MessageBubble from './MessageBubble.vue'
 import TypingIndicator from './TypingIndicator.vue'
 
-const props = defineProps<{ channelId: string }>()
+const props = defineProps<{ channelId: string; scrollToId?: string | null }>()
 
 const messagesStore      = useMessagesStore()
 const settingsStore      = useSettingsStore()
@@ -61,9 +61,9 @@ const virtualizer = useVirtualizer(computed(() => ({
   overscan:         5,
 })))
 
-// Scroll to bottom when new messages arrive (if user was at bottom)
+// Scroll to bottom when new messages arrive (only when not mid-jump-to-message)
 watch(() => allMessages.value.length, async () => {
-  if (atBottom.value) {
+  if (atBottom.value && !props.scrollToId) {
     await nextTick()
     scrollToBottom()
   }
@@ -73,6 +73,15 @@ function scrollToBottom() {
   const count = allMessages.value.length
   if (count > 0) virtualizer.value.scrollToIndex(count - 1, { align: 'end' })
 }
+
+function scrollToMessageId(id: string) {
+  const idx = allMessages.value.findIndex(m => m.id === id)
+  if (idx === -1) return
+  atBottom.value = false
+  virtualizer.value.scrollToIndex(idx, { align: 'center' })
+}
+
+defineExpose({ scrollToMessageId })
 
 function onScroll() {
   const el = scrollContainer.value
@@ -103,7 +112,11 @@ onMounted(() => {
     observer.observe(topSentinel.value)
   }
 
-  nextTick(scrollToBottom)
+  if (props.scrollToId) {
+    nextTick(() => scrollToMessageId(props.scrollToId!))
+  } else {
+    nextTick(scrollToBottom)
+  }
 })
 </script>
 
