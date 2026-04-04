@@ -130,3 +130,15 @@ pub struct ChannelAclRow {
     pub denied_users: String,    // JSON array
     pub private_channel: bool,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JoinRequestRow {
+    pub id:              String,
+    pub server_id:       String,
+    pub user_id:         String,
+    pub display_name:    String,
+    pub public_sign_key: String,
+    pub public_dh_key:   String,
+    pub requested_at:    String,
+    pub status:          String,  // 'pending' | 'approved' | 'denied'
+}

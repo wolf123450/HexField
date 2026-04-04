@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
-import type { Server, ServerMember, Mutation, ServerManifest } from '@/types/core'
+import type { Server, ServerMember, Mutation, ServerManifest, JoinRequest } from '@/types/core'
 
 export interface InviteCode {
   code: string
@@ -30,6 +30,7 @@ export const useServersStore = defineStore('servers', () => {
   const activeServerId  = ref<string | null>(null)
   // invite codes: code → InviteCode (DB-backed)
   const inviteCodes     = ref<Map<string, InviteCode>>(new Map())
+  const joinRequests    = ref<Record<string, JoinRequest[]>>({})  // keyed by serverId
 
   async function loadServers() {
     const rows = await invoke<any[]>('db_load_servers')
@@ -244,6 +245,13 @@ export const useServersStore = defineStore('servers', () => {
       const { serverId } = JSON.parse(mutation.newContent)
       if (serverId) {
         invoke('db_delete_ban', { serverId, userId: mutation.targetId }).catch(() => {})
+      }
+    } else if (mutation.type === 'access_mode_update' && mutation.newContent) {
+      const { accessMode, inviteMode } = JSON.parse(mutation.newContent) as { accessMode?: 'open' | 'closed'; inviteMode?: string }
+      const server = servers.value[mutation.targetId]
+      if (server) {
+        if (accessMode !== undefined) server.accessMode = accessMode
+        if (inviteMode !== undefined) server.inviteMode = inviteMode as Server['inviteMode']
       }
     }
   }
@@ -468,6 +476,177 @@ export const useServersStore = defineStore('servers', () => {
 
     const { useNetworkStore: useNet2 } = await import('./networkStore')
     useNet2().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+  }
+
+  /**
+   * Update the server's accessMode and optionally inviteMode.
+   * Broadcasts an access_mode_update mutation so all peers update their copy.
+   */
+  async function setAccessMode(
+    serverId: string,
+    accessMode: 'open' | 'closed',
+    inviteMode?: Server['inviteMode'],
+  ): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const myId = useIdentityStore().userId!
+    const patch: Record<string, unknown> = { accessMode }
+    if (inviteMode !== undefined) patch.inviteMode = inviteMode
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'access_mode_update',
+      targetId:   serverId,
+      channelId:  '__server__',
+      authorId:   myId,
+      newContent: JSON.stringify(patch),
+      logicalTs:  new Date().toISOString(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    // Apply locally
+    applyServerMutation(mutation)
+    // Also persist the server row
+    const server = servers.value[serverId]
+    if (server) {
+      await invoke('db_save_server', {
+        server: {
+          id: server.id, name: server.name,
+          description: server.description ?? null,
+          icon_url: server.iconUrl ?? null,
+          owner_id: server.ownerId,
+          invite_code: server.inviteCode ?? null,
+          created_at: server.createdAt,
+          raw_json: JSON.stringify(server),
+        },
+      })
+    }
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+  }
+
+  /**
+   * Load pending join requests for a server from DB into in-memory state.
+   */
+  async function loadJoinRequests(serverId: string): Promise<void> {
+    const rows = await invoke<Array<{
+      id: string; server_id: string; user_id: string; display_name: string
+      public_sign_key: string; public_dh_key: string; requested_at: string; status: string
+    }>>('db_load_join_requests', { serverId })
+    joinRequests.value[serverId] = rows.map(r => ({
+      id:            r.id,
+      serverId:      r.server_id,
+      userId:        r.user_id,
+      displayName:   r.display_name,
+      publicSignKey: r.public_sign_key,
+      publicDHKey:   r.public_dh_key,
+      requestedAt:   r.requested_at,
+      status:        r.status as JoinRequest['status'],
+    }))
+  }
+
+  /**
+   * Store a pending join request received over the network (closed server mode).
+   */
+  async function queueJoinRequest(req: JoinRequest): Promise<void> {
+    await invoke('db_save_join_request', {
+      req: {
+        id:              req.id,
+        server_id:       req.serverId,
+        user_id:         req.userId,
+        display_name:    req.displayName,
+        public_sign_key: req.publicSignKey,
+        public_dh_key:   req.publicDHKey,
+        requested_at:    req.requestedAt,
+        status:          'pending',
+      },
+    })
+    if (!joinRequests.value[req.serverId]) joinRequests.value[req.serverId] = []
+    // Avoid duplicates
+    if (!joinRequests.value[req.serverId].find(r => r.id === req.id)) {
+      joinRequests.value[req.serverId].push(req)
+    }
+  }
+
+  /**
+   * Update the status of a join request in DB and in-memory.
+   */
+  async function updateJoinRequestStatus(requestId: string, serverId: string, status: 'approved' | 'denied'): Promise<void> {
+    await invoke('db_update_join_request_status', { requestId, status })
+    const list = joinRequests.value[serverId]
+    if (list) {
+      const req = list.find(r => r.id === requestId)
+      if (req) req.status = status
+    }
+  }
+
+   /**
+   * Approve a pending join request: upsert the member, send manifest, update status.
+   */
+  async function approveJoinRequest(serverId: string, requestId: string): Promise<void> {
+    const list = joinRequests.value[serverId] ?? []
+    const req = list.find(r => r.id === requestId)
+    if (!req) return
+
+    // Upsert the new member so they appear in the member list
+    await upsertMember({
+      userId:        req.userId,
+      serverId,
+      displayName:   req.displayName,
+      publicSignKey: req.publicSignKey,
+      publicDHKey:   req.publicDHKey,
+      roles:         ['member'],
+      joinedAt:      new Date().toISOString(),
+      onlineStatus:  'online',
+    })
+
+    // Send the manifest to the joining peer via WebRTC data channel
+    const { useNetworkStore }  = await import('./networkStore')
+    const { useChannelsStore } = await import('./channelsStore')
+    const { useIdentityStore } = await import('./identityStore')
+    const channelsStore = useChannelsStore()
+    const identityStore = useIdentityStore()
+    const server = servers.value[serverId]
+    if (server) {
+      const manifest: ServerManifest = {
+        v: 1,
+        server,
+        channels: channelsStore.channels[serverId] ?? [],
+        owner: {
+          userId:        identityStore.userId        ?? '',
+          displayName:   identityStore.displayName,
+          publicSignKey: identityStore.publicSignKey ?? '',
+          publicDHKey:   identityStore.publicDHKey   ?? '',
+        },
+      }
+      useNetworkStore().sendToPeer(req.userId, { type: 'server_manifest', manifest })
+    }
+
+    await updateJoinRequestStatus(requestId, serverId, 'approved')
+    await logModAction(serverId, 'approve_join', req.userId)
+  }
+
+  /**
+   * Deny a pending join request: send denial message and update status.
+   */
+  async function denyJoinRequest(serverId: string, requestId: string): Promise<void> {
+    const list = joinRequests.value[serverId] ?? []
+    const req = list.find(r => r.id === requestId)
+    if (!req) return
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().sendToPeer(req.userId, { type: 'server_join_denied', reason: 'request_denied' })
+
+    await updateJoinRequestStatus(requestId, serverId, 'denied')
+    await logModAction(serverId, 'deny_join', req.userId)
+  }
+
+   /**
+   * Returns the count of pending join requests for a given server.
+   */
+  function pendingRequestCount(serverId: string): number {
+    return (joinRequests.value[serverId] ?? []).filter(r => r.status === 'pending').length
   }
 
   /**
@@ -767,5 +946,12 @@ export const useServersStore = defineStore('servers', () => {
     voiceMuteMember,
     voiceUnmuteMember,
     updateChannelAcl,
+    setAccessMode,
+    joinRequests,
+    loadJoinRequests,
+    queueJoinRequest,
+    approveJoinRequest,
+    denyJoinRequest,
+    pendingRequestCount,
   }
 })
