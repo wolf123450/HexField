@@ -78,6 +78,7 @@ export type MutationType =
   | 'channel_create' | 'channel_update' | 'channel_delete'
   | 'device_attest' | 'device_revoke'
   | 'member_kick' | 'member_ban' | 'member_unban'
+  | 'voice_kick' | 'voice_mute' | 'voice_unmute'
 
 export interface Mutation {
   id:              string
