@@ -1,7 +1,7 @@
 <template>
   <div
     class="message-bubble"
-    :class="{ 'has-header': showHeader }"
+    :class="{ 'has-header': showHeader, 'message-highlight': highlighted }"
     @mouseenter="onBubbleEnter"
     @mouseleave="isHovered = false"
   >
@@ -138,6 +138,7 @@ import EmojiPicker from './EmojiPicker.vue'
 const props = defineProps<{
   message: Message
   showHeader: boolean
+  highlighted?: boolean
 }>()
 
 const serversStore  = useServersStore()
@@ -288,6 +289,15 @@ function autoResizeTextarea() {
   gap: 0 var(--spacing-sm);
   padding: 2px var(--spacing-md);
   transition: background 0.1s ease;
+}
+
+.message-highlight {
+  animation: msg-highlight-fade 2s ease-out forwards;
+}
+
+@keyframes msg-highlight-fade {
+  0%   { background: rgba(var(--accent-rgb, 88, 101, 242), 0.35); }
+  100% { background: transparent; }
 }
 
 .message-bubble:hover {

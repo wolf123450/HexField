@@ -127,6 +127,7 @@ pub fn run() {
             db_prune_mod_log,
             db_search_messages,
             db_load_messages_around,
+            db_load_messages_after,
             // Signaling
             signal_connect,
             signal_disconnect,

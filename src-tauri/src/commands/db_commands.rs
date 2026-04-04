@@ -57,29 +57,96 @@ fn row_to_message(row: &rusqlite::Row) -> rusqlite::Result<MessageRow> {
     })
 }
 
-/// Load up to `limit` messages ending at (and including) the message with id `near_id`.
-/// Returns them in ascending `logical_ts` order so the target is the last element.
+/// Load a symmetric window of messages centred on `near_id`:
+/// up to `half_limit` messages before + the target itself + up to `half_limit` after.
+/// Returns all rows in ascending `logical_ts` order; the target is near the middle.
 #[tauri::command]
 pub fn db_load_messages_around(
     state: State<AppState>,
     channel_id: String,
     near_id: String,
+    half_limit: Option<u32>,
+) -> Result<Vec<MessageRow>, String> {
+    let conn  = state.db.lock().map_err(|e| e.to_string())?;
+    let half  = half_limit.unwrap_or(50) as i64;
+
+    // Resolve target logical_ts
+    let target_ts: String = match conn.query_row(
+        "SELECT logical_ts FROM messages WHERE id = ?1",
+        [&near_id],
+        |r| r.get(0),
+    ) {
+        Ok(ts) => ts,
+        Err(_) => return Ok(vec![]),
+    };
+
+    // Messages strictly before target, most-recent-first (we'll reverse)
+    let before_sql = "SELECT id, channel_id, server_id, author_id, content, content_type,
+                      reply_to_id, created_at, logical_ts, verified, raw_attachments
+                      FROM messages WHERE channel_id = ?1 AND logical_ts < ?2
+                      ORDER BY logical_ts DESC LIMIT ?3";
+    let mut before_stmt = conn.prepare(before_sql).map_err(|e| e.to_string())?;
+    let mut before: Vec<MessageRow> = before_stmt.query_map(
+        rusqlite::params![&channel_id, &target_ts, half],
+        row_to_message,
+    ).map_err(|e| e.to_string())?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| e.to_string())?;
+    before.reverse();
+
+    // Target message itself
+    let target: Option<MessageRow> = conn.query_row(
+        "SELECT id, channel_id, server_id, author_id, content, content_type,
+         reply_to_id, created_at, logical_ts, verified, raw_attachments
+         FROM messages WHERE id = ?1",
+        [&near_id],
+        row_to_message,
+    ).ok();
+
+    // Messages strictly after target, oldest-first
+    let after_sql = "SELECT id, channel_id, server_id, author_id, content, content_type,
+                     reply_to_id, created_at, logical_ts, verified, raw_attachments
+                     FROM messages WHERE channel_id = ?1 AND logical_ts > ?2
+                     ORDER BY logical_ts ASC LIMIT ?3";
+    let mut after_stmt = conn.prepare(after_sql).map_err(|e| e.to_string())?;
+    let after: Vec<MessageRow> = after_stmt.query_map(
+        rusqlite::params![&channel_id, &target_ts, half],
+        row_to_message,
+    ).map_err(|e| e.to_string())?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| e.to_string())?;
+
+    let mut result = before;
+    if let Some(t) = target { result.push(t); }
+    result.extend(after);
+    Ok(result)
+}
+
+/// Load messages strictly newer than `after_id`, oldest-first.
+/// Used by the bottom-sentinel infinite-scroll when viewing a historical window.
+#[tauri::command]
+pub fn db_load_messages_after(
+    state: State<AppState>,
+    channel_id: String,
+    after_id: String,
     limit: Option<u32>,
 ) -> Result<Vec<MessageRow>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn  = state.db.lock().map_err(|e| e.to_string())?;
     let limit = limit.unwrap_or(100) as i64;
 
     let sql = "SELECT id, channel_id, server_id, author_id, content, content_type,
                reply_to_id, created_at, logical_ts, verified, raw_attachments
                FROM messages
                WHERE channel_id = ?1
-                 AND logical_ts <= (SELECT logical_ts FROM messages WHERE id = ?2)
-               ORDER BY logical_ts DESC LIMIT ?3";
+                 AND logical_ts > (SELECT logical_ts FROM messages WHERE id = ?2)
+               ORDER BY logical_ts ASC LIMIT ?3";
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([&channel_id, &near_id, &limit.to_string()], row_to_message)
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(
+        rusqlite::params![&channel_id, &after_id, limit],
+        row_to_message,
+    ).map_err(|e| e.to_string())?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| e.to_string())?;
     Ok(rows)
 }
 

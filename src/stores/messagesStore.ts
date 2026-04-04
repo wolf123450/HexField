@@ -31,6 +31,8 @@ export const useMessagesStore = defineStore('messages', () => {
   const unreadCounts    = ref<Record<string, number>>({})
   // mutations per channel (source of truth for reactions/edits)
   const mutations       = ref<Record<string, Mutation[]>>({})
+  // channelId -> true when viewing a historical window (newer messages exist beyond the loaded set)
+  const hasNewerMessages = ref<Record<string, boolean>>({})
 
   // Local user ID — set once after identity init so we avoid circular store deps
   // in synchronous getters (see computeReactions).
@@ -53,22 +55,52 @@ export const useMessagesStore = defineStore('messages', () => {
 
     if (!cursor) {
       messages.value[channelId] = loaded
+      hasNewerMessages.value[channelId] = false  // at the latest window
     } else {
       messages.value[channelId] = [...loaded, ...(messages.value[channelId] ?? [])]
     }
     cursors.value[channelId] = loaded[0]?.id ?? null
   }
 
-  /** Load the window of messages ending at (and including) nearId, for jump-to-message. */
+  /** Load a symmetric window centred on nearId (≈50 before + target + ≈50 after). */
   async function loadMessagesAround(channelId: string, nearId: string) {
+    // Rust returns rows in ascending logical_ts order — no reverse needed
     const rows = await invoke<any[]>('db_load_messages_around', {
       channelId,
       nearId,
-      limit: 100,
+      halfLimit: 50,
     })
-    const loaded: Message[] = rows.map(rowToMessage).reverse()
+    const loaded: Message[] = rows.map(rowToMessage)
     messages.value[channelId] = loaded
     cursors.value[channelId] = loaded[0]?.id ?? null
+    // Assume there may be newer messages beyond the loaded window
+    hasNewerMessages.value[channelId] = true
+  }
+
+  /** Append messages newer than the last loaded message (bottom-sentinel paging). */
+  async function loadNewerMessages(channelId: string) {
+    const existing = messages.value[channelId] ?? []
+    const lastId = existing[existing.length - 1]?.id
+    if (!lastId) return
+
+    const rows = await invoke<any[]>('db_load_messages_after', {
+      channelId,
+      afterId: lastId,
+      limit: 100,
+    })
+    const loaded: Message[] = rows.map(rowToMessage)
+    if (loaded.length === 0) {
+      // Reached the latest messages — switch out of historical mode
+      hasNewerMessages.value[channelId] = false
+      // Now load the true latest so P2P messages from here are appended normally
+      await loadMessages(channelId)
+    } else {
+      messages.value[channelId] = [...existing, ...loaded]
+      if (loaded.length < 100) {
+        hasNewerMessages.value[channelId] = false
+        await loadMessages(channelId)
+      }
+    }
   }
 
   async function loadMutationsForChannel(channelId: string) {
@@ -506,9 +538,11 @@ export const useMessagesStore = defineStore('messages', () => {
     pendingMessages,
     unreadCounts,
     mutations,
+    hasNewerMessages,
     setMyUserId,
     loadMessages,
     loadMessagesAround,
+    loadNewerMessages,
     loadMutationsForChannel,
     getMessagesWithMutations,
     sendMessage,
