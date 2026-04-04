@@ -8,6 +8,7 @@ import { webrtcService } from '@/services/webrtcService'
 import { startSync, handleSyncMessage, setSendFn } from '@/services/syncService'
 import type { SyncWireMessage } from '@/services/syncService'
 import type { ServerManifest } from '@/types/core'
+import * as attachmentService from '@/services/attachmentService'
 
 export type SignalingState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -144,6 +145,15 @@ export const useNetworkStore = defineStore('network', () => {
     // the onPeerDisconnected callback above; no extra action needed.
 
     startHeartbeat()
+
+    // Register the chunk-request function so attachmentService can ask peers for chunks.
+    attachmentService.setRequestChunksFn((contentHash, peerId, chunkIndices) => {
+      webrtcService.sendToPeer(peerId, {
+        type: 'attachment_chunk_request',
+        contentHash: `blake3:${contentHash}`,
+        chunkIndices,
+      })
+    })
   }
 
   /**
@@ -330,6 +340,24 @@ export const useNetworkStore = defineStore('network', () => {
       case 'server_join_request':
         handleServerJoinRequest(userId, msg).catch(e =>
           console.warn('[network] server_join_request error:', e)
+        )
+        break
+      case 'attachment_want':
+        handleAttachmentWant(userId, msg).catch(e =>
+          console.warn('[network] attachment_want error:', e)
+        )
+        break
+      case 'attachment_have':
+        handleAttachmentHave(userId, msg)
+        break
+      case 'attachment_chunk_request':
+        handleAttachmentChunkRequest(userId, msg).catch(e =>
+          console.warn('[network] attachment_chunk_request error:', e)
+        )
+        break
+      case 'attachment_chunk':
+        handleAttachmentChunk(msg).catch(e =>
+          console.warn('[network] attachment_chunk error:', e)
         )
         break
       case 'server_manifest':
@@ -587,6 +615,79 @@ export const useNetworkStore = defineStore('network', () => {
   /** Broadcast a server avatar change to all peers. */
   async function broadcastServerAvatar(serverId: string, avatarDataUrl: string | null) {
     broadcast({ type: 'server_avatar_update', serverId, avatarDataUrl })
+  }
+
+  // ── Attachment gossip (Phase 5b) ───────────────────────────────────────────
+
+  /**
+   * Broadcast to all connected peers that we want to download `contentHash`.
+   * Any peer who has the file will reply with `attachment_have`.
+   */
+  function broadcastAttachmentWant(contentHash: string, messageId: string) {
+    broadcast({ type: 'attachment_want', contentHash, messageId })
+  }
+
+  /**
+   * A peer is asking whether we have `contentHash`.
+   * Called for broadcast — send back `attachment_have` if we hold it.
+   */
+  async function handleAttachmentWant(fromUserId: string, msg: Record<string, unknown>) {
+    const contentHash = msg.contentHash as string
+    if (!contentHash) return
+    const hashHex = contentHash.replace('blake3:', '')
+    const have = await invoke<boolean>('has_attachment', { contentHash: hashHex })
+    if (have) {
+      webrtcService.sendToPeer(fromUserId, {
+        type: 'attachment_have',
+        contentHash,
+      })
+    }
+  }
+
+  /**
+   * A peer says they have `contentHash` — register them as a seeder and
+   * request missing chunks.
+   */
+  function handleAttachmentHave(fromUserId: string, msg: Record<string, unknown>) {
+    const contentHash = msg.contentHash as string
+    if (!contentHash) return
+    const hashHex = contentHash.replace('blake3:', '')
+    attachmentService.addSeeder(hashHex, fromUserId)
+  }
+
+  /**
+   * A peer requests specific chunks of an attachment we hold.
+   */
+  async function handleAttachmentChunkRequest(fromUserId: string, msg: Record<string, unknown>) {
+    const contentHash = msg.contentHash as string
+    const indices = msg.chunkIndices as number[]
+    if (!contentHash || !Array.isArray(indices)) return
+    const hashHex = contentHash.replace('blake3:', '')
+    for (const idx of indices) {
+      const data = await attachmentService.readChunkForSeeding(hashHex, idx)
+      if (data) {
+        webrtcService.sendToPeer(fromUserId, {
+          type:         'attachment_chunk',
+          contentHash,
+          chunkIndex:   idx,
+          data,
+        })
+      }
+    }
+  }
+
+  /**
+   * An inbound chunk for an ongoing download.
+   */
+  async function handleAttachmentChunk(msg: Record<string, unknown>) {
+    const contentHash = msg.contentHash as string
+    const chunkIndex  = msg.chunkIndex  as number
+    const data        = msg.data        as number[]
+    const totalChunks = msg.totalChunks as number | undefined
+    if (!contentHash || typeof chunkIndex !== 'number' || !Array.isArray(data)) return
+    const hashHex = contentHash.replace('blake3:', '')
+    // totalChunks may not be in the message (older clients) — fall back to 0 and let Rust work it out
+    await attachmentService.receiveChunk(hashHex, chunkIndex, data, totalChunks ?? 0)
   }
 
   /** Send all known server avatars to a newly connected peer so they stay in sync. */
@@ -906,5 +1007,6 @@ export const useNetworkStore = defineStore('network', () => {
     broadcastPresence,
     broadcastProfile,
     broadcastServerAvatar,
+    broadcastAttachmentWant,
   }
 })

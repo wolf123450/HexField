@@ -7,6 +7,7 @@ mod db;
 mod commands;
 mod lan;
 
+use commands::attachment_commands::*;
 use commands::db_commands::*;
 use commands::signal_commands::*;
 use commands::sync_commands::*;
@@ -85,6 +86,16 @@ pub fn run() {
             db_revoke_device,
             // Channel management
             db_delete_channel,
+            // Attachments (Phase 5b)
+            get_attachment_path,
+            has_attachment,
+            get_chunk_count,
+            save_attachment,
+            save_attachment_chunk,
+            read_attachment_chunk,
+            get_received_chunks,
+            blake3_hash,
+            delete_attachment,
             // System
             get_app_data_path,
             get_screen_sources,
