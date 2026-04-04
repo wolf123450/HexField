@@ -110,6 +110,43 @@
           </div>
         </section>
 
+        <!-- Moderation audit log (admin only) -->
+        <section v-if="isAdmin" class="settings-section">
+          <div class="section-header-row">
+            <h3 class="section-title">AUDIT LOG</h3>
+            <button class="mod-log-toggle btn-secondary-sm" @click="toggleModLog">
+              {{ modLogOpen ? 'Hide' : 'Show' }}
+            </button>
+          </div>
+
+          <template v-if="modLogOpen">
+            <div v-if="modLogLoading" class="mod-log-hint">Loading…</div>
+            <div v-else-if="modLogEntries.length === 0" class="mod-log-hint">No moderation actions recorded.</div>
+            <div v-else class="mod-log-table-wrap">
+              <table class="mod-log-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Action</th>
+                    <th>By</th>
+                    <th>Target</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="entry in modLogEntries" :key="entry.id">
+                    <td class="mod-log-time" :title="entry.created_at">{{ formatLogTime(entry.created_at) }}</td>
+                    <td><span class="mod-log-badge" :class="`mod-log-badge--${entry.action}`">{{ entry.action }}</span></td>
+                    <td class="mod-log-id" :title="entry.issued_by">{{ memberDisplayName(entry.issued_by) }}</td>
+                    <td class="mod-log-id" :title="entry.target_id">{{ memberDisplayName(entry.target_id) }}</td>
+                    <td class="mod-log-reason">{{ entry.reason ?? '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </section>
+
         <!-- Danger zone (placeholder) -->
         <section v-if="isAdmin" class="settings-section settings-section--danger">
           <h3 class="section-title">DANGER ZONE</h3>
@@ -128,6 +165,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { mdiClose, mdiCamera, mdiAccountPlus, mdiTrashCan } from '@mdi/js'
 import { v7 as uuidv7 } from 'uuid'
 import { useUIStore } from '@/stores/uiStore'
@@ -233,6 +271,54 @@ function addKeyword() {
 
 function removeKeyword(id: string) {
   settingsStore.updateSetting('keywordFilters', settingsStore.settings.keywordFilters.filter(kf => kf.id !== id))
+}
+
+// ── Moderation audit log ──────────────────────────────────────────────────────
+
+interface ModLogEntry {
+  id: string
+  server_id: string
+  action: string
+  target_id: string
+  issued_by: string
+  reason: string | null
+  detail: string | null
+  created_at: string
+}
+
+const modLogOpen    = ref(false)
+const modLogLoading = ref(false)
+const modLogEntries = ref<ModLogEntry[]>([])
+
+async function toggleModLog() {
+  modLogOpen.value = !modLogOpen.value
+  if (modLogOpen.value && modLogEntries.value.length === 0) {
+    await loadModLog()
+  }
+}
+
+async function loadModLog() {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  modLogLoading.value = true
+  try {
+    modLogEntries.value = await invoke<ModLogEntry[]>('db_load_mod_log', { serverId: sid, limit: 100 })
+  } finally {
+    modLogLoading.value = false
+  }
+}
+
+function memberDisplayName(userId: string): string {
+  const sid = uiStore.settingsServerId
+  if (!sid) return userId.slice(0, 8)
+  const member = serversStore.members[sid]?.[userId]
+  return member?.displayName ?? userId.slice(0, 8)
+}
+
+function formatLogTime(iso: string): string {
+  const d = new Date(iso)
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 }
 
 
@@ -486,4 +572,71 @@ function readAsDataUrl(file: File): Promise<string> {
 .notif-keyword-input { flex: 1; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; padding: 5px 8px; font-size: 13px; }
 .notif-keyword-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border-color); font-size: 13px; color: var(--text-primary); }
 .notif-keyword-text { font-family: monospace; }
+
+/* ── Audit log section ─────────────────────────────────────────────────── */
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mod-log-hint {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  padding: var(--spacing-sm) 0;
+}
+
+.mod-log-table-wrap {
+  overflow-x: auto;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.mod-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.mod-log-table th {
+  text-align: left;
+  padding: 6px 10px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.mod-log-table td {
+  padding: 6px 10px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: top;
+}
+
+.mod-log-table tbody tr:last-child td { border-bottom: none; }
+.mod-log-table tbody tr:hover td { background: var(--bg-tertiary); }
+
+.mod-log-time { white-space: nowrap; color: var(--text-tertiary); font-size: 11px; }
+.mod-log-id { font-family: monospace; font-size: 11px; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mod-log-reason { max-width: 140px; white-space: pre-wrap; word-break: break-word; }
+
+.mod-log-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+.mod-log-badge--kick        { background: rgba(250, 166, 26, 0.2);  color: #faa61a; }
+.mod-log-badge--ban         { background: rgba(237, 66, 69, 0.2);   color: #ed4245; }
+.mod-log-badge--unban       { background: rgba(87, 242, 135, 0.2);  color: #57f287; }
+.mod-log-badge--voice_kick  { background: rgba(250, 166, 26, 0.15); color: #faa61a; }
+.mod-log-badge--voice_mute  { background: rgba(250, 166, 26, 0.15); color: #faa61a; }
+.mod-log-badge--voice_unmute { background: rgba(87, 242, 135, 0.15); color: #57f287; }
 </style>

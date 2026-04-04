@@ -452,6 +452,33 @@ export const useServersStore = defineStore('servers', () => {
     inviteCodes.value.delete(code)
   }
 
+  /**
+   * Write an entry to the server's moderation audit log.
+   * Call after performing any moderation action (kick, ban, voice mute, etc.)
+   */
+  async function logModAction(
+    serverId: string,
+    action: string,
+    targetId: string,
+    reason?: string,
+    detail?: string,
+  ): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identity = useIdentityStore()
+    await invoke('db_save_mod_log_entry', {
+      entry: {
+        id: uuidv7(),
+        server_id: serverId,
+        action,
+        target_id: targetId,
+        issued_by: identity.userId ?? '',
+        reason: reason ?? null,
+        detail: detail ?? null,
+        created_at: new Date().toISOString(),
+      },
+    })
+  }
+
   return {
     servers,
     members,
@@ -473,5 +500,6 @@ export const useServersStore = defineStore('servers', () => {
     createInviteToken,
     validateInviteToken,
     revokeInviteCode,
+    logModAction,
   }
 })
