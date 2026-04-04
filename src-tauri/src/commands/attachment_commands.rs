@@ -181,6 +181,60 @@ pub(crate) fn delete_attachment_from(
     Ok(())
 }
 
+/// Walk the attachments directory and return total bytes consumed by `.bin` files.
+pub(crate) fn total_attachment_bytes(dir: &PathBuf) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let prefix_dir = entry.path();
+        if !prefix_dir.is_dir() { continue; }
+        for file_entry in std::fs::read_dir(&prefix_dir).into_iter().flatten().flatten() {
+            let path = file_entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("bin") {
+                total += std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            }
+        }
+    }
+    total
+}
+
+/// Prune oldest `.bin` attachments until total usage is under `limit_bytes`.
+/// Returns content hashes of pruned files.
+pub(crate) fn prune_to_limit(dir: &PathBuf, limit_bytes: u64) -> Result<Vec<String>, String> {
+    // Collect (mtime, hash, size) for all .bin files, sorted oldest-first
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let mut files: Vec<(std::time::SystemTime, String, u64)> = Vec::new();
+    for entry in entries.flatten() {
+        let prefix = entry.path();
+        if !prefix.is_dir() { continue; }
+        for f in std::fs::read_dir(&prefix).into_iter().flatten().flatten() {
+            let p = f.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("bin") { continue; }
+            let meta = std::fs::metadata(&p).map_err(|e| e.to_string())?;
+            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            let size  = meta.len();
+            if let Some(hash) = p.file_stem().and_then(|s| s.to_str()).map(String::from) {
+                files.push((mtime, hash, size));
+            }
+        }
+    }
+    files.sort_by_key(|(t, _, _)| *t); // oldest first
+
+    let mut total: u64 = files.iter().map(|(_, _, s)| s).sum();
+    let mut pruned = Vec::new();
+    for (_, hash, size) in &files {
+        if total <= limit_bytes { break; }
+        delete_attachment_from(dir, hash)?;
+        pruned.push(hash.clone());
+        total = total.saturating_sub(*size);
+    }
+    Ok(pruned)
+}
+
 /// Prune `.bin` attachments whose mtime is older than `max_age_secs` seconds.
 /// Returns the content hashes of pruned files.
 pub(crate) fn prune_old_attachments(
@@ -325,6 +379,25 @@ pub fn prune_attachments(
 ) -> Result<Vec<String>, String> {
     let dir = attachments_dir(&app_handle)?;
     prune_old_attachments(&dir, max_age_secs)
+}
+
+/// Return the total bytes used by completed attachment files (`.bin`).
+#[tauri::command]
+pub fn get_attachment_storage_bytes(app_handle: tauri::AppHandle) -> Result<u64, String> {
+    let dir = attachments_dir(&app_handle)?;
+    Ok(total_attachment_bytes(&dir))
+}
+
+/// Prune oldest attachments until under `limit_gb` gigabytes.
+/// Returns the hashes of pruned files.
+#[tauri::command]
+pub fn enforce_storage_limit(
+    app_handle: tauri::AppHandle,
+    limit_gb: f64,
+) -> Result<Vec<String>, String> {
+    let dir   = attachments_dir(&app_handle)?;
+    let limit = (limit_gb * 1_073_741_824.0) as u64;
+    prune_to_limit(&dir, limit)
 }
 
 //  Tests 

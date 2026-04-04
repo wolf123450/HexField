@@ -161,6 +161,7 @@ onMounted(async () => {
   if (isTauri) {
     invoke('db_prune_expired_bans').catch(() => {})
     invoke('db_prune_mod_log', { retainDays: 90, rowCap: 10_000 }).catch(() => {})
+    invoke('enforce_storage_limit', { limitGb: settingsStore.settings.storageLimitGB }).catch(() => {})
   }
 
   // Deep-link handler (gamechat:// scheme)
