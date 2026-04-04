@@ -287,16 +287,16 @@
 - [ ] Key export / import / device revocation UI in Settings > Privacy
 - [ ] Privacy settings: show-deleted-placeholder toggle, confirm-before-delete toggle
 - [ ] **Edit & delete messages**
-  - [ ] Permission model: own messages — edit + delete always allowed; others' messages — delete only for admins/owners; edit never allowed on others' messages
-  - [ ] `sendEditMutation(messageId, channelId, serverId, newContent)` in `messagesStore` — wraps existing `applyMutation` + broadcast (data layer already handles HLC last-write-wins)
-  - [ ] `sendDeleteMutation(messageId, channelId, serverId)` in `messagesStore` — same pattern as reactions
-  - [ ] Hover action bar in `MessageBubble.vue`: show edit (pencil) icon for own messages; show delete (trash) icon for own messages + admin messages
-  - [ ] Inline edit mode in `MessageBubble.vue`: clicking edit replaces content with a textarea pre-filled with current text; Enter to confirm, Escape to cancel; textarea auto-focuses and auto-sizes
-  - [ ] Delete confirmation: plain `window.confirm` (no modal) — controlled by Privacy settings toggle added below
-  - [ ] `getMessagesWithMutations` already folds `delete` → `content: null` and `edit` → latest `newContent`; ensure `isEdited` badge renders correctly in `MessageBubble.vue`
-  - [ ] Deleted message placeholder: render `"[message deleted]"` in muted italic when `content === null` — controlled by Privacy settings toggle
-  - [ ] Admin override: `isAdmin` check uses `roles.some(r => r === 'admin' || r === 'owner')` (already in codebase)
-  - [ ] P2P propagation: no new network code needed — `mutation` broadcast already in `sendMutation` flow; negentropy sync propagates mutations to late-joining peers
+  - [x] Permission model: own messages — edit + delete always allowed; others' messages — delete only for admins/owners; edit never allowed on others' messages
+  - [x] `sendEditMutation(messageId, channelId, serverId, newContent)` in `messagesStore` — wraps existing `applyMutation` + broadcast (data layer already handles HLC last-write-wins)
+  - [x] `sendDeleteMutation(messageId, channelId, serverId)` in `messagesStore` — same pattern as reactions
+  - [x] Hover action bar in `MessageBubble.vue`: show edit (pencil) icon for own messages; show delete (trash) icon for own messages + admin messages
+  - [x] Inline edit mode in `MessageBubble.vue`: clicking edit replaces content with a textarea pre-filled with current text; Enter to confirm, Escape to cancel; textarea auto-focuses and auto-sizes
+  - [x] Delete confirmation: plain `window.confirm` (no modal) — controlled by Privacy settings toggle added below
+  - [x] `getMessagesWithMutations` already folds `delete` → `content: null` and `edit` → latest `newContent`; ensure `isEdited` badge renders correctly in `MessageBubble.vue`
+  - [x] Deleted message placeholder: render `"[message deleted]"` in muted italic when `content === null` — controlled by Privacy settings toggle
+  - [x] Admin override: `isAdmin` check uses `roles.some(r => r === 'admin' || r === 'owner')` (already in codebase)
+  - [x] P2P propagation: no new network code needed — `mutation` broadcast already in `sendMutation` flow; negentropy sync propagates mutations to late-joining peers
 - [ ] **Tests**
   - [ ] FTS5 message search: exact match, partial match, no results
   - [ ] FTS5 search excludes `content = NULL` (deleted) rows
@@ -308,9 +308,9 @@
   - [ ] `server_rebaseline` mutation: messages before `historyStartsAt` are not synced to joining peers
   - [ ] OS notification fires on mention; does not fire when window is focused
   - [ ] Auto-update: version comparison correctly identifies when an update is available
-  - [ ] `sendEditMutation`: optimistic edit reflected in `getMessagesWithMutations` immediately; HLC last-write-wins rejects older edit
-  - [ ] `sendDeleteMutation`: message becomes `content: null` in reactive state and in DB
-  - [ ] Permission guard: non-admin cannot delete another user's message (mutation rejected client-side)
+  - [x] `sendEditMutation`: optimistic edit reflected in `getMessagesWithMutations` immediately; HLC last-write-wins rejects older edit
+  - [x] `sendDeleteMutation`: message becomes `content: null` in reactive state and in DB
+  - [x] Permission guard: non-admin cannot delete another user's message (mutation rejected client-side)
 
 ---
 

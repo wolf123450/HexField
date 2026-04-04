@@ -402,3 +402,99 @@ describe('messagesStore.sendMessage', () => {
     }))
   })
 })
+
+// ── sendEditMutation ──────────────────────────────────────────────────────────
+
+describe('messagesStore.sendEditMutation', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('reflects edit immediately in getMessagesWithMutations (optimistic)', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    store.messages['ch-1'] = [makeMessage({ id: 'msg-1', content: 'original' })]
+    store.mutations['ch-1'] = []
+
+    await store.sendEditMutation('msg-1', 'ch-1', 'srv-1', 'edited content')
+
+    const result = store.getMessagesWithMutations('ch-1')
+    expect(result[0].content).toBe('edited content')
+    expect(result[0].isEdited).toBe(true)
+  })
+
+  it('HLC last-write-wins: newer edit wins over older message ts', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    // Message has a low timestamp so the generated HLC will be newer
+    store.messages['ch-1'] = [makeMessage({ id: 'msg-1', logicalTs: '0000000000001-000000', content: 'old' })]
+    store.mutations['ch-1'] = []
+
+    await store.sendEditMutation('msg-1', 'ch-1', 'srv-1', 'new content')
+
+    expect(store.messages['ch-1'][0].content).toBe('new content')
+    expect(store.messages['ch-1'][0].isEdited).toBe(true)
+  })
+
+  it('persists the edit mutation to DB via db_save_mutation', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    store.messages['ch-1'] = [makeMessage({ id: 'msg-1' })]
+    store.mutations['ch-1'] = []
+
+    await store.sendEditMutation('msg-1', 'ch-1', 'srv-1', 'db edit')
+
+    expect(invoke).toHaveBeenCalledWith('db_save_mutation', expect.objectContaining({
+      mutation: expect.objectContaining({ type: 'edit', new_content: 'db edit' }),
+    }))
+  })
+})
+
+// ── sendDeleteMutation ────────────────────────────────────────────────────────
+
+describe('messagesStore.sendDeleteMutation', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('message becomes content: null in reactive state after delete', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    store.messages['ch-1'] = [makeMessage({ id: 'msg-1', content: 'delete me' })]
+    store.mutations['ch-1'] = []
+
+    await store.sendDeleteMutation('msg-1', 'ch-1', 'srv-1')
+
+    expect(store.messages['ch-1'][0].content).toBeNull()
+  })
+
+  it('persists the delete mutation to DB via db_save_mutation', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    store.messages['ch-1'] = [makeMessage({ id: 'msg-1' })]
+    store.mutations['ch-1'] = []
+
+    await store.sendDeleteMutation('msg-1', 'ch-1', 'srv-1')
+
+    expect(invoke).toHaveBeenCalledWith('db_save_mutation', expect.objectContaining({
+      mutation: expect.objectContaining({ type: 'delete', target_id: 'msg-1' }),
+    }))
+  })
+})

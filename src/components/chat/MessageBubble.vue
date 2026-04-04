@@ -5,8 +5,8 @@
     @mouseenter="onBubbleEnter"
     @mouseleave="isHovered = false"
   >
-    <!-- Hover action bar: quick-react + full picker button -->
-    <div v-if="isHovered && message.content !== null" class="message-actions" :class="{ 'actions-below': actionsBelow }">
+    <!-- Hover action bar: quick-react + full picker button + edit/delete -->
+    <div v-if="isHovered && message.content !== null && !isEditing" class="message-actions" :class="{ 'actions-below': actionsBelow }">
       <button
         v-for="emojiId in emojiStore.topEmoji"
         :key="emojiId"
@@ -28,6 +28,15 @@
       <button class="action-btn" title="Add reaction" @click.stop="openPickerFromBar">
         <AppIcon :path="mdiEmoticonPlus" :size="20" />
       </button>
+      <template v-if="canEdit || canDelete">
+        <div class="actions-divider" />
+        <button v-if="canEdit" class="action-btn" title="Edit message" @click.stop="startEdit">
+          <AppIcon :path="mdiPencil" :size="18" />
+        </button>
+        <button v-if="canDelete" class="action-btn action-btn--danger" title="Delete message" @click.stop="handleDelete">
+          <AppIcon :path="mdiDelete" :size="18" />
+        </button>
+      </template>
     </div>
 
     <template v-if="showHeader">
@@ -45,9 +54,22 @@
           <span class="message-time">{{ formattedTime }}</span>
           <span v-if="message.isEdited" class="edited-label">(edited)</span>
         </div>
-        <MessageContent :message="message" />
+        <template v-if="isEditing">
+          <textarea
+            ref="editTextarea"
+            v-model="editContent"
+            class="edit-textarea"
+            @keydown.enter.exact.prevent="confirmEdit"
+            @keydown.escape="cancelEdit"
+            @input="autoResizeTextarea"
+          />
+          <div class="edit-actions">
+            <span class="edit-hint">Enter to save · Esc to cancel</span>
+          </div>
+        </template>
+        <MessageContent v-else :message="message" />
         <ReactionBar
-          v-if="message.reactions.length > 0"
+          v-if="!isEditing && message.reactions.length > 0"
           :message-id="message.id"
           :channel-id="message.channelId"
           :server-id="message.serverId"
@@ -60,9 +82,22 @@
     <template v-else>
       <div class="message-indent" />
       <div class="message-main">
-        <MessageContent :message="message" />
+        <template v-if="isEditing">
+          <textarea
+            ref="editTextarea"
+            v-model="editContent"
+            class="edit-textarea"
+            @keydown.enter.exact.prevent="confirmEdit"
+            @keydown.escape="cancelEdit"
+            @input="autoResizeTextarea"
+          />
+          <div class="edit-actions">
+            <span class="edit-hint">Enter to save · Esc to cancel</span>
+          </div>
+        </template>
+        <MessageContent v-else :message="message" />
         <ReactionBar
-          v-if="message.reactions.length > 0"
+          v-if="!isEditing && message.reactions.length > 0"
           :message-id="message.id"
           :channel-id="message.channelId"
           :server-id="message.serverId"
@@ -85,15 +120,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, nextTick } from 'vue'
 import { formatDistanceToNow } from 'date-fns'
 import type { Message } from '@/types/core'
-import { mdiEmoticonPlus } from '@mdi/js'
+import { mdiEmoticonPlus, mdiPencil, mdiDelete } from '@mdi/js'
 import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import { useMessagesStore } from '@/stores/messagesStore'
 import { useEmojiStore } from '@/stores/emojiStore'
+import { useSettingsStore } from '@/stores/settingsStore'
 import { codepointToChar } from '@/utils/twemoji'
 import MessageContent from './MessageContent.vue'
 import ReactionBar from './ReactionBar.vue'
@@ -180,6 +216,67 @@ async function quickReact(emojiId: string) {
     props.message.serverId,
     emojiId,
   )
+}
+
+const settingsStore = useSettingsStore()
+
+const isEditing    = ref(false)
+const editContent  = ref('')
+const editTextarea = ref<HTMLTextAreaElement | null>(null)
+
+const isAdmin = computed(() => {
+  const uid = identityStore.userId
+  if (!uid) return false
+  return serversStore.members[props.message.serverId]?.[uid]?.roles.some(r => r === 'admin' || r === 'owner') ?? false
+})
+
+const canEdit   = computed(() => props.message.authorId === identityStore.userId)
+const canDelete = computed(() => props.message.authorId === identityStore.userId || isAdmin.value)
+
+async function startEdit() {
+  editContent.value = props.message.content ?? ''
+  isEditing.value = true
+  await nextTick()
+  editTextarea.value?.focus()
+  autoResizeTextarea()
+}
+
+async function confirmEdit() {
+  const trimmed = editContent.value.trim()
+  if (!trimmed || trimmed === props.message.content) {
+    cancelEdit()
+    return
+  }
+  await messagesStore.sendEditMutation(
+    props.message.id,
+    props.message.channelId,
+    props.message.serverId,
+    trimmed,
+  )
+  isEditing.value = false
+}
+
+function cancelEdit() {
+  isEditing.value = false
+  editContent.value = ''
+}
+
+async function handleDelete() {
+  if (settingsStore.settings.confirmBeforeDelete) {
+    if (!window.confirm('Delete this message?')) return
+  }
+  await messagesStore.sendDeleteMutation(
+    props.message.id,
+    props.message.channelId,
+    props.message.serverId,
+  )
+}
+
+function autoResizeTextarea() {
+  const el = editTextarea.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
 }
 </script>
 
@@ -308,6 +405,45 @@ async function quickReact(emojiId: string) {
   font-size: 11px;
   color: var(--text-tertiary);
   font-style: italic;
+}
+
+.actions-divider {
+  width: 1px;
+  margin: 4px 2px;
+  background: rgba(255, 255, 255, 0.12);
+  align-self: stretch;
+}
+
+.action-btn--danger:hover {
+  color: var(--danger-color, #f04747);
+}
+
+.edit-textarea {
+  width: 100%;
+  min-height: 36px;
+  background: var(--bg-tertiary, var(--bg-secondary));
+  border: 1px solid var(--accent-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: inherit;
+  line-height: 1.5;
+  padding: 6px 8px;
+  resize: none;
+  outline: none;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.edit-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 </style>
 
