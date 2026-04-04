@@ -125,6 +125,11 @@ export const useNetworkStore = defineStore('network', () => {
         startSync(userId).catch(e => console.warn('[network] sync start error:', e))
       },
       (userId) => {
+        // Destroy the stale PeerState so reconnections start fresh.
+        // Without this, createOffer() silently no-ops for a peer that's already
+        // in the map, and handleOffer() may receive an offer with mismatched
+        // m-line ordering because the new remote session has no prior history.
+        webrtcService.destroyPeer(userId)
         connectedPeers.value = connectedPeers.value.filter(id => id !== userId)
         lastHeartbeatFrom.delete(userId)
         // Mark peer as offline across all server member maps
@@ -363,6 +368,11 @@ export const useNetworkStore = defineStore('network', () => {
       case 'server_manifest':
         handleServerManifestReceived(msg)
         break
+      case 'channel_gossip':
+        handleChannelGossip(msg).catch(e =>
+          console.warn('[network] channel_gossip error:', e)
+        )
+        break
       default:
         console.debug('[network] unhandled data message type:', msg.type)
     }
@@ -397,6 +407,20 @@ export const useNetworkStore = defineStore('network', () => {
       const { useServersStore } = await import('./serversStore')
       useServersStore().applyServerMutation(mutation)
     }
+  }
+
+  async function handleChannelGossip(msg: Record<string, unknown>) {
+    const ch = msg.channel as Record<string, unknown> | undefined
+    if (!ch || typeof ch.id !== 'string') return
+    const { useChannelsStore } = await import('./channelsStore')
+    await useChannelsStore().receiveChannelGossip({
+      id:       ch.id as string,
+      serverId: ch.serverId as string,
+      name:     ch.name as string,
+      type:     ch.type as import('@/types/core').ChannelType,
+      position: ch.position as number,
+      topic:    ch.topic as string | undefined,
+    })
   }
 
   async function handleEmojiSync(msg: Record<string, unknown>) {

@@ -92,6 +92,19 @@ class WebRTCService {
    * Handle an incoming SDP offer from a remote peer.
    */
   async handleOffer(userId: string, sdp: string): Promise<void> {
+    // Safety net: if the existing peer connection is already dead (disconnected /
+    // failed / closed — e.g. the remote restarted before onPeerDisconnected fired
+    // locally) destroy it so we negotiate a completely fresh session.  Without
+    // this, setRemoteDescription can throw an m-line ordering error when the new
+    // offer has a different SDP history from the stale connection.
+    const existing = this.peers.get(userId)
+    if (existing) {
+      const cs = existing.pc.connectionState
+      if (cs === 'disconnected' || cs === 'failed' || cs === 'closed') {
+        this.destroyPeer(userId)
+      }
+    }
+
     const state = this.getOrCreatePeer(userId, false)
 
     // Perfect negotiation: if we're making an offer too, the "polite" peer
