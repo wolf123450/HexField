@@ -57,6 +57,22 @@
       <p class="form-hint">Maximum local storage for message attachments. Oldest files are removed first when the limit is reached.</p>
     </div>
 
+    <!-- ── Identity Export / Import ─────────────────────────────────── -->
+    <div class="form-row">
+      <label class="form-label">Identity Backup</label>
+      <p class="form-hint" style="margin-bottom: var(--spacing-sm)">
+        Export your cryptographic identity to a file so you can restore it on a new device.
+        Keep this file secret — anyone with it can impersonate you.
+      </p>
+      <div class="identity-actions">
+        <button class="btn-export" @click="doExport">Export Identity…</button>
+        <label class="btn-import">
+          Import Identity…
+          <input type="file" accept=".json,application/json" style="display:none" @change="doImport" />
+        </label>
+      </div>
+    </div>
+
     <!-- ── Linked Devices ──────────────────────────────────────────── -->
     <div class="devices-section">
       <div class="devices-header">
@@ -94,9 +110,9 @@
 import { ref, computed, onMounted } from 'vue'
 import { mdiQrcode, mdiLaptop, mdiLinkOff } from '@mdi/js'
 import { invoke } from '@tauri-apps/api/core'
+import { useIdentityStore } from '@/stores/identityStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useDevicesStore } from '@/stores/devicesStore'
-import { useIdentityStore } from '@/stores/identityStore'
 import { useUIStore } from '@/stores/uiStore'
 
 const settingsStore = useSettingsStore()
@@ -178,6 +194,39 @@ async function revoke(deviceId: string) {
 function openLinkModal() {
   uiStore.openDeviceLinkModal()
 }
+
+async function doExport() {
+  try {
+    const json = await identityStore.exportIdentity()
+    const blob = new Blob([json], { type: 'application/json' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href     = url
+    a.download = `gamechat-identity-${identityStore.userId?.slice(0, 8)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : 'Export failed.')
+  }
+}
+
+async function doImport(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  const confirmed = confirm(
+    'Importing an identity will replace your current account on this device.\n\n' +
+    'Proceed? This cannot be undone without another backup.',
+  )
+  if (!confirmed) return
+  try {
+    const text = await file.text()
+    await identityStore.importIdentity(text)
+    alert('Identity imported. The app will now reload.')
+    window.location.reload()
+  } catch (err: unknown) {
+    alert(err instanceof Error ? err.message : 'Import failed — invalid identity file.')
+  }
+}
 </script>
 
 <style scoped>
@@ -235,4 +284,24 @@ function openLinkModal() {
 }
 .btn-enforce:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-primary); }
 .btn-enforce:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.identity-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.btn-export, .btn-import {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transform: none;
+  display: inline-flex;
+  align-items: center;
+}
+.btn-export:hover, .btn-import:hover { color: var(--text-primary); background: var(--bg-primary); }
 </style>
