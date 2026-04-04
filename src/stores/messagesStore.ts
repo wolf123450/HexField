@@ -296,45 +296,27 @@ export const useMessagesStore = defineStore('messages', () => {
 
     incrementUnread(wire.channelId)
 
-    // Fire OS notification when the window is not focused
-    maybeNotify(msg, plaintext, wire.serverId)
-  }
-
-  async function maybeNotify(msg: Message, plaintext: string, serverId: string) {
-    const { useSettingsStore } = await import('./settingsStore')
-    const settings = useSettingsStore().settings
-    if (!settings.notificationsEnabled) return
-    if (document.visibilityState === 'visible') return
-
-    const { useIdentityStore } = await import('./identityStore')
-    const { useServersStore }  = await import('./serversStore')
-    const identityStore        = useIdentityStore()
-    const serversStore         = useServersStore()
-
-    const myName    = identityStore.displayName
-    const mentioned = myName ? plaintext.toLowerCase().includes(`@${myName.toLowerCase()}`) : false
-    // Only notify for mentions (not every message) to avoid noise
-    if (!mentioned) return
-
-    const sender   = serversStore.members[serverId]?.[msg.authorId]?.displayName ?? msg.authorId.slice(0, 8)
-    const { useChannelsStore } = await import('./channelsStore')
-    const channelsStore = useChannelsStore()
-    const channel  = Object.values(channelsStore.channels).flat().find(c => c.id === msg.channelId)
-    const chanName = channel?.name ? `#${channel.name}` : 'a channel'
-
-    try {
-      const { sendNotification, isPermissionGranted, requestPermission } =
-        await import('@tauri-apps/plugin-notification')
-      let granted = await isPermissionGranted()
-      if (!granted) {
-        const perm = await requestPermission()
-        granted = perm === 'granted'
-      }
-      if (granted) {
-        sendNotification({ title: `${sender} mentioned you in ${chanName}`, body: plaintext.slice(0, 120) })
-      }
-    } catch (e) {
-      // Notification API unavailable (e.g. in browser dev mode) — ignore
+    // Route to notification system (OS notification + sound + rules)
+    {
+      const { useIdentityStore: _idStore } = await import('./identityStore')
+      const myName = _idStore().displayName ?? ''
+      const isMention = myName ? plaintext.toLowerCase().includes(`@${myName.toLowerCase()}`) : false
+      const { useNotificationStore } = await import('./notificationStore')
+      const { useServersStore }      = await import('./serversStore')
+      const sender = useServersStore().members[wire.serverId]?.[msg.authorId]?.displayName
+                     ?? msg.authorId.slice(0, 8)
+      const { useChannelsStore } = await import('./channelsStore')
+      const channel = Object.values(useChannelsStore().channels).flat().find(c => c.id === msg.channelId)
+      const chanName = channel?.name ? `#${channel.name}` : 'a channel'
+      await useNotificationStore().notify({
+        type:      isMention ? 'mention' : 'message',
+        serverId:  wire.serverId,
+        channelId: wire.channelId,
+        authorId:  wire.authorId,
+        content:   plaintext,
+        titleText: isMention ? `${sender} mentioned you in ${chanName}` : `${sender} in ${chanName}`,
+        bodyText:  plaintext.slice(0, 120),
+      })
     }
   }
 
