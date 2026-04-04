@@ -773,6 +773,19 @@ export const useNetworkStore = defineStore('network', () => {
     if (!channelId) return
     // Always track where this peer is in voice (so sidebar shows it even for non-participants)
     voiceStore.setPeerVoiceChannel(userId, channelId)
+    // Notify: someone joined a voice channel (only if we are in the same channel)
+    if (voiceStore.session?.channelId === channelId) {
+      const serverId = voiceStore.session?.serverId
+      const peerName = (await import('./serversStore')).useServersStore()
+        .members[serverId ?? '']?.[userId]?.displayName ?? userId.slice(0, 8)
+      ;(await import('./notificationStore')).useNotificationStore().notify({
+        type:      'join_other',
+        serverId,
+        channelId,
+        authorId:  userId,
+        titleText: `${peerName} joined voice`,
+      }).catch(() => {})
+    }
     if (voiceStore.session?.channelId === channelId) {
       voiceStore.updatePeer(userId, { audioEnabled: true })
       // Reply only if this is an initial announce (not a reply), to avoid a ping-pong loop.
@@ -785,8 +798,22 @@ export const useNetworkStore = defineStore('network', () => {
   async function handleVoiceLeave(userId: string) {
     const { useVoiceStore } = await import('./voiceStore')
     const voiceStore = useVoiceStore()
+    const serverId = voiceStore.session?.serverId
+    const channelId = voiceStore.session?.channelId
     voiceStore.removePeer(userId)
     voiceStore.clearPeerVoiceChannel(userId)
+    // Notify: peer left voice (only meaningful if we were in the same session)
+    if (serverId) {
+      const peerName = (await import('./serversStore')).useServersStore()
+        .members[serverId]?.[userId]?.displayName ?? userId.slice(0, 8)
+      ;(await import('./notificationStore')).useNotificationStore().notify({
+        type:      'leave',
+        serverId,
+        channelId,
+        authorId:  userId,
+        titleText: `${peerName} left voice`,
+      }).catch(() => {})
+    }
   }
 
   async function handleVoiceScreenShareStart(userId: string) {
