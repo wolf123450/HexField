@@ -286,6 +286,17 @@
 - [ ] Auto-update flow (already in skeleton — verify works end-to-end)
 - [ ] Key export / import / device revocation UI in Settings > Privacy
 - [ ] Privacy settings: show-deleted-placeholder toggle, confirm-before-delete toggle
+- [ ] **Edit & delete messages**
+  - [ ] Permission model: own messages — edit + delete always allowed; others' messages — delete only for admins/owners; edit never allowed on others' messages
+  - [ ] `sendEditMutation(messageId, channelId, serverId, newContent)` in `messagesStore` — wraps existing `applyMutation` + broadcast (data layer already handles HLC last-write-wins)
+  - [ ] `sendDeleteMutation(messageId, channelId, serverId)` in `messagesStore` — same pattern as reactions
+  - [ ] Hover action bar in `MessageBubble.vue`: show edit (pencil) icon for own messages; show delete (trash) icon for own messages + admin messages
+  - [ ] Inline edit mode in `MessageBubble.vue`: clicking edit replaces content with a textarea pre-filled with current text; Enter to confirm, Escape to cancel; textarea auto-focuses and auto-sizes
+  - [ ] Delete confirmation: plain `window.confirm` (no modal) — controlled by Privacy settings toggle added below
+  - [ ] `getMessagesWithMutations` already folds `delete` → `content: null` and `edit` → latest `newContent`; ensure `isEdited` badge renders correctly in `MessageBubble.vue`
+  - [ ] Deleted message placeholder: render `"[message deleted]"` in muted italic when `content === null` — controlled by Privacy settings toggle
+  - [ ] Admin override: `isAdmin` check uses `roles.some(r => r === 'admin' || r === 'owner')` (already in codebase)
+  - [ ] P2P propagation: no new network code needed — `mutation` broadcast already in `sendMutation` flow; negentropy sync propagates mutations to late-joining peers
 - [ ] **Tests**
   - [ ] FTS5 message search: exact match, partial match, no results
   - [ ] FTS5 search excludes `content = NULL` (deleted) rows
@@ -297,10 +308,104 @@
   - [ ] `server_rebaseline` mutation: messages before `historyStartsAt` are not synced to joining peers
   - [ ] OS notification fires on mention; does not fire when window is focused
   - [ ] Auto-update: version comparison correctly identifies when an update is available
+  - [ ] `sendEditMutation`: optimistic edit reflected in `getMessagesWithMutations` immediately; HLC last-write-wins rejects older edit
+  - [ ] `sendDeleteMutation`: message becomes `content: null` in reactive state and in DB
+  - [ ] Permission guard: non-admin cannot delete another user's message (mutation rejected client-side)
 
 ---
 
-## Stretch — Matrix Compatibility
+## Phase 7 — Auto-Update & CI/CD
+
+**Goal**: Official GitHub releases with signed auto-update. Code is already 95% done (`updateService.ts`, `SettingsHelpTab.vue`, `tauri-plugin-updater` wired). What remains is one-time repo/key setup and the release workflow.
+
+> **Note**: `src/utils/updateService.ts` and `src/components/settings/SettingsHelpTab.vue` are already fully implemented. `autoCheckForUpdate()` just needs to be called from `App.vue` on startup, the pubkey placeholder in `tauri.conf.json` needs the real key, and the GitHub release pipeline needs creating.
+
+### 7a — One-time key & repo setup (do once, offline)
+- [ ] Create the GitHub repository (`GameChat` or chosen name) — public or private
+- [ ] Generate Ed25519 update signing key pair: `npm run tauri -- signer generate -w tauri-update-key.key`
+  - Outputs `.key` (private) and `.key.pub` (public) — **never commit the private key**
+  - Add `.key` to `.gitignore` immediately
+- [ ] Store private key as GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY` (base64-encoded)
+- [ ] Store passphrase (if set) as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+- [ ] Add public key to `tauri.conf.json` under `plugins.updater.pubkey` (replace `REPLACE_WITH_YOUR_TAURI_SIGNING_PUBLIC_KEY`)
+- [ ] Set `plugins.updater.endpoints` to `["https://github.com/YOUR_ORG/GameChat/releases/latest/download/latest.json"]`
+
+### 7b — GitHub Actions release workflow
+- [ ] Copy `.github/workflows/release.yml` from GlyphAstra — update app name, identifier, repo URL
+- [ ] Matrix: `windows-latest`, `macos-latest` (x86_64 + aarch64), `ubuntu-22.04`
+- [ ] `update-manifest` job: use `actions/github-script` to assemble `latest.json` from `.sig` sidecars and upload as release asset
+- [ ] Copy `.github/workflows/ci.yml` from GlyphAstra — runs `npm run build` + `cargo check` on every PR
+- [ ] Tag-based trigger: `git tag v0.1.0 && git push --tags` → release builds for all platforms
+- [ ] Manual trigger (`workflow_dispatch`) → draft pre-release for testing
+
+### 7c — Wire `autoCheckForUpdate()` into `App.vue`
+- [ ] Import `autoCheckForUpdate` from `@/utils/updateService` in `App.vue`
+- [ ] Call it once on `onMounted` (or after identity init completes) — it no-ops in DEV and non-Tauri
+- [ ] Update `SettingsHelpTab.vue` repo URL from `YOUR_ORG/YOUR_REPO` to real repo URL
+
+### 7d — Validate end-to-end
+- [ ] Build a release binary (tag a test version), publish manually, confirm `latest.json` is correct
+- [ ] Install the release build, run it — verify `autoCheckForUpdate()` fires and notification appears
+- [ ] Click "Install update" → verify download, install, restart prompt
+
+- [ ] **Tests**
+  - [ ] `checkForUpdate()` returns `{ available: false }` when `import.meta.env.DEV` is true
+  - [ ] `checkForUpdate()` returns `{ available: false }` when `!isTauri`
+  - [ ] `autoCheckForUpdate()` shows notification when `checkForUpdate` returns `available: true` (mock)
+
+---
+
+## Phase 8 — Mobile (Android & iOS)
+
+**Goal**: Run GameChat on Android and iOS using Tauri Mobile (same Rust backend, same Vue frontend with responsive layout). No separate codebase.
+
+> **Tauri v2 mobile support**: Tauri 2 ships first-class Android and iOS targets via `tauri android` and `tauri ios` CLI commands. The Rust core (SQLite, crypto, networking) runs unchanged. WebRTC in the mobile WebView requires careful capability handling. This is a significant UX investment — the layout was designed for desktop and needs responsive adaptations.
+
+### 8a — Environment & toolchain setup
+- [ ] Install Android Studio + NDK; `ANDROID_HOME`, `NDK_HOME` env vars
+- [ ] Install Xcode + iOS simulator (macOS only for iOS builds)
+- [ ] Add Android targets: `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android`
+- [ ] Add iOS targets: `rustup target add aarch64-apple-ios x86_64-apple-ios aarch64-apple-ios-sim`
+- [ ] `npm run tauri android init` — generates `src-tauri/gen/android/` project
+- [ ] `npm run tauri ios init` — generates `src-tauri/gen/apple/` project
+- [ ] Verify `npm run tauri android dev` runs in an emulator without crashing
+
+### 8b — Responsive layout
+- [ ] Add `useBreakpoint` composable in `src/utils/` — detects `mobile` (< 640px), `tablet` (640–1024px), `desktop` (> 1024px) via `window.matchMedia`
+- [ ] `MainLayout.vue`: on mobile, replace 4-column CSS grid with a tab-bar / slide-panel navigation — ServerRail + ChannelSidebar collapse to a drawer, MemberList collapses to a sheet
+- [ ] `ChannelSidebar.vue`: full-screen on mobile, slides in from left; back button returns to server rail
+- [ ] `MemberList.vue`: bottom sheet on mobile (swipe up to expand)
+- [ ] `MessageInput.vue`: floating above keyboard on iOS/Android (handle `visualViewport` resize)
+- [ ] `MessageHistory.vue`: ensure virtual scroll works with mobile touch events; add pull-to-refresh (trigger `loadMessages` for older history)
+- [ ] `TitleBar.vue`: hide custom title bar on mobile (OS provides its own chrome); use `tauri-plugin-status-bar` for Android status bar color
+- [ ] All modals: use `position: fixed; inset: 0` full-screen on mobile instead of centered overlays
+- [ ] Touch targets: all buttons ≥ 44×44px (WCAG 2.5.5); replace hover-only interactions with tap + long-press
+
+### 8c — Mobile-specific capabilities & permissions
+- [ ] Android `AndroidManifest.xml` (generated): add `INTERNET`, `RECORD_AUDIO`, `CAMERA`, `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`
+- [ ] iOS `Info.plist` (already has mic/screen entries): add `NSCameraUsageDescription`, `NSMicrophoneUsageDescription` (already present in `Info.plist`)
+- [ ] `tauri-plugin-microphone` or capability flags for voice chat on mobile
+- [ ] Disable LAN mDNS discovery on mobile (mdns-sd uses UDP multicast; use relay/rendezvous instead)
+- [ ] `tauri.conf.json`: add `android` and `ios` build config blocks with correct bundle identifiers
+
+### 8d — WebRTC on mobile WebView
+- [ ] Android: `WebRTC` works in Android WebView 75+ — verify `getUserMedia` for voice
+- [ ] iOS: `getUserMedia` requires `WKWebView` with `allowsInlineMediaPlayback = true` (already set for macOS; verify iOS config)
+- [ ] Screen share disabled on mobile (no `getDisplayMedia` equivalent); hide screen share UI when `isMobile`
+- [ ] Test voice call between desktop and mobile peer
+
+### 8e — CI/CD for mobile
+- [ ] Add `android` job to `release.yml` — `ubuntu-22.04`, `tauri android build --apk`
+- [ ] APK signing: `ANDROID_KEY_STORE`, `ANDROID_KEY_STORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` secrets
+- [ ] iOS build: `macos-latest`, `tauri ios build` — requires Apple Developer account + provisioning profile secrets
+- [ ] Upload APK/IPA as release assets alongside desktop installers
+
+- [ ] **Tests**
+  - [ ] `useBreakpoint` composable correctly identifies `mobile` / `tablet` / `desktop` at breakpoint boundaries (mock `matchMedia`)
+  - [ ] `MainLayout.vue` renders drawer mode on mobile viewport (< 640px) and grid mode on desktop (> 1024px)
+  - [ ] `MessageInput.vue` does not overflow viewport when virtual keyboard is visible (mock `visualViewport`)
+
+---
 
 - [ ] Abstract networking behind `NetworkProvider` interface
 - [ ] `NativeP2PProvider` (current implementation)
