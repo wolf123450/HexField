@@ -110,6 +110,8 @@ export const useUIStore = defineStore("ui", () => {
   const showInviteModal       = ref(false)
   const inviteServerId        = ref<string | null>(null)
   const showDeviceLinkModal   = ref(false)
+  const showServerSettingsModal = ref(false)
+  const settingsServerId        = ref<string | null>(null)
 
   function openInviteModal(serverId: string) {
     inviteServerId.value  = serverId
@@ -118,6 +120,11 @@ export const useUIStore = defineStore("ui", () => {
 
   function openDeviceLinkModal() {
     showDeviceLinkModal.value = true
+  }
+
+  function openServerSettings(serverId: string) {
+    settingsServerId.value        = serverId
+    showServerSettingsModal.value = true
   }
 
   // ─── User profile modal ────────────────────────────────────────────
@@ -176,6 +183,9 @@ export const useUIStore = defineStore("ui", () => {
     openInviteModal,
     showDeviceLinkModal,
     openDeviceLinkModal,
+    showServerSettingsModal,
+    settingsServerId,
+    openServerSettings,
     // User profile
     showUserProfile,
     userProfileUserId,

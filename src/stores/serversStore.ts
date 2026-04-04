@@ -80,14 +80,15 @@ export const useServersStore = defineStore('servers', () => {
     }
     await invoke('db_upsert_member', {
       member: {
-        user_id:        selfMember.userId,
-        server_id:      selfMember.serverId,
-        display_name:   selfMember.displayName,
-        roles:          JSON.stringify(selfMember.roles),
-        joined_at:      selfMember.joinedAt,
+        user_id:         selfMember.userId,
+        server_id:       selfMember.serverId,
+        display_name:    selfMember.displayName,
+        roles:           JSON.stringify(selfMember.roles),
+        joined_at:       selfMember.joinedAt,
         public_sign_key: selfMember.publicSignKey,
-        public_dh_key:  selfMember.publicDHKey,
-        online_status:  selfMember.onlineStatus,
+        public_dh_key:   selfMember.publicDHKey,
+        online_status:   selfMember.onlineStatus,
+        avatar_data_url: identityStore.avatarDataUrl ?? null,
       },
     })
     if (!members.value[server.id]) members.value[server.id] = {}
@@ -98,8 +99,19 @@ export const useServersStore = defineStore('servers', () => {
 
   async function fetchMembers(serverId: string) {
     const rows = await invoke<any[]>('db_load_members', { serverId })
+    const existing = members.value[serverId] ?? {}
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    const uid = identityStore.userId
+    const statusKey = uid ? `gamechat_own_status_${uid}` : 'gamechat_own_status'
+    const ownStatus = (localStorage.getItem(statusKey) as 'online' | 'idle' | 'dnd' | 'offline' | null) ?? 'online'
     const map: Record<string, ServerMember> = {}
     for (const r of rows) {
+      // Remote members (anyone who is not us) start as 'offline' on load.
+      // Their live status arrives via presence_update / heartbeat once they connect.
+      // Own record uses the current locally-stored status.
+      const onlineStatus: ServerMember['onlineStatus'] =
+        r.user_id === uid ? ownStatus : 'offline'
       map[r.user_id] = {
         userId:       r.user_id,
         serverId:     r.server_id,
@@ -108,8 +120,18 @@ export const useServersStore = defineStore('servers', () => {
         joinedAt:     r.joined_at,
         publicSignKey: r.public_sign_key,
         publicDHKey:   r.public_dh_key,
-        onlineStatus:  r.online_status as any,
+        onlineStatus,
+        // Prefer DB-persisted avatar; fall back to any in-memory gossip value not yet flushed.
+        avatarDataUrl: r.avatar_data_url ?? existing[r.user_id]?.avatarDataUrl,
+        bio:           existing[r.user_id]?.bio,
+        bannerColor:   existing[r.user_id]?.bannerColor,
+        bannerDataUrl: existing[r.user_id]?.bannerDataUrl,
       }
+    }
+    // Hydrate own member record with current identity data (source of truth for name/avatar).
+    if (uid && map[uid]) {
+      map[uid].displayName   = identityStore.displayName
+      map[uid].avatarDataUrl = identityStore.avatarDataUrl
     }
     members.value[serverId] = map
   }
@@ -295,14 +317,15 @@ export const useServersStore = defineStore('servers', () => {
     if (!servers.value[m.serverId]) return // Unknown server — reject silently
     await invoke('db_upsert_member', {
       member: {
-        user_id:         m.userId,
-        server_id:       m.serverId,
-        display_name:    m.displayName,
-        roles:           JSON.stringify(m.roles),
-        joined_at:       m.joinedAt,
-        public_sign_key: m.publicSignKey,
-        public_dh_key:   m.publicDHKey,
-        online_status:   m.onlineStatus,
+        user_id:          m.userId,
+        server_id:        m.serverId,
+        display_name:     m.displayName,
+        roles:            JSON.stringify(m.roles),
+        joined_at:        m.joinedAt,
+        public_sign_key:  m.publicSignKey,
+        public_dh_key:    m.publicDHKey,
+        online_status:    m.onlineStatus,
+        avatar_data_url:  m.avatarDataUrl ?? null,
       },
     })
     if (!members.value[m.serverId]) members.value[m.serverId] = {}

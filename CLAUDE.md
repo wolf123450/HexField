@@ -383,6 +383,15 @@ Issues that have already been encountered and fixed. **Do not re-introduce these
 | `rusqlite` `query_map` borrow outlives `stmt` in `if/else` | Collect into local `let rows = ...; rows` before block exit |
 | `MutationRow.mutation_type` / `ChannelRow.channel_type` have `#[serde(rename = "type")]` | Frontend must send `{ type: ... }` not `{ mutation_type: ... }` |
 | Global `button, .btn` rule sets `padding: var(--spacing-sm) var(--spacing-md)` | Icon-only buttons need `padding: 0; transform: none` in scoped CSS, otherwise the padding consumes almost the entire fixed width and the icon renders at 2-3px | 
+| `fetchMembers` reads `display_name` from the `members` table, which goes stale after name changes | `fetchMembers` now hydrates own record from `identityStore` (name + avatar) after loading. The `members` table has `avatar_data_url` column (migration 002) — peer avatars are persisted when received via gossip and survive restarts |
+| Members DB had no avatar column — peer avatars wiped on every server switch or app restart | Fixed: `002_member_avatar.sql` adds `avatar_data_url TEXT` to members; `db_upsert_member`/`db_load_members` include the column; `upsertMember` persists it on gossip |
+| `isAdmin` checks used `roles.includes('admin')` but server creator (pre-change) had role `'owner'` | All `isAdmin` checks now use `.some(r => r === 'admin' \|\| r === 'owner')` |
+| Voice participant rows in `ChannelSidebar` used text-initials `<div>` instead of `<AvatarImage>` | Always use `<AvatarImage>` for avatar display; text-initials divs won't react to avatar changes |
+| User avatar GIF limit was 512 KB; should be 20 MB | `MAX_GIF_BYTES` in `UserProfileModal.vue` corrected to `20 * 1024 * 1024` |
+| Server icon upload code was duplicated in `ServerRail.vue` and `ChannelSidebar.vue` | Both removed; icon changes now go through `ServerSettingsModal.vue`; context menus show "Server Settings" → `uiStore.openServerSettings(serverId)` |
+| Members appear 'online' by default on fresh load even when offline | `fetchMembers` now sets remote members to `'offline'`; own status read from `localStorage.getItem('gamechat_own_status')` |
+| Status mirroring: B changes to 'busy', A's status in B's view becomes 'busy' after ~10s | `gamechat_own_status` localStorage key was not user-scoped; two instances on same machine shared it. All reads/writes now use `gamechat_own_status_${userId}` |
+| mDNS causes both peers to dial each other simultaneously; stale `register_peer` cleanup emptied `lan_peers` | Added `PEER_GENERATION: AtomicU64` to `lan.rs`; `LanPeers` is now `HashMap<String, (u64, UnboundedSender<Value>)>`; cleanup only removes if `gen` still matches |
 
 ---
 

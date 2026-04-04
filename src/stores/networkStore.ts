@@ -29,6 +29,62 @@ export const useNetworkStore = defineStore('network', () => {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let initialized = false
 
+  // ── Heartbeat ─────────────────────────────────────────────────────────────
+  // Keep peers' online status accurate without relying solely on WebRTC teardown.
+  // Interval is intentionally short for development; production can use a longer value.
+  const HEARTBEAT_INTERVAL_MS = 10_000  // send / check every 10 s
+  const HEARTBEAT_TIMEOUT_MS  = 25_000  // mark offline after 25 s of silence
+  const lastHeartbeatFrom = new Map<string, number>()
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+
+  function startHeartbeat() {
+    if (heartbeatTimer) return
+    heartbeatTimer = setInterval(async () => {
+      // Broadcast our own status, scoped to this user's key so multiple instances
+      // on the same machine don't read each other's status from shared localStorage.
+      const { useIdentityStore } = await import('./identityStore')
+      const identityStore = useIdentityStore()
+      if (identityStore.userId) {
+        const statusKey = `gamechat_own_status_${identityStore.userId}`
+        const ownStatus = localStorage.getItem(statusKey) ?? 'online'
+        if (ownStatus !== 'offline') {
+          broadcast({
+            type:      'presence_update',
+            userId:    identityStore.userId,
+            status:    ownStatus,
+            timestamp: Date.now(),
+          })
+        }
+      }
+      // Watchdog: mark peers offline if we haven't heard from them recently.
+      const now = Date.now()
+      const { useServersStore } = await import('./serversStore')
+      const serversStore = useServersStore()
+      for (const peerId of [...connectedPeers.value]) {
+        const last = lastHeartbeatFrom.get(peerId) ?? 0
+        if (now - last > HEARTBEAT_TIMEOUT_MS) {
+          handlePresenceUpdate(peerId, { status: 'offline' })
+        }
+      }
+      // Also mark any non-connected peer that still shows online in any server.
+      for (const sid of serversStore.joinedServerIds) {
+        for (const [uid, m] of Object.entries(serversStore.members[sid] ?? {})) {
+          if (m.onlineStatus !== 'offline' && !connectedPeers.value.includes(uid)
+              && uid !== (await import('./identityStore')).useIdentityStore().userId) {
+            serversStore.updateMemberStatus(sid, uid, 'offline')
+          }
+        }
+      }
+    }, HEARTBEAT_INTERVAL_MS)
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer)
+      heartbeatTimer = null
+    }
+  }
+
   /**
    * Initialize the networking layer: register signal/WebRTC handlers.
    * Called once at app startup after identity is loaded.
@@ -61,11 +117,17 @@ export const useNetworkStore = defineStore('network', () => {
         gossipOwnMembership(userId)
         gossipOwnPresence(userId)
         gossipOwnProfile(userId)
+        gossipServerAvatars(userId)
+        // Record heartbeat baseline so the watchdog doesn't immediately time this peer out.
+        lastHeartbeatFrom.set(userId, Date.now())
         // Start history reconciliation with newly connected peer
         startSync(userId).catch(e => console.warn('[network] sync start error:', e))
       },
       (userId) => {
         connectedPeers.value = connectedPeers.value.filter(id => id !== userId)
+        lastHeartbeatFrom.delete(userId)
+        // Mark peer as offline across all server member maps
+        handlePresenceUpdate(userId, { status: 'offline' })
         // Clean up voice state if the peer disconnects
         handleVoicePeerDisconnect(userId)
       },
@@ -80,6 +142,8 @@ export const useNetworkStore = defineStore('network', () => {
 
     // lan_peer_lost is handled implicitly — WebRTC disconnection fires
     // the onPeerDisconnected callback above; no extra action needed.
+
+    startHeartbeat()
   }
 
   /**
@@ -100,6 +164,7 @@ export const useNetworkStore = defineStore('network', () => {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
     }
+    stopHeartbeat()
     reconnectAttempt.value = 0
     webrtcService.destroyAll()
     connectedPeers.value = []
@@ -434,6 +499,8 @@ export const useNetworkStore = defineStore('network', () => {
   async function handlePresenceUpdate(fromUserId: string, msg: Record<string, unknown>) {
     const status = msg.status as string
     if (!status) return
+    // Treat any incoming presence as a heartbeat from that peer.
+    if (status !== 'offline') lastHeartbeatFrom.set(fromUserId, Date.now())
     const { useServersStore } = await import('./serversStore')
     const serversStore = useServersStore()
     for (const sid of serversStore.joinedServerIds) {
@@ -493,11 +560,11 @@ export const useNetworkStore = defineStore('network', () => {
 
   /** Send own presence+profile to a single newly connected peer. */
   async function gossipOwnPresence(peerId: string) {
-    const STATUS_KEY = 'gamechat_own_status'
-    const status = (localStorage.getItem(STATUS_KEY) as string | null) ?? 'online'
     const { useIdentityStore } = await import('./identityStore')
     const identityStore = useIdentityStore()
     if (!identityStore.userId) return
+    const statusKey = `gamechat_own_status_${identityStore.userId}`
+    const status = (localStorage.getItem(statusKey) as string | null) ?? 'online'
     webrtcService.sendToPeer(peerId, {
       type:      'presence_update',
       userId:    identityStore.userId,
@@ -520,6 +587,18 @@ export const useNetworkStore = defineStore('network', () => {
   /** Broadcast a server avatar change to all peers. */
   async function broadcastServerAvatar(serverId: string, avatarDataUrl: string | null) {
     broadcast({ type: 'server_avatar_update', serverId, avatarDataUrl })
+  }
+
+  /** Send all known server avatars to a newly connected peer so they stay in sync. */
+  async function gossipServerAvatars(peerId: string) {
+    const { useServersStore } = await import('./serversStore')
+    const serversStore = useServersStore()
+    for (const sid of serversStore.joinedServerIds) {
+      const avatarDataUrl = serversStore.servers[sid]?.avatarDataUrl
+      if (avatarDataUrl) {
+        webrtcService.sendToPeer(peerId, { type: 'server_avatar_update', serverId: sid, avatarDataUrl })
+      }
+    }
   }
 
   /** Send own full profile to a single newly connected peer. */
