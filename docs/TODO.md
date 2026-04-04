@@ -269,6 +269,16 @@
 **Goal**: Production-ready: notifications, search, key security, pruning, storage limits.
 
 - [x] OS notifications via `tauri-plugin-notification` (mentions, DMs)
+  - [x] Fix: Tauri `document.visibilityState` always `'visible'` → use `getCurrentWindow().isFocused()` instead
+  - [x] Per-server notification prefs (`all` / `mentions` / `muted`) with timed mute
+  - [x] Per-channel notification overrides (`inherit` / `all` / `mentions` / `muted`) with timed mute — accessible via channel right-click → Notification settings
+  - [x] Keyword filters (global or per-server) — elevate 'mentions'-level notifications
+  - [x] Rules hierarchy: channel mute → server mute → channel level → server level → keyword match
+  - [x] Web Audio synth sounds (`soundService.ts`) for message / mention / voice join/leave events
+  - [x] Per-event custom sound upload (data URL, ≤2 MB) with synth fallback on decode failure
+  - [x] `notificationStore.notify()` replaces `messagesStore.maybeNotify()` — all callers migrated
+  - [x] Voice join/leave events (self + peers) routed through notificationStore
+  - [x] `SettingsNotificationsTab.vue` rewritten: global toggles, sound customization, per-server prefs, keyword filters
 - [x] Unread badges on `ServerIcon` and `ChannelItem`
 - [x] Mention highlights (`@username` parsing in messages)
 - [ ] Message search — SQLite FTS5 (only indexes non-null content)
@@ -306,7 +316,7 @@
   - [ ] Storage usage calculation matches sum of attachment file sizes
   - [ ] Archive export produces a valid signed bundle; import restores server state
   - [ ] `server_rebaseline` mutation: messages before `historyStartsAt` are not synced to joining peers
-  - [ ] OS notification fires on mention; does not fire when window is focused
+  - [x] OS notification fires on mention; does not fire when window is focused
   - [ ] Auto-update: version comparison correctly identifies when an update is available
   - [x] `sendEditMutation`: optimistic edit reflected in `getMessagesWithMutations` immediately; HLC last-write-wins rejects older edit
   - [x] `sendDeleteMutation`: message becomes `content: null` in reactive state and in DB
