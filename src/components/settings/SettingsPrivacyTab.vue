@@ -48,7 +48,13 @@
         />
         <span class="storage-value">{{ storageLimit }} GB</span>
       </div>
-      <p class="form-hint">Maximum local storage for messages and attachments. Old attachments are pruned first when the limit is reached.</p>
+      <div class="storage-usage-row">
+        <span class="storage-usage-label">Used: <strong>{{ usedDisplay }}</strong></span>
+        <button class="btn-enforce" :disabled="enforcing" @click="enforceNow">
+          {{ enforcing ? 'Pruning…' : 'Free Space Now' }}
+        </button>
+      </div>
+      <p class="form-hint">Maximum local storage for message attachments. Oldest files are removed first when the limit is reached.</p>
     </div>
 
     <!-- ── Linked Devices ──────────────────────────────────────────── -->
@@ -87,6 +93,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { mdiQrcode, mdiLaptop, mdiLinkOff } from '@mdi/js'
+import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useDevicesStore } from '@/stores/devicesStore'
 import { useIdentityStore } from '@/stores/identityStore'
@@ -100,6 +107,30 @@ const uiStore       = useUIStore()
 const showDeleted   = ref(settingsStore.settings.showDeletedMessagePlaceholder)
 const confirmDelete = ref(settingsStore.settings.confirmBeforeDelete)
 const storageLimit  = ref(settingsStore.settings.storageLimitGB)
+const usedBytes     = ref<number>(0)
+const enforcing     = ref(false)
+
+const usedDisplay = computed(() => {
+  const b = usedBytes.value
+  if (b < 1024) return `${b} B`
+  if (b < 1_048_576) return `${(b / 1024).toFixed(1)} KB`
+  if (b < 1_073_741_824) return `${(b / 1_048_576).toFixed(1)} MB`
+  return `${(b / 1_073_741_824).toFixed(2)} GB`
+})
+
+async function refreshUsage() {
+  try { usedBytes.value = await invoke<number>('get_attachment_storage_bytes') } catch { /* no attachments yet */ }
+}
+
+async function enforceNow() {
+  enforcing.value = true
+  try {
+    await invoke('enforce_storage_limit', { limitGb: storageLimit.value })
+    await refreshUsage()
+  } finally {
+    enforcing.value = false
+  }
+}
 
 function saveShowDeleted()   { settingsStore.updateSetting('showDeletedMessagePlaceholder', showDeleted.value) }
 function saveConfirmDelete() { settingsStore.updateSetting('confirmBeforeDelete', confirmDelete.value) }
@@ -120,6 +151,7 @@ function shortKey(key: string): string {
 }
 
 onMounted(async () => {
+  await refreshUsage()
   if (identityStore.userId) {
     await devicesStore.loadPeerDevices(identityStore.userId)
   }
@@ -181,4 +213,26 @@ function openLinkModal() {
 }
 .storage-slider { flex: 1; }
 .storage-value { font-size: 14px; font-weight: 600; color: var(--text-primary); min-width: 40px; }
+
+.storage-usage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--spacing-sm);
+}
+
+.storage-usage-label { font-size: 13px; color: var(--text-secondary); }
+
+.btn-enforce {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transform: none;
+}
+.btn-enforce:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-primary); }
+.btn-enforce:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

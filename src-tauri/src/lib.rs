@@ -117,6 +117,8 @@ pub fn run() {
             blake3_hash,
             delete_attachment,
             prune_attachments,
+            get_attachment_storage_bytes,
+            enforce_storage_limit,
             // System
             get_app_data_path,
             get_screen_sources,
