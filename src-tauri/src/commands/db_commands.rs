@@ -669,6 +669,67 @@ pub fn db_load_mod_log(
 // ── System ────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
+pub fn db_save_ban(state: State<AppState>, ban: BanRow) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO bans (server_id, user_id, banned_by, reason, banned_at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            ban.server_id, ban.user_id, ban.banned_by,
+            ban.reason, ban.banned_at, ban.expires_at,
+        ],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn db_load_bans(state: State<AppState>, server_id: String) -> Result<Vec<BanRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT server_id, user_id, banned_by, reason, banned_at, expires_at
+         FROM bans WHERE server_id = ?1 ORDER BY banned_at DESC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![server_id], |row| {
+        Ok(BanRow {
+            server_id:  row.get(0)?,
+            user_id:    row.get(1)?,
+            banned_by:  row.get(2)?,
+            reason:     row.get(3)?,
+            banned_at:  row.get(4)?,
+            expires_at: row.get(5)?,
+        })
+    }).map_err(|e| e.to_string())?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn db_delete_ban(state: State<AppState>, server_id: String, user_id: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM bans WHERE server_id = ?1 AND user_id = ?2",
+        rusqlite::params![server_id, user_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn db_is_banned(state: State<AppState>, server_id: String, user_id: String) -> Result<bool, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let now = chrono_now_iso();
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM bans WHERE server_id = ?1 AND user_id = ?2
+         AND (expires_at IS NULL OR expires_at > ?3)",
+        rusqlite::params![server_id, user_id, now],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    Ok(count > 0)
+}
+
+// ── System ────────────────────────────────────────────────────────────────────
+
+#[tauri::command]
 pub fn get_app_data_path(app_handle: tauri::AppHandle) -> Result<String, String> {
     use tauri::Manager;
     app_handle
@@ -697,6 +758,47 @@ fn chrono_now() -> String {
         .as_millis();
     // ISO 8601 approximation via ms timestamp
     format!("{}", ms)
+}
+
+/// Returns a minimal ISO-8601 UTC timestamp (seconds resolution) for ban expiry comparisons.
+fn chrono_now_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Format as YYYY-MM-DDTHH:MM:SSZ
+    let s = secs;
+    let sec   = s % 60;
+    let min_t = s / 60;
+    let min   = min_t % 60;
+    let hr_t  = min_t / 60;
+    let hr    = hr_t % 24;
+    let days  = hr_t / 24;
+    // Simple date arithmetic — accurate for ~100 years
+    let mut year: u64 = 1970;
+    let mut days_left = days;
+    loop {
+        let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+        let yd: u64 = if leap { 366 } else { 365 };
+        if days_left < yd { break; }
+        days_left -= yd;
+        year += 1;
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_days: [u64; 12] = if leap {
+        [31,29,28,31,30,31,30,31,31,30,31,30]
+    } else {
+        [31,28,28,31,30,31,30,31,31,30,31,30]
+    };
+    let mut month: u64 = 1;
+    for md in &month_days {
+        if days_left < *md { break; }
+        days_left -= md;
+        month += 1;
+    }
+    let day = days_left + 1;
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, hr, min, sec)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

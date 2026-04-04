@@ -94,6 +94,11 @@ pub fn run() {
             // Moderation audit log
             db_save_mod_log_entry,
             db_load_mod_log,
+            // Bans
+            db_save_ban,
+            db_load_bans,
+            db_delete_ban,
+            db_is_banned,
             // Attachments (Phase 5b)
             get_attachment_path,
             has_attachment,

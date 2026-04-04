@@ -77,6 +77,7 @@ export type MutationType =
   | 'role_assign' | 'role_revoke'
   | 'channel_create' | 'channel_update' | 'channel_delete'
   | 'device_attest' | 'device_revoke'
+  | 'member_kick' | 'member_ban' | 'member_unban'
 
 export interface Mutation {
   id:              string

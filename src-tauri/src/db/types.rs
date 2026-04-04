@@ -111,3 +111,13 @@ pub struct ModLogRow {
     pub detail: Option<String>,
     pub created_at: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BanRow {
+    pub server_id: String,
+    pub user_id: String,
+    pub banned_by: String,
+    pub reason: Option<String>,
+    pub banned_at: String,
+    pub expires_at: Option<String>,
+}

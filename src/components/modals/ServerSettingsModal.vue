@@ -147,6 +147,43 @@
           </template>
         </section>
 
+        <!-- Bans list (admin only) -->
+        <section v-if="isAdmin" class="settings-section">
+          <div class="section-header-row">
+            <h3 class="section-title">BANS</h3>
+            <button class="mod-log-toggle btn-secondary-sm" @click="toggleBans">
+              {{ bansOpen ? 'Hide' : 'Show' }}
+            </button>
+          </div>
+
+          <template v-if="bansOpen">
+            <div v-if="bansLoading" class="mod-log-hint">Loading…</div>
+            <div v-else-if="banList.length === 0" class="mod-log-hint">No active bans.</div>
+            <div v-else class="mod-log-table-wrap">
+              <table class="mod-log-table">
+                <thead>
+                  <tr>
+                    <th>User</th>
+                    <th>Reason</th>
+                    <th>Expires</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="ban in banList" :key="ban.userId">
+                    <td class="mod-log-id" :title="ban.userId">{{ memberDisplayName(ban.userId) }}</td>
+                    <td class="mod-log-reason">{{ ban.reason ?? '—' }}</td>
+                    <td class="mod-log-time">{{ ban.expiresAt ? new Date(ban.expiresAt).toLocaleDateString() : 'Permanent' }}</td>
+                    <td>
+                      <button class="ban-unban-btn" @click="doUnban(ban.userId)">Unban</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </section>
+
         <!-- Danger zone (placeholder) -->
         <section v-if="isAdmin" class="settings-section settings-section--danger">
           <h3 class="section-title">DANGER ZONE</h3>
@@ -319,6 +356,37 @@ function formatLogTime(iso: string): string {
   const d = new Date(iso)
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
     + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+}
+
+// ── Bans section ──────────────────────────────────────────────────────────────
+
+const bansOpen    = ref(false)
+const bansLoading = ref(false)
+const banList     = ref<import('@/stores/serversStore').BanRecord[]>([])
+
+async function toggleBans() {
+  bansOpen.value = !bansOpen.value
+  if (bansOpen.value && banList.value.length === 0) {
+    await loadBanList()
+  }
+}
+
+async function loadBanList() {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  bansLoading.value = true
+  try {
+    banList.value = await serversStore.loadBans(sid)
+  } finally {
+    bansLoading.value = false
+  }
+}
+
+async function doUnban(userId: string) {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  await serversStore.unbanMember(sid, userId)
+  banList.value = banList.value.filter(b => b.userId !== userId)
 }
 
 
@@ -639,4 +707,20 @@ function readAsDataUrl(file: File): Promise<string> {
 .mod-log-badge--voice_kick  { background: rgba(250, 166, 26, 0.15); color: #faa61a; }
 .mod-log-badge--voice_mute  { background: rgba(250, 166, 26, 0.15); color: #faa61a; }
 .mod-log-badge--voice_unmute { background: rgba(87, 242, 135, 0.15); color: #57f287; }
+
+/* Unban button */
+.ban-unban-btn {
+  background: none;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ban-unban-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
 </style>
