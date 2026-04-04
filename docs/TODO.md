@@ -228,14 +228,15 @@
 
 **Goal**: Large file transfers without a server, using content-addressed gossip.
 
-- [ ] BLAKE3 content-addressed storage: `$APPDATA/gamechat/attachments/{hash[0:2]}/{hash}.bin`
-- [ ] Chunked download over WebRTC data channels (chunk size 256KB)
-- [ ] `attachment_want` / `attachment_have` gossip protocol
-- [ ] Partial download tracking (`.part` bitfield file)
+- [x] BLAKE3 content-addressed storage: `$APPDATA/gamechat/attachments/{hash[0:2]}/{hash}.bin`
+- [x] Chunked download over WebRTC data channels (chunk size 256KB)
+- [x] `attachment_want` / `attachment_have` gossip protocol
+- [x] Partial download tracking (`.part` bitfield file + `.bits` sidecar)
 - [ ] Chunk integrity verification against content hash
-- [ ] Seeding: serve chunks from local cache to requesting peers
+- [x] Seeding: serve chunks from local cache to requesting peers
 - [ ] Retention setting (default 30 days) — wired to auto-pruning
-- [ ] Phase 1 inline base64 path remains active for ≤100KB
+- [x] Phase 1 inline base64 path remains active for ≤100KB
+- [x] `AttachmentPreview.vue`: image/video/audio/file + lightbox + progress bar + download button
 - [ ] **Tests**
   - [ ] BLAKE3 hash is deterministic for same content
   - [ ] Chunk reassembly produces byte-identical file to original

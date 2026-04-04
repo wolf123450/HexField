@@ -61,6 +61,7 @@ import { useChannelsStore } from '@/stores/channelsStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import type { Attachment } from '@/types/core'
 import { v7 as uuidv7 } from 'uuid'
+import { prepareAttachment } from '@/services/attachmentService'
 
 const MAX_INLINE_BYTES = 100 * 1024  // 100 KB
 const MAX_IMAGE_DIMENSION = 1920      // px — downscale larger images before embed
@@ -167,14 +168,8 @@ async function buildAttachment(file: File): Promise<Attachment | null> {
         transferState: 'inline',
       }
     }
-    // Image is still too large after downscale — treat as external URL (Phase 5b)
-    return {
-      id:            uuidv7(),
-      name:          file.name,
-      size:          file.size,
-      mimeType:      file.type,
-      transferState: 'failed',
-    }
+    // Image too large after downscale — use P2P content-addressed transfer
+    return prepareAttachment(file)
   }
 
   // Non-image: inline only if ≤100KB
@@ -190,14 +185,8 @@ async function buildAttachment(file: File): Promise<Attachment | null> {
     }
   }
 
-  // Too large and not an image — Phase 5b will handle P2P transfer
-  return {
-    id:            uuidv7(),
-    name:          file.name,
-    size:          file.size,
-    mimeType:      file.type,
-    transferState: 'pending',
-  }
+  // Large non-image file — P2P content-addressed transfer
+  return prepareAttachment(file)
 }
 
 function fileToBase64(file: File): Promise<string> {
