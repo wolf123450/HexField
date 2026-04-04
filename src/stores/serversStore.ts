@@ -14,6 +14,15 @@ export interface InviteCode {
   createdAt: string
 }
 
+export interface BanRecord {
+  serverId:  string
+  userId:    string
+  bannedBy:  string
+  reason:    string | null
+  bannedAt:  string
+  expiresAt: string | null
+}
+
 export const useServersStore = defineStore('servers', () => {
   const servers         = ref<Record<string, Server>>({})
   const members         = ref<Record<string, Record<string, ServerMember>>>({})
@@ -210,6 +219,157 @@ export const useServersStore = defineStore('servers', () => {
       if (member) {
         member.roles = member.roles.filter(r => r !== roleName)
       }
+    } else if (mutation.type === 'member_kick' && mutation.newContent) {
+      const { serverId } = JSON.parse(mutation.newContent)
+      if (serverId && members.value[serverId]) {
+        delete members.value[serverId][mutation.targetId]
+      }
+    } else if (mutation.type === 'member_ban' && mutation.newContent) {
+      const { serverId, reason, expiresAt } = JSON.parse(mutation.newContent)
+      if (serverId && members.value[serverId]) {
+        delete members.value[serverId][mutation.targetId]
+      }
+      // Persist ban locally
+      invoke('db_save_ban', {
+        ban: {
+          server_id:  serverId,
+          user_id:    mutation.targetId,
+          banned_by:  mutation.authorId,
+          reason:     reason ?? null,
+          banned_at:  mutation.createdAt,
+          expires_at: expiresAt ?? null,
+        },
+      }).catch(() => {})
+    } else if (mutation.type === 'member_unban' && mutation.newContent) {
+      const { serverId } = JSON.parse(mutation.newContent)
+      if (serverId) {
+        invoke('db_delete_ban', { serverId, userId: mutation.targetId }).catch(() => {})
+      }
+    }
+  }
+
+  /** Exported interface for the bans list — defined at module level above. */
+
+  async function loadBans(serverId: string): Promise<BanRecord[]> {
+    const rows = await invoke<Array<{
+      server_id: string; user_id: string; banned_by: string
+      reason: string | null; banned_at: string; expires_at: string | null
+    }>>('db_load_bans', { serverId })
+    return rows.map(r => ({
+      serverId:  r.server_id,
+      userId:    r.user_id,
+      bannedBy:  r.banned_by,
+      reason:    r.reason,
+      bannedAt:  r.banned_at,
+      expiresAt: r.expires_at,
+    }))
+  }
+
+  async function isBanned(serverId: string, userId: string): Promise<boolean> {
+    return invoke<boolean>('db_is_banned', { serverId, userId })
+  }
+
+  /**
+   * Kick a member from the server (session-level, non-persistent).
+   * Broadcasts mutation, writes mod log, closes their WebRTC connection.
+   */
+  async function kickMember(serverId: string, targetId: string, reason: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identity = useIdentityStore()
+    const myId = identity.userId!
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'member_kick',
+      targetId,
+      channelId:  '__server__',
+      authorId:   myId,
+      newContent: JSON.stringify({ serverId, reason }),
+      logicalTs:  new Date().toISOString(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    // Apply locally
+    applyServerMutation(mutation)
+    // Log
+    await logModAction(serverId, 'kick', targetId, reason || undefined)
+    // Broadcast
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+    // Destroy WebRTC connection so they can't keep sending
+    const { webrtcService } = await import('@/services/webrtcService')
+    webrtcService.destroyPeer(targetId)
+  }
+
+  /**
+   * Ban a member (persistent; blocks rejoin).
+   * Also fires a co-incident kick so they are removed from the session immediately.
+   */
+  async function banMember(
+    serverId: string,
+    targetId: string,
+    reason: string,
+    expiresAt: string | null,
+  ): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identity = useIdentityStore()
+    const myId = identity.userId!
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'member_ban',
+      targetId,
+      channelId:  '__server__',
+      authorId:   myId,
+      newContent: JSON.stringify({ serverId, reason, expiresAt }),
+      logicalTs:  new Date().toISOString(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    applyServerMutation(mutation)
+    await logModAction(serverId, 'ban', targetId, reason || undefined,
+      expiresAt ? JSON.stringify({ expiresAt }) : undefined)
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+
+    const { webrtcService } = await import('@/services/webrtcService')
+    webrtcService.destroyPeer(targetId)
+  }
+
+  /** Unban a member — removes from DB and lets them rejoin. */
+  async function unbanMember(serverId: string, targetId: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identity = useIdentityStore()
+    const myId = identity.userId!
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'member_unban',
+      targetId,
+      channelId:  '__server__',
+      authorId:   myId,
+      newContent: JSON.stringify({ serverId }),
+      logicalTs:  new Date().toISOString(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    applyServerMutation(mutation)
+    await logModAction(serverId, 'unban', targetId)
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+  }
+
+  /** Serialize a Mutation to the wire-safe subset (no internal fields). */
+  function serializeMutation(m: Mutation) {
+    return {
+      id: m.id, type: m.type, targetId: m.targetId,
+      channelId: m.channelId, authorId: m.authorId,
+      newContent: m.newContent, logicalTs: m.logicalTs, createdAt: m.createdAt,
     }
   }
 
@@ -501,5 +661,10 @@ export const useServersStore = defineStore('servers', () => {
     validateInviteToken,
     revokeInviteCode,
     logModAction,
+    kickMember,
+    banMember,
+    unbanMember,
+    loadBans,
+    isBanned,
   }
 })

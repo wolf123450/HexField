@@ -403,9 +403,26 @@ export const useNetworkStore = defineStore('network', () => {
     }
     await messagesStore.applyMutation(mutation)
     // Server-level mutations also update in-memory server/member state
-    if (['server_update', 'role_assign', 'role_revoke'].includes(mutation.type)) {
+    if (['server_update', 'role_assign', 'role_revoke',
+         'member_kick', 'member_ban', 'member_unban'].includes(mutation.type)) {
       const { useServersStore } = await import('./serversStore')
-      useServersStore().applyServerMutation(mutation)
+      const serversStore = useServersStore()
+      serversStore.applyServerMutation(mutation)
+
+      // Notify the local user if they were kicked or banned
+      if (mutation.type === 'member_kick' || mutation.type === 'member_ban') {
+        const { useIdentityStore } = await import('./identityStore')
+        const myId = useIdentityStore().userId
+        if (myId && mutation.targetId === myId && mutation.newContent) {
+          const { serverId, reason } = JSON.parse(mutation.newContent) as { serverId: string; reason?: string }
+          const server = serversStore.servers[serverId]
+          const serverName = server?.name ?? 'the server'
+          const action = mutation.type === 'member_ban' ? 'banned from' : 'removed from'
+          const msg2 = reason ? `You were ${action} ${serverName}: ${reason}` : `You were ${action} ${serverName}`
+          const { useUIStore } = await import('./uiStore')
+          useUIStore().showNotification(msg2, 'warning')
+        }
+      }
     }
   }
 
