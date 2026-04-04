@@ -112,6 +112,16 @@
 
     <VoiceBar />
 
+    <!-- Per-channel notification popover -->
+    <ChannelNotifPopover
+      v-if="channelNotifState"
+      :channelId="channelNotifState.channelId"
+      :serverId="channelNotifState.serverId"
+      :x="channelNotifState.x"
+      :y="channelNotifState.y"
+      @close="channelNotifState = null"
+    />
+
     <!-- Hidden file input for server icon upload -->
     <!-- NOTE: Icon upload is now handled inside ServerSettingsModal. -->
 
@@ -160,6 +170,7 @@ import { useVoiceStore } from '@/stores/voiceStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import VoiceBar from '@/components/chat/VoiceBar.vue'
+import ChannelNotifPopover from '@/components/layout/ChannelNotifPopover.vue'
 import type { ChannelType } from '@/types/core'
 import type { MenuItem } from '@/stores/uiStore'
 
@@ -250,6 +261,7 @@ async function promptAddChannel(type: ChannelType) {
 
 const renameState        = ref({ active: false, channelId: '', name: '' })
 const renameInput        = ref<HTMLInputElement | null>(null)
+const channelNotifState  = ref<{ channelId: string; serverId: string; x: number; y: number } | null>(null)
 
 function openChannelMenu(e: MouseEvent, channelId: string) {
   const items: MenuItem[] = [
@@ -257,6 +269,11 @@ function openChannelMenu(e: MouseEvent, channelId: string) {
       type: 'action',
       label: 'Rename',
       callback: () => startRename(channelId),
+    },
+    {
+      type: 'action',
+      label: 'Notification settings',
+      callback: () => openChannelNotifPopover(e, channelId),
     },
     { type: 'separator' },
     {
@@ -267,6 +284,11 @@ function openChannelMenu(e: MouseEvent, channelId: string) {
     },
   ]
   uiStore.showContextMenu(e.clientX, e.clientY, items)
+}
+
+function openChannelNotifPopover(e: MouseEvent, channelId: string) {
+  const serverId = serversStore.activeServerId ?? ''
+  channelNotifState.value = { channelId, serverId, x: e.clientX, y: e.clientY }
 }
 
 async function startRename(channelId: string) {
