@@ -144,7 +144,7 @@
 - [x] `VoiceContentPane.vue` — screen share live video in content pane, per-sharer show/hide (spec §13)
 - [x] `voiceStore.screenStreams` map — store remote video tracks keyed by userId (spec §13)
 - [x] `UserProfileModal.vue` — click avatar to open profile; own profile editable; per-peer volume slider (spec §15)
-- [ ] Video quality + bitrate settings in Settings > Voice & Video (spec §14)
+- [x] Video quality + bitrate settings in Settings > Voice & Video (spec §14)
 - [x] Custom user avatar upload (static + animated GIF) in own-profile view in `UserProfileModal` (spec §16a)
 - [x] `<AvatarImage>` component — replaces initials circles everywhere; GIF frozen by default, animates on hover (spec §16a)
 - [x] Broadcast avatar + profile changes to peers via `profile_update` P2P mutation (spec §16a)
@@ -176,7 +176,7 @@
 - [x] `setAvatar` stores data URL and exposes it via `avatarDataUrl`
 
 ### `serversStore`
-- [ ] `createServer` writes to DB and populates `servers` reactive map
+- [x] `createServer` writes to DB and populates `servers` reactive map
 - [x] `upsertMember` preserves existing `avatarDataUrl` when caller omits it
 - [x] `upsertMember` silently rejects unknown `serverId`
 - [x] `upsertMember` applies incoming `avatarDataUrl` when provided
@@ -295,7 +295,7 @@
 - [ ] macOS Rust-side screen capture fallback (`CGDisplayStream`) for macOS < 12.3
 - [ ] Linux Wayland screen share via XDG Desktop Portal
 - [ ] Auto-update flow (already in skeleton — verify works end-to-end)
-- [ ] Key export / import / device revocation UI in Settings > Privacy
+- [x] Key export / import / device revocation UI in Settings > Privacy
 - [x] Privacy settings: show-deleted-placeholder toggle, confirm-before-delete toggle
 - [ ] **Edit & delete messages**
   - [x] Permission model: own messages — edit + delete always allowed; others' messages — delete only for admins/owners; edit never allowed on others' messages
@@ -309,12 +309,12 @@
   - [x] Admin override: `isAdmin` check uses `roles.some(r => r === 'admin' || r === 'owner')` (already in codebase)
   - [x] P2P propagation: no new network code needed — `mutation` broadcast already in `sendMutation` flow; negentropy sync propagates mutations to late-joining peers
 - [ ] **Tests**
-  - [ ] FTS5 message search: exact match, partial match, no results
-  - [ ] FTS5 search excludes `content = NULL` (deleted) rows
+  - [x] FTS5 message search: exact match, partial match, no results
+  - [x] FTS5 search excludes `content = NULL` (deleted) rows
   - [ ] Passphrase key wrap: wrapped key cannot be decrypted with wrong passphrase
   - [ ] Passphrase key wrap: correct passphrase recovers original keypair
-  - [ ] Storage pruning: oldest attachments deleted first; messages pruned only after attachments
-  - [ ] Storage usage calculation matches sum of attachment file sizes
+  - [x] Storage pruning: oldest attachments deleted first; messages pruned only after attachments
+  - [x] Storage usage calculation matches sum of attachment file sizes
   - [ ] Archive export produces a valid signed bundle; import restores server state
   - [ ] `server_rebaseline` mutation: messages before `historyStartsAt` are not synced to joining peers
   - [x] OS notification fires on mention; does not fire when window is focused
@@ -350,8 +350,8 @@
 - [ ] Manual trigger (`workflow_dispatch`) → draft pre-release for testing
 
 ### 7c — Wire `autoCheckForUpdate()` into `App.vue`
-- [ ] Import `autoCheckForUpdate` from `@/utils/updateService` in `App.vue`
-- [ ] Call it once on `onMounted` (or after identity init completes) — it no-ops in DEV and non-Tauri
+- [x] Import `autoCheckForUpdate` from `@/utils/updateService` in `App.vue`
+- [x] Call it once on `onMounted` (or after identity init completes) — it no-ops in DEV and non-Tauri
 - [ ] Update `SettingsHelpTab.vue` repo URL from `YOUR_ORG/YOUR_REPO` to real repo URL
 
 ### 7d — Validate end-to-end
