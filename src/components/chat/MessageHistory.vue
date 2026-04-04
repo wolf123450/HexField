@@ -1,6 +1,6 @@
 <template>
   <div ref="scrollContainer" class="message-history" @scroll="onScroll">
-    <!-- Load-more sentinel -->
+    <!-- Top sentinel: triggers loading older messages -->
     <div ref="topSentinel" class="top-sentinel" />
 
     <div
@@ -19,11 +19,15 @@
           v-if="allMessages[vRow.index]"
           :message="allMessages[vRow.index]"
           :show-header="shouldShowHeader(vRow.index)"
+          :highlighted="highlightedId === allMessages[vRow.index]?.id"
         />
       </div>
     </div>
 
     <TypingIndicator :channel-id="channelId" />
+
+    <!-- Bottom sentinel: triggers loading newer messages when in historical view -->
+    <div ref="bottomSentinel" class="bottom-sentinel" />
   </div>
 </template>
 
@@ -43,7 +47,10 @@ const settingsStore      = useSettingsStore()
 const personalBlocksStore = usePersonalBlocksStore()
 const scrollContainer = ref<HTMLElement | null>(null)
 const topSentinel     = ref<HTMLElement | null>(null)
+const bottomSentinel  = ref<HTMLElement | null>(null)
 const atBottom        = ref(true)
+const highlightedId   = ref<string | null>(null)
+let highlightTimer: ReturnType<typeof setTimeout> | null = null
 
 const allMessages = computed(() => {
   const confirmed = messagesStore.getMessagesWithMutations(props.channelId)
@@ -61,9 +68,9 @@ const virtualizer = useVirtualizer(computed(() => ({
   overscan:         5,
 })))
 
-// Scroll to bottom when new messages arrive (only when not mid-jump-to-message)
+// Only auto-scroll to bottom when at the latest window (not inside a historical jump)
 watch(() => allMessages.value.length, async () => {
-  if (atBottom.value && !props.scrollToId) {
+  if (atBottom.value && !messagesStore.hasNewerMessages[props.channelId]) {
     await nextTick()
     scrollToBottom()
   }
@@ -79,6 +86,10 @@ function scrollToMessageId(id: string) {
   if (idx === -1) return
   atBottom.value = false
   virtualizer.value.scrollToIndex(idx, { align: 'center' })
+  // Flash highlight
+  if (highlightTimer) clearTimeout(highlightTimer)
+  highlightedId.value = id
+  highlightTimer = setTimeout(() => { highlightedId.value = null }, 2000)
 }
 
 defineExpose({ scrollToMessageId })
@@ -101,7 +112,7 @@ function shouldShowHeader(index: number): boolean {
 }
 
 onMounted(() => {
-  // IntersectionObserver for load-more on scroll-up
+  // Top sentinel: load older messages on scroll-up
   if (topSentinel.value) {
     const observer = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) {
@@ -110,6 +121,16 @@ onMounted(() => {
       }
     }, { threshold: 0.1 })
     observer.observe(topSentinel.value)
+  }
+
+  // Bottom sentinel: load newer messages when in a historical view
+  if (bottomSentinel.value) {
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && messagesStore.hasNewerMessages[props.channelId]) {
+        messagesStore.loadNewerMessages(props.channelId)
+      }
+    }, { threshold: 0.1 })
+    observer.observe(bottomSentinel.value)
   }
 
   if (props.scrollToId) {
@@ -129,6 +150,10 @@ onMounted(() => {
 }
 
 .top-sentinel {
+  height: 1px;
+}
+
+.bottom-sentinel {
   height: 1px;
 }
 
