@@ -398,6 +398,61 @@ export const useMessagesStore = defineStore('messages', () => {
     }})
   }
 
+  // ── Edit & Delete ──────────────────────────────────────────────────────────
+
+  async function sendEditMutation(messageId: string, channelId: string, serverId: string, newContent: string) {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    const myId = identityStore.userId!
+
+    const mutation: Mutation = {
+      id:        uuidv7(),
+      type:      'edit',
+      targetId:  messageId,
+      channelId,
+      authorId:  myId,
+      newContent,
+      logicalTs: generateHLC(),
+      createdAt: new Date().toISOString(),
+      verified:  true,
+    }
+
+    await applyMutation(mutation)
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: {
+      id: mutation.id, type: mutation.type, targetId: mutation.targetId,
+      channelId: mutation.channelId, authorId: mutation.authorId,
+      newContent: mutation.newContent, logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
+    }})
+  }
+
+  async function sendDeleteMutation(messageId: string, channelId: string, serverId: string) {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    const myId = identityStore.userId!
+
+    const mutation: Mutation = {
+      id:        uuidv7(),
+      type:      'delete',
+      targetId:  messageId,
+      channelId,
+      authorId:  myId,
+      logicalTs: generateHLC(),
+      createdAt: new Date().toISOString(),
+      verified:  true,
+    }
+
+    await applyMutation(mutation)
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: {
+      id: mutation.id, type: mutation.type, targetId: mutation.targetId,
+      channelId: mutation.channelId, authorId: mutation.authorId,
+      logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
+    }})
+  }
+
   // ── Unread / read tracking ─────────────────────────────────────────────────
 
   function markChannelRead(channelId: string) {
@@ -423,6 +478,8 @@ export const useMessagesStore = defineStore('messages', () => {
     applyMutation,
     addReaction,
     removeReaction,
+    sendEditMutation,
+    sendDeleteMutation,
     markChannelRead,
   }
 })
