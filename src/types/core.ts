@@ -235,3 +235,25 @@ export interface Device {
   revoked:         boolean
   createdAt:       string
 }
+
+// ── Notifications & Sounds ─────────────────────────────────────────────────
+
+export type NotificationLevel = 'all' | 'mentions' | 'muted'
+
+export interface ServerNotificationPrefs {
+  level: NotificationLevel   // default treated as 'mentions' when absent
+  muteUntil?: number         // epoch ms; absent or past = not muted
+}
+
+export interface ChannelNotificationPrefs {
+  level: NotificationLevel | 'inherit'  // 'inherit' = defer to server setting
+  muteUntil?: number
+}
+
+export interface KeywordFilter {
+  id: string                 // UUID v7
+  keyword: string            // case-insensitive substring match
+  serverId?: string          // undefined = applies globally
+}
+
+export type SoundEvent = 'message' | 'mention' | 'join_self' | 'join_other' | 'leave'
