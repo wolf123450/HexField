@@ -94,6 +94,11 @@ function openServerMenu(e: MouseEvent, serverId: string) {
       label: 'Invite People',
       callback: () => uiStore.openInviteModal(serverId),
     },
+    {
+      type: 'action',
+      label: 'Get Join Link (Reverse Invite)',
+      callback: () => uiStore.openJoinCapsuleModal(serverId),
+    },
   ])
 }
 

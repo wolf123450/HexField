@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
-import type { Server, ServerMember, Mutation, ServerManifest, JoinRequest } from '@/types/core'
+import type { Server, ServerMember, Mutation, ServerManifest, JoinRequest, JoinCapsule, PeerEndpoint } from '@/types/core'
 
 export interface InviteCode {
   code: string
@@ -650,6 +650,83 @@ export const useServersStore = defineStore('servers', () => {
   }
 
   /**
+   * Generate a JoinCapsule for the current user to share with an admin.
+   * The capsule is self-contained — the admin can approve without a code.
+   */
+  async function generateJoinCapsule(serverId: string): Promise<JoinCapsule> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identity = useIdentityStore()
+    let endpoints: PeerEndpoint[] = []
+    try {
+      const raw = await invoke<Array<{ type: string; addr: string; port: number }>>('lan_get_local_addrs')
+      endpoints = raw.map(e => ({ type: e.type as PeerEndpoint['type'], addr: e.addr, port: e.port }))
+    } catch { /* non-fatal */ }
+    const server = servers.value[serverId]
+    return {
+      v:             1,
+      userId:        identity.userId        ?? '',
+      displayName:   identity.displayName,
+      publicSignKey: identity.publicSignKey ?? '',
+      publicDHKey:   identity.publicDHKey   ?? '',
+      endpoints,
+      serverId,
+      serverName:    server?.name ?? serverId,
+    }
+  }
+
+  /**
+   * Admin approves a JoinCapsule — upserts the member, connects, sends manifest.
+   */
+  async function approveCapsule(capsule: JoinCapsule): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const { useChannelsStore } = await import('./channelsStore')
+    const { useNetworkStore }  = await import('./networkStore')
+    const identityStore = useIdentityStore()
+    const channelsStore = useChannelsStore()
+    const networkStore  = useNetworkStore()
+
+    // Upsert the joining member
+    await upsertMember({
+      userId:        capsule.userId,
+      serverId:      capsule.serverId,
+      displayName:   capsule.displayName,
+      publicSignKey: capsule.publicSignKey,
+      publicDHKey:   capsule.publicDHKey,
+      roles:         ['member'],
+      joinedAt:      new Date().toISOString(),
+      onlineStatus:  'online',
+    })
+
+    // Connect to the joiner's LAN endpoints and send the manifest
+    for (const ep of capsule.endpoints) {
+      try {
+        await invoke('lan_connect_peer', { userId: capsule.userId, addr: ep.addr, port: ep.port })
+        await networkStore.connectToPeer(capsule.userId)
+        await networkStore.waitForPeer(capsule.userId, 10000)
+        break
+      } catch { /* try next endpoint */ }
+    }
+
+    const server = servers.value[capsule.serverId]
+    if (server) {
+      const manifest: ServerManifest = {
+        v: 1,
+        server,
+        channels: channelsStore.channels[capsule.serverId] ?? [],
+        owner: {
+          userId:        identityStore.userId        ?? '',
+          displayName:   identityStore.displayName,
+          publicSignKey: identityStore.publicSignKey ?? '',
+          publicDHKey:   identityStore.publicDHKey   ?? '',
+        },
+      }
+      networkStore.sendToPeer(capsule.userId, { type: 'server_manifest', manifest })
+    }
+
+    await logModAction(capsule.serverId, 'capsule_approve', capsule.userId)
+  }
+
+  /**
    * Bootstrap a server locally from a self-contained ServerManifest decoded
    * from an invite link.  Idempotent — calling it again for the same server
    * just ensures membership is up-to-date.
@@ -953,5 +1030,7 @@ export const useServersStore = defineStore('servers', () => {
     approveJoinRequest,
     denyJoinRequest,
     pendingRequestCount,
+    generateJoinCapsule,
+    approveCapsule,
   }
 })

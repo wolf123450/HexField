@@ -23,6 +23,11 @@ const router = createRouter({
       name: 'join',
       component: () => import('@/views/JoinView.vue'),
     },
+    {
+      path: '/approve/:capsule',
+      name: 'approve-join',
+      component: () => import('@/views/ApproveJoinView.vue'),
+    },
   ],
 })
 
