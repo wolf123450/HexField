@@ -297,7 +297,7 @@
 - [ ] Auto-update flow (already in skeleton — verify works end-to-end)
 - [x] Key export / import / device revocation UI in Settings > Privacy
 - [x] Privacy settings: show-deleted-placeholder toggle, confirm-before-delete toggle
-- [ ] **Edit & delete messages**
+- [x] **Edit & delete messages**
   - [x] Permission model: own messages — edit + delete always allowed; others' messages — delete only for admins/owners; edit never allowed on others' messages
   - [x] `sendEditMutation(messageId, channelId, serverId, newContent)` in `messagesStore` — wraps existing `applyMutation` + broadcast (data layer already handles HLC last-write-wins)
   - [x] `sendDeleteMutation(messageId, channelId, serverId)` in `messagesStore` — same pattern as reactions
@@ -318,7 +318,7 @@
   - [ ] Archive export produces a valid signed bundle; import restores server state
   - [ ] `server_rebaseline` mutation: messages before `historyStartsAt` are not synced to joining peers
   - [x] OS notification fires on mention; does not fire when window is focused
-  - [ ] Auto-update: version comparison correctly identifies when an update is available
+  - [x] Auto-update: version comparison correctly identifies when an update is available
   - [x] `sendEditMutation`: optimistic edit reflected in `getMessagesWithMutations` immediately; HLC last-write-wins rejects older edit
   - [x] `sendDeleteMutation`: message becomes `content: null` in reactive state and in DB
   - [x] Permission guard: non-admin cannot delete another user's message (mutation rejected client-side)
