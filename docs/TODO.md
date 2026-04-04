@@ -2,6 +2,7 @@
 
 > Detailed specs for each area live in [`docs/specs/`](specs/).
 > Architecture overview and key decisions: [`docs/architecture-plan.md`](architecture-plan.md).
+> Extended feature specs (post-Phase 5): [`docs/superpowers/specs/`](superpowers/specs/) — see index below.
 
 ---
 
@@ -413,3 +414,30 @@
   - [ ] `NativeP2PProvider` and `MatrixProvider` satisfy the `NetworkProvider` interface contract
   - [ ] Switching providers: active channel messages remain visible and reactive
   - [ ] `MatrixProvider`: room → Channel mapping is bijective (no duplicates, no gaps)
+
+---
+
+## Superpowers — Extended Feature Specs
+
+> Full specs live in [`docs/superpowers/specs/`](superpowers/specs/).  
+> Each spec documents data model, wire protocol, UI changes, implementation phases, and open questions.  
+> Start here before touching any feature area below.
+
+| Spec | Feature Area | Status |
+|---|---|---|
+| [`2026-04-03-notification-system-design.md`](superpowers/specs/2026-04-03-notification-system-design.md) | OS notifications, in-app toasts, per-server/channel prefs, keyword filters, mute timers, sound customization | ✅ Implemented (Phase 6) |
+| [`2026-04-04-moderation-and-access-control.md`](superpowers/specs/2026-04-04-moderation-and-access-control.md) | Kick, ban, voice channel kick, admin voice mute, per-channel ACL, personal block/mute, invite code constraints, moderation audit log, closed server mode | ⏳ Planned |
+
+### Superpowers implementation order
+
+Follow the phase table inside each spec. Cross-spec priority across all pending specs:
+
+1. **Invite code constraints** — `invite_codes` table + expiry + max-uses + InviteModal UI *(moderation spec §5, Phase A)*
+2. **Moderation reason + audit log** — reason modal + `mod_log` table + Audit Log UI *(moderation spec §8, Phase B)*
+3. **Server kick + ban** — with reason/expiry + unban flow *(moderation spec §3, Phase C)*
+4. **Voice channel kick** *(moderation spec §3.1b, Phase D)*
+5. **Admin voice mute/unmute** — persistent via mutations *(moderation spec §4, Phase E)*
+6. **Per-channel access control** — role-gated + whitelist/blacklist *(moderation spec §6, Phase F)*
+7. **Personal block & mute** — client-side, localStorage *(moderation spec §7, Phase G)*
+8. **Closed server mode** — join approval flow *(moderation spec §9, Phase H)*
+9. **Reverse invite** — QR capsule, no invite code *(moderation spec §9.3, Phase I)*
