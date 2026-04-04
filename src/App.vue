@@ -157,6 +157,12 @@ onMounted(async () => {
   // Auto-update check (deferred)
   setTimeout(() => autoCheckForUpdate(), 10_000)
 
+  // Maintenance: prune expired bans and old mod_log entries (fire-and-forget)
+  if (isTauri) {
+    invoke('db_prune_expired_bans').catch(() => {})
+    invoke('db_prune_mod_log', { retainDays: 90, rowCap: 10_000 }).catch(() => {})
+  }
+
   // Deep-link handler (gamechat:// scheme)
   if (isTauri) {
     const { onOpenUrl } = await import('@tauri-apps/plugin-deep-link')

@@ -850,6 +850,65 @@ pub fn get_screen_sources() -> Result<Vec<serde_json::Value>, String> {
     Ok(vec![])
 }
 
+// ── Background maintenance ────────────────────────────────────────────────────
+
+/// Prune bans whose `expires_at` timestamp (ISO-8601 string) is in the past.
+/// Called once on startup; no-ops if the column is NULL (permanent bans).
+#[tauri::command]
+pub fn db_prune_expired_bans(state: State<AppState>) -> Result<usize, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let now = chrono_now_iso();
+    let count = conn.execute(
+        "DELETE FROM bans WHERE expires_at IS NOT NULL AND expires_at < ?1",
+        rusqlite::params![now],
+    ).map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+/// Prune old `mod_log` entries. Keeps rows from the last `retain_days` days
+/// (default 90) and also enforces a `row_cap` soft cap (default 10000):
+/// after the age prune, if more than `row_cap` rows remain, the oldest are deleted.
+#[tauri::command]
+pub fn db_prune_mod_log(
+    state: State<AppState>,
+    retain_days: Option<u32>,
+    row_cap: Option<u32>,
+) -> Result<usize, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let days = retain_days.unwrap_or(90) as i64;
+    let cap  = row_cap.unwrap_or(10_000);
+
+    // Age-based prune: delete rows older than `retain_days`
+    let now_ms = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64
+    };
+    let cutoff_ms = now_ms - (days * 86_400 * 1_000);
+    let age_deleted = conn.execute(
+        "DELETE FROM mod_log WHERE CAST(created_at AS INTEGER) < ?1",
+        rusqlite::params![cutoff_ms],
+    ).map_err(|e| e.to_string())?;
+
+    // Row-cap prune: if still over the cap, delete the oldest rows
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM mod_log", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    let cap_deleted = if total > cap as i64 {
+        let excess = total - cap as i64;
+        conn.execute(
+            "DELETE FROM mod_log WHERE id IN (SELECT id FROM mod_log ORDER BY created_at ASC LIMIT ?1)",
+            rusqlite::params![excess],
+        ).map_err(|e| e.to_string())?
+    } else {
+        0
+    };
+
+    Ok(age_deleted + cap_deleted)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn chrono_now() -> String {
