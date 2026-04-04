@@ -17,6 +17,9 @@
       <div v-if="peer.adminMuted" class="admin-mute-indicator" title="Admin muted">
         <AppIcon :path="mdiMicrophoneOff" :size="10" />
       </div>
+      <div v-if="isPersonalMuted" class="personal-mute-indicator" title="Personally muted">
+        <AppIcon :path="mdiVolumeMute" :size="10" />
+      </div>
       <div v-if="peer.screenSharing" class="screen-indicator">
         <AppIcon :path="mdiMonitorShare" :size="10" />
       </div>
@@ -27,20 +30,23 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { mdiMicrophoneOff, mdiMonitorShare } from '@mdi/js'
+import { mdiMicrophoneOff, mdiMonitorShare, mdiVolumeMute } from '@mdi/js'
 import type { Peer } from '@/types/core'
 import { useServersStore } from '@/stores/serversStore'
 import { useVoiceStore } from '@/stores/voiceStore'
+import { usePersonalBlocksStore } from '@/stores/personalBlocksStore'
 
 const props = defineProps<{
   peer:     Peer
   serverId: string
 }>()
 
-const serversStore = useServersStore()
-const voiceStore   = useVoiceStore()
+const serversStore          = useServersStore()
+const voiceStore            = useVoiceStore()
+const personalBlocksStore   = usePersonalBlocksStore()
 
-const isSpeaking = computed(() => voiceStore.speakingPeers.has(props.peer.userId))
+const isSpeaking     = computed(() => voiceStore.speakingPeers.has(props.peer.userId))
+const isPersonalMuted = computed(() => personalBlocksStore.isMuted(props.peer.userId))
 
 const member = computed(() => serversStore.members[props.serverId]?.[props.peer.userId])
 
@@ -109,6 +115,7 @@ const displayName = computed(() => member.value?.displayName ?? props.peer.userI
 
 .mute-indicator,
 .admin-mute-indicator,
+.personal-mute-indicator,
 .screen-indicator {
   position: absolute;
   bottom: -2px;
@@ -130,6 +137,11 @@ const displayName = computed(() => member.value?.displayName ?? props.peer.userI
 .admin-mute-indicator {
   background: #f0b232;
   color: #111;
+}
+
+.personal-mute-indicator {
+  background: #5865f2;
+  color: white;
 }
 
 .screen-indicator {

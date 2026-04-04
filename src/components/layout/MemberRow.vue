@@ -39,13 +39,15 @@ import type { ServerMember } from '@/types/core'
 import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
+import { usePersonalBlocksStore } from '@/stores/personalBlocksStore'
 import ModerationActionModal from '@/components/modals/ModerationActionModal.vue'
 
 const props = defineProps<{ member: ServerMember; serverId: string }>()
 
-const uiStore       = useUIStore()
-const serversStore  = useServersStore()
-const identityStore = useIdentityStore()
+const uiStore              = useUIStore()
+const serversStore         = useServersStore()
+const identityStore        = useIdentityStore()
+const personalBlocksStore  = usePersonalBlocksStore()
 
 const showKickModal = ref(false)
 const showBanModal  = ref(false)
@@ -113,6 +115,21 @@ function onContextMenu(e: MouseEvent) {
       label: 'Ban (1 day)',
       danger: true,
       callback: () => { banDuration.value = '1d'; showBanModal.value = true },
+    })
+  }
+
+  // Personal block/unblock — available for all non-self members
+  if (!isSelf.value) {
+    const blocked = personalBlocksStore.isBlocked(props.member.userId)
+    items.push({ type: 'separator' })
+    items.push({
+      type: 'action',
+      label: blocked ? 'Unblock' : 'Block',
+      danger: !blocked,
+      callback: () => {
+        if (blocked) personalBlocksStore.unblockUser(props.member.userId)
+        else         personalBlocksStore.blockUser(props.member.userId)
+      },
     })
   }
 
