@@ -17,6 +17,7 @@ interface ChatWireMessage {
   createdAt: string
   contentType: 'text' | 'markdown' | 'system'
   envelopes: EncryptedEnvelope[]
+  attachments?: Attachment[]
 }
 
 export const useMessagesStore = defineStore('messages', () => {
@@ -200,6 +201,7 @@ export const useMessagesStore = defineStore('messages', () => {
           createdAt:   now,
           contentType: 'text',
           envelopes,
+          attachments: attachments.length ? attachments : undefined,
         }
         networkStore.broadcast(wireMsg)
       }
@@ -262,7 +264,7 @@ export const useMessagesStore = defineStore('messages', () => {
       authorId:    wire.authorId,
       content:     plaintext,
       contentType: wire.contentType,
-      attachments: [],
+      attachments: wire.attachments ?? [],
       reactions:   [],
       isEdited:    false,
       logicalTs,
@@ -283,7 +285,7 @@ export const useMessagesStore = defineStore('messages', () => {
         created_at:      msg.createdAt,
         logical_ts:      msg.logicalTs,
         verified:        true,
-        raw_attachments: null,
+        raw_attachments: msg.attachments.length ? JSON.stringify(msg.attachments) : null,
       },
     })
 
