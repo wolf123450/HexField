@@ -555,6 +555,117 @@ pub fn db_delete_channel(state: State<AppState>, channel_id: String) -> Result<(
     Ok(())
 }
 
+// ── Invite codes ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn db_save_invite_code(state: State<AppState>, code: InviteCodeRow) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO invite_codes
+         (code, server_id, created_by, max_uses, use_count, expires_at, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        rusqlite::params![
+            code.code, code.server_id, code.created_by,
+            code.max_uses, code.use_count, code.expires_at, code.created_at,
+        ],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn db_load_invite_codes(state: State<AppState>, server_id: String) -> Result<Vec<InviteCodeRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT code, server_id, created_by, max_uses, use_count, expires_at, created_at
+         FROM invite_codes WHERE server_id = ?1 ORDER BY created_at DESC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&server_id], |row| {
+        Ok(InviteCodeRow {
+            code:       row.get(0)?,
+            server_id:  row.get(1)?,
+            created_by: row.get(2)?,
+            max_uses:   row.get(3)?,
+            use_count:  row.get(4)?,
+            expires_at: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    }).map_err(|e| e.to_string())?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+/// Atomically increment use_count for the given invite code and return the new count.
+/// Returns an error if the code does not exist.
+#[tauri::command]
+pub fn db_increment_invite_use_count(state: State<AppState>, code: String) -> Result<i64, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE invite_codes SET use_count = use_count + 1 WHERE code = ?1",
+        [&code],
+    ).map_err(|e| e.to_string())?;
+    let new_count: i64 = conn.query_row(
+        "SELECT use_count FROM invite_codes WHERE code = ?1",
+        [&code],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    Ok(new_count)
+}
+
+#[tauri::command]
+pub fn db_delete_invite_code(state: State<AppState>, code: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM invite_codes WHERE code = ?1", [&code])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Moderation audit log ──────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn db_save_mod_log_entry(state: State<AppState>, entry: ModLogRow) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO mod_log
+         (id, server_id, action, target_id, issued_by, reason, detail, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![
+            entry.id, entry.server_id, entry.action, entry.target_id,
+            entry.issued_by, entry.reason, entry.detail, entry.created_at,
+        ],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn db_load_mod_log(
+    state: State<AppState>,
+    server_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<ModLogRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let limit = limit.unwrap_or(200) as i64;
+    let mut stmt = conn.prepare(
+        "SELECT id, server_id, action, target_id, issued_by, reason, detail, created_at
+         FROM mod_log WHERE server_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![server_id, limit], |row| {
+        Ok(ModLogRow {
+            id:         row.get(0)?,
+            server_id:  row.get(1)?,
+            action:     row.get(2)?,
+            target_id:  row.get(3)?,
+            issued_by:  row.get(4)?,
+            reason:     row.get(5)?,
+            detail:     row.get(6)?,
+            created_at: row.get(7)?,
+        })
+    }).map_err(|e| e.to_string())?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
 // ── System ────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
