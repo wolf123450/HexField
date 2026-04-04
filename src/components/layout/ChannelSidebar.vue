@@ -75,6 +75,7 @@
           :key="uid"
           class="voice-participant"
           :class="{ speaking: voiceStore.speakingPeers.has(uid) }"
+          @contextmenu.prevent="onVoicePeerContextMenu($event, uid, ch.id)"
         >
           <div class="vp-avatar-wrap">
             <div class="vp-speaking-ring" />
@@ -111,6 +112,16 @@
     </Teleport>
 
     <VoiceBar />
+
+    <!-- Voice-kick confirm modal (admin-only) -->
+    <ModerationActionModal
+      :show="voiceKickModal.show"
+      title="Kick from voice"
+      :body="`Remove ${voiceKickModal.displayName} from this voice channel?`"
+      confirm-label="Kick from voice"
+      @confirm="doVoiceKick"
+      @cancel="voiceKickModal.show = false"
+    />
 
     <!-- Per-channel notification popover -->
     <ChannelNotifPopover
@@ -171,6 +182,7 @@ import { useUIStore } from '@/stores/uiStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import VoiceBar from '@/components/chat/VoiceBar.vue'
 import ChannelNotifPopover from '@/components/layout/ChannelNotifPopover.vue'
+import ModerationActionModal from '@/components/modals/ModerationActionModal.vue'
 import type { ChannelType } from '@/types/core'
 import type { MenuItem } from '@/stores/uiStore'
 
@@ -220,6 +232,43 @@ const isAdmin = computed(() => {
   if (!sid || !uid) return false
   return serversStore.members[sid]?.[uid]?.roles.some(r => r === 'admin' || r === 'owner') ?? false
 })
+
+// ── Voice-kick modal state ────────────────────────────────────────────────────
+
+const voiceKickModal = ref<{
+  show: boolean
+  targetId: string
+  channelId: string
+  displayName: string
+}>({ show: false, targetId: '', channelId: '', displayName: '' })
+
+function onVoicePeerContextMenu(e: MouseEvent, userId: string, channelId: string) {
+  const items: MenuItem[] = []
+  if (isAdmin.value) {
+    items.push({
+      type: 'action',
+      label: 'Kick from voice',
+      danger: true,
+      callback: () => {
+        voiceKickModal.value = {
+          show: true,
+          targetId: userId,
+          channelId,
+          displayName: peerDisplayName(userId),
+        }
+      },
+    })
+  }
+  if (items.length) uiStore.showContextMenu(e.clientX, e.clientY, items)
+}
+
+async function doVoiceKick(reason: string) {
+  const sid = serversStore.activeServerId
+  if (!sid) return
+  const { targetId, channelId } = voiceKickModal.value
+  voiceKickModal.value.show = false
+  await serversStore.kickFromVoice(sid, targetId, channelId, reason)
+}
 
 async function selectChannel(channelId: string) {
   channelsStore.setActiveChannel(channelId)

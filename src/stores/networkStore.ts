@@ -424,6 +424,31 @@ export const useNetworkStore = defineStore('network', () => {
         }
       }
     }
+
+    // Voice-level mutations
+    if (mutation.type === 'voice_kick' && mutation.newContent) {
+      const { channelId, reason } = JSON.parse(mutation.newContent) as { channelId: string; reason?: string }
+      const { useVoiceStore } = await import('./voiceStore')
+      const voiceStore = useVoiceStore()
+      const { useIdentityStore } = await import('./identityStore')
+      const myId = useIdentityStore().userId
+
+      if (myId && mutation.targetId === myId) {
+        // I was kicked — leave the voice channel if I'm in the kicked channel
+        if (voiceStore.session?.channelId === channelId) {
+          await voiceStore.leaveVoiceChannel()
+          const msg2 = reason ? `You were removed from voice: ${reason}` : 'You were removed from voice by an admin'
+          const { useUIStore } = await import('./uiStore')
+          useUIStore().showNotification(msg2, 'warning')
+        }
+      } else {
+        // Someone else was kicked — remove them from voice peer state
+        if (voiceStore.peerVoiceChannels[mutation.targetId] === channelId) {
+          voiceStore.removePeer(mutation.targetId)
+          voiceStore.clearPeerVoiceChannel(mutation.targetId)
+        }
+      }
+    }
   }
 
   async function handleChannelGossip(msg: Record<string, unknown>) {

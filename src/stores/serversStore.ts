@@ -374,6 +374,35 @@ export const useServersStore = defineStore('servers', () => {
   }
 
   /**
+   * Kick a user from a specific voice channel (server membership unaffected).
+   * Only admins/owners should call this.
+   */
+  async function kickFromVoice(serverId: string, targetId: string, channelId: string, reason: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identity = useIdentityStore()
+    const myId = identity.userId!
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'voice_kick',
+      targetId,
+      channelId,
+      authorId:   myId,
+      newContent: JSON.stringify({ channelId, reason }),
+      logicalTs:  new Date().toISOString(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    // Log before broadcast
+    await logModAction(serverId, 'voice_kick', targetId, reason || undefined,
+      JSON.stringify({ channelId }))
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+  }
+
+  /**
    * Bootstrap a server locally from a self-contained ServerManifest decoded
    * from an invite link.  Idempotent — calling it again for the same server
    * just ensures membership is up-to-date.
@@ -666,5 +695,6 @@ export const useServersStore = defineStore('servers', () => {
     unbanMember,
     loadBans,
     isBanned,
+    kickFromVoice,
   }
 })
