@@ -127,6 +127,14 @@ export const useUIStore = defineStore("ui", () => {
     showServerSettingsModal.value = true
   }
 
+  const showJoinCapsuleModal = ref(false)
+  const joinCapsuleServerId  = ref<string | null>(null)
+
+  function openJoinCapsuleModal(serverId: string) {
+    joinCapsuleServerId.value  = serverId
+    showJoinCapsuleModal.value = true
+  }
+
   // ─── User profile modal ────────────────────────────────────────────
   const showUserProfile    = ref(false)
   const userProfileUserId  = ref<string | null>(null)
@@ -186,6 +194,9 @@ export const useUIStore = defineStore("ui", () => {
     showServerSettingsModal,
     settingsServerId,
     openServerSettings,
+    showJoinCapsuleModal,
+    joinCapsuleServerId,
+    openJoinCapsuleModal,
     // User profile
     showUserProfile,
     userProfileUserId,

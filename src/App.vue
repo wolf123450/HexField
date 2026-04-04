@@ -10,11 +10,16 @@
   <DeviceLinkModal />
   <UserProfileModal />
   <ServerSettingsModal />
+  <JoinCapsuleModal
+    :show="uiStore.showJoinCapsuleModal"
+    :server-id="uiStore.joinCapsuleServerId ?? ''"
+    @close="uiStore.showJoinCapsuleModal = false"
+  />
 </template>
 
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { RouterView } from 'vue-router'
+import { RouterView, useRouter } from 'vue-router'
 import TitleBar from '@/components/TitleBar.vue'
 import Settings from '@/components/Settings.vue'
 import Notification from '@/components/Notification.vue'
@@ -25,6 +30,7 @@ import JoinModal from '@/components/modals/JoinModal.vue'
 import DeviceLinkModal from '@/components/modals/DeviceLinkModal.vue'
 import UserProfileModal from '@/components/modals/UserProfileModal.vue'
 import ServerSettingsModal from '@/components/modals/ServerSettingsModal.vue'
+import JoinCapsuleModal from '@/components/modals/JoinCapsuleModal.vue'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useIdentityStore } from '@/stores/identityStore'
@@ -39,6 +45,7 @@ import { initializeKeyboardShortcuts, registerDefaultShortcuts, keyboardShortcut
 import { createContextMenuResolver } from '@/utils/contextMenuResolver'
 import { APP_ONBOARDING_KEY, APP_NAME } from '@/appConfig'
 
+const router        = useRouter()
 const uiStore       = useUIStore()
 const settingsStore = useSettingsStore()
 const identityStore = useIdentityStore()
@@ -149,5 +156,21 @@ onMounted(async () => {
 
   // Auto-update check (deferred)
   setTimeout(() => autoCheckForUpdate(), 10_000)
+
+  // Deep-link handler (gamechat:// scheme)
+  if (isTauri) {
+    const { onOpenUrl } = await import('@tauri-apps/plugin-deep-link')
+    onOpenUrl((urls: string[]) => {
+      for (const url of urls) {
+        if (url.startsWith('gamechat://approve/')) {
+          const capsule = url.slice('gamechat://approve/'.length)
+          router.push({ name: 'approve-join', params: { capsule } })
+        } else if (url.startsWith('gamechat://join/')) {
+          const code = url.slice('gamechat://join/'.length)
+          router.push({ name: 'join', params: { inviteCode: code } })
+        }
+      }
+    }).catch(() => {})
+  }
 })
 </script>
