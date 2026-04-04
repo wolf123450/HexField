@@ -357,55 +357,42 @@
 
 ## Phase 8 — Mobile (Android & iOS)
 
-**Goal**: Run GameChat on Android and iOS using Tauri Mobile (same Rust backend, same Vue frontend with responsive layout). No separate codebase.
+**Goal**: Distribute GameChat on Android and iOS using Tauri Mobile — same Rust backend, same Vue frontend. All mobile builds happen in GitHub Actions (no local mobile toolchain required for development). The primary implementation work is responsive CSS/layout so the app looks and functions well at phone-sized viewports.
 
-> **Tauri v2 mobile support**: Tauri 2 ships first-class Android and iOS targets via `tauri android` and `tauri ios` CLI commands. The Rust core (SQLite, crypto, networking) runs unchanged. WebRTC in the mobile WebView requires careful capability handling. This is a significant UX investment — the layout was designed for desktop and needs responsive adaptations.
+> Local mobile toolchain (Android Studio, Xcode) is only needed for hands-on emulator debugging. Day-to-day development uses the desktop app; mobile builds are validated via CI.
 
-### 8a — Environment & toolchain setup
-- [ ] Install Android Studio + NDK; `ANDROID_HOME`, `NDK_HOME` env vars
-- [ ] Install Xcode + iOS simulator (macOS only for iOS builds)
-- [ ] Add Android targets: `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android`
-- [ ] Add iOS targets: `rustup target add aarch64-apple-ios x86_64-apple-ios aarch64-apple-ios-sim`
-- [ ] `npm run tauri android init` — generates `src-tauri/gen/android/` project
-- [ ] `npm run tauri ios init` — generates `src-tauri/gen/apple/` project
-- [ ] Verify `npm run tauri android dev` runs in an emulator without crashing
+### 8a — Tauri Mobile init (one-time, committed to repo)
+- [ ] `npm run tauri android init` — commit generated `src-tauri/gen/android/` to the repo
+- [ ] `npm run tauri ios init` — commit generated `src-tauri/gen/apple/` to the repo
+- [ ] Add `android` and `ios` bundle identifier / version fields to `tauri.conf.json`
+- [ ] Disable LAN mDNS discovery on mobile (`#[cfg(not(mobile))]` gate in `lan.rs`) — use relay/rendezvous instead
+- [ ] Hide screen share UI when running on mobile (no `getDisplayMedia` equivalent)
 
 ### 8b — Responsive layout
-- [ ] Add `useBreakpoint` composable in `src/utils/` — detects `mobile` (< 640px), `tablet` (640–1024px), `desktop` (> 1024px) via `window.matchMedia`
-- [ ] `MainLayout.vue`: on mobile, replace 4-column CSS grid with a tab-bar / slide-panel navigation — ServerRail + ChannelSidebar collapse to a drawer, MemberList collapses to a sheet
-- [ ] `ChannelSidebar.vue`: full-screen on mobile, slides in from left; back button returns to server rail
-- [ ] `MemberList.vue`: bottom sheet on mobile (swipe up to expand)
-- [ ] `MessageInput.vue`: floating above keyboard on iOS/Android (handle `visualViewport` resize)
-- [ ] `MessageHistory.vue`: ensure virtual scroll works with mobile touch events; add pull-to-refresh (trigger `loadMessages` for older history)
-- [ ] `TitleBar.vue`: hide custom title bar on mobile (OS provides its own chrome); use `tauri-plugin-status-bar` for Android status bar color
-- [ ] All modals: use `position: fixed; inset: 0` full-screen on mobile instead of centered overlays
-- [ ] Touch targets: all buttons ≥ 44×44px (WCAG 2.5.5); replace hover-only interactions with tap + long-press
+- [ ] Add `useBreakpoint` composable in `src/utils/` — `mobile` (< 640 px), `tablet` (640–1024 px), `desktop` (> 1024 px) via `window.matchMedia`
+- [ ] `MainLayout.vue`: on mobile replace 4-column CSS grid with a single-column view + bottom tab-bar; ServerRail and ChannelSidebar become swipe-in drawers; MemberList becomes a bottom sheet
+- [ ] `ChannelSidebar.vue`: full-screen when open on mobile; back button closes it
+- [ ] `MessageInput.vue`: bind to `visualViewport` resize so the input floats above the keyboard on iOS/Android
+- [ ] `MessageHistory.vue`: verify TanStack Virtual works with touch scroll; add pull-to-refresh for older history
+- [ ] `TitleBar.vue`: hidden on mobile (OS provides chrome)
+- [ ] All modals: `position: fixed; inset: 0` full-screen on mobile
+- [ ] Touch targets: all interactive elements ≥ 44 × 44 px; hover-only actions (message action bar) also reachable via long-press
 
-### 8c — Mobile-specific capabilities & permissions
-- [ ] Android `AndroidManifest.xml` (generated): add `INTERNET`, `RECORD_AUDIO`, `CAMERA`, `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`
-- [ ] iOS `Info.plist` (already has mic/screen entries): add `NSCameraUsageDescription`, `NSMicrophoneUsageDescription` (already present in `Info.plist`)
-- [ ] `tauri-plugin-microphone` or capability flags for voice chat on mobile
-- [ ] Disable LAN mDNS discovery on mobile (mdns-sd uses UDP multicast; use relay/rendezvous instead)
-- [ ] `tauri.conf.json`: add `android` and `ios` build config blocks with correct bundle identifiers
-
-### 8d — WebRTC on mobile WebView
-- [ ] Android: `WebRTC` works in Android WebView 75+ — verify `getUserMedia` for voice
-- [ ] iOS: `getUserMedia` requires `WKWebView` with `allowsInlineMediaPlayback = true` (already set for macOS; verify iOS config)
-- [ ] Screen share disabled on mobile (no `getDisplayMedia` equivalent); hide screen share UI when `isMobile`
-- [ ] Test voice call between desktop and mobile peer
-
-### 8e — CI/CD for mobile
-- [ ] Add `android` job to `release.yml` — `ubuntu-22.04`, `tauri android build --apk`
+### 8c — GitHub Actions CI/CD for mobile
+- [ ] Add `android` job to `release.yml`: `ubuntu-22.04`, install NDK via `android-actions/setup-android`, run `tauri android build --apk`
 - [ ] APK signing: `ANDROID_KEY_STORE`, `ANDROID_KEY_STORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` secrets
-- [ ] iOS build: `macos-latest`, `tauri ios build` — requires Apple Developer account + provisioning profile secrets
-- [ ] Upload APK/IPA as release assets alongside desktop installers
+- [ ] Add `ios` job to `release.yml`: `macos-latest`, install Xcode toolchain, run `tauri ios build`
+- [ ] iOS signing: Apple Developer certificate + provisioning profile as GitHub secrets
+- [ ] Upload `.apk` / `.ipa` as release assets alongside desktop installers
 
 - [ ] **Tests**
-  - [ ] `useBreakpoint` composable correctly identifies `mobile` / `tablet` / `desktop` at breakpoint boundaries (mock `matchMedia`)
-  - [ ] `MainLayout.vue` renders drawer mode on mobile viewport (< 640px) and grid mode on desktop (> 1024px)
-  - [ ] `MessageInput.vue` does not overflow viewport when virtual keyboard is visible (mock `visualViewport`)
+  - [ ] `useBreakpoint` identifies `mobile` / `tablet` / `desktop` at breakpoint boundaries (mock `matchMedia`)
+  - [ ] `MainLayout.vue` renders tab-bar/drawer mode below 640 px and grid mode above 1024 px
+  - [ ] `MessageInput.vue` stays within viewport when `visualViewport.height` shrinks (mock resize)
 
 ---
+
+## Stretch — Matrix Compatibility
 
 - [ ] Abstract networking behind `NetworkProvider` interface
 - [ ] `NativeP2PProvider` (current implementation)
