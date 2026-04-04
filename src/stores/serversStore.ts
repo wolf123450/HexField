@@ -4,15 +4,23 @@ import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
 import type { Server, ServerMember, Mutation, ServerManifest } from '@/types/core'
 
-const INVITE_TOKEN_TTL_MS = 3_600_000 // 1 hour
+export interface InviteCode {
+  code: string
+  serverId: string
+  createdBy: string
+  maxUses: number | null
+  useCount: number
+  expiresAt: string | null  // ISO-8601 or null
+  createdAt: string
+}
 
 export const useServersStore = defineStore('servers', () => {
   const servers         = ref<Record<string, Server>>({})
   const members         = ref<Record<string, Record<string, ServerMember>>>({})
   const joinedServerIds = ref<string[]>([])
   const activeServerId  = ref<string | null>(null)
-  // invite token → { serverId, expiresAt }
-  const activeInviteTokens = ref<Map<string, { serverId: string; expiresAt: number }>>(new Map())
+  // invite codes: code → InviteCode (DB-backed)
+  const inviteCodes     = ref<Map<string, InviteCode>>(new Map())
 
   async function loadServers() {
     const rows = await invoke<any[]>('db_load_servers')
@@ -345,31 +353,103 @@ export const useServersStore = defineStore('servers', () => {
   }
 
   /**
-   * Generate and store a short-lived invite token for the given server.
-   * Tokens expire after 1 hour in-memory (no persistence needed).
+   * Load invite codes from DB for a given server into the in-memory map.
+   * Call this on server select / modal open.
    */
-  function createInviteToken(serverId: string): string {
-    const token = uuidv7()
-    activeInviteTokens.value.set(token, {
-      serverId,
-      expiresAt: Date.now() + INVITE_TOKEN_TTL_MS,
-    })
-    return token
+  async function loadInviteCodes(serverId: string): Promise<InviteCode[]> {
+    const rows = await invoke<Array<{
+      code: string; server_id: string; created_by: string;
+      max_uses: number | null; use_count: number;
+      expires_at: string | null; created_at: string;
+    }>>('db_load_invite_codes', { serverId })
+    const codes: InviteCode[] = rows.map(r => ({
+      code:      r.code,
+      serverId:  r.server_id,
+      createdBy: r.created_by,
+      maxUses:   r.max_uses,
+      useCount:  r.use_count,
+      expiresAt: r.expires_at,
+      createdAt: r.created_at,
+    }))
+    for (const c of codes) inviteCodes.value.set(c.code, c)
+    return codes
   }
 
   /**
-   * Returns true if the token is valid and matches the expected serverId.
-   * Does NOT consume the token (a single invite may be used by multiple peers).
+   * Generate a new invite token, persist to DB, and return the code string.
+   * Options:
+   *   expiresInMs — milliseconds from now; null = never expires
+   *   maxUses     — positive int; null = unlimited
    */
-  function validateInviteToken(token: string, serverId: string): boolean {
-    const entry = activeInviteTokens.value.get(token)
-    if (!entry) return false
-    if (entry.serverId !== serverId) return false
-    if (entry.expiresAt < Date.now()) {
-      activeInviteTokens.value.delete(token)
-      return false
+  async function createInviteToken(
+    serverId: string,
+    options?: { expiresInMs?: number | null; maxUses?: number | null },
+  ): Promise<string> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+
+    const code = uuidv7().replace(/-/g, '').slice(0, 16)
+    const expiresIn = options?.expiresInMs !== undefined ? options.expiresInMs : 24 * 60 * 60 * 1000
+    const expiresAt = expiresIn != null ? new Date(Date.now() + expiresIn).toISOString() : null
+    const maxUses   = options?.maxUses ?? null
+
+    const entry: InviteCode = {
+      code,
+      serverId,
+      createdBy:  identityStore.userId ?? '',
+      maxUses,
+      useCount:   0,
+      expiresAt,
+      createdAt:  new Date().toISOString(),
     }
-    return true
+    await invoke('db_save_invite_code', {
+      code: {
+        code:       entry.code,
+        server_id:  entry.serverId,
+        created_by: entry.createdBy,
+        max_uses:   entry.maxUses,
+        use_count:  0,
+        expires_at: entry.expiresAt,
+        created_at: entry.createdAt,
+      },
+    })
+    inviteCodes.value.set(code, entry)
+    return code
+  }
+
+  /**
+   * Validate an invite token. Checks expiry and max-uses.
+   * Increments use_count in DB and in-memory on success.
+   * Returns 'ok' | 'not_found' | 'invite_expired' | 'invite_exhausted'
+   */
+  async function validateInviteToken(
+    token: string,
+    serverId: string,
+  ): Promise<'ok' | 'not_found' | 'invite_expired' | 'invite_exhausted'> {
+    // Ensure loaded from DB for this server
+    let entry = inviteCodes.value.get(token)
+    if (!entry) {
+      await loadInviteCodes(serverId)
+      entry = inviteCodes.value.get(token)
+    }
+    if (!entry || entry.serverId !== serverId) return 'not_found'
+    if (entry.expiresAt && new Date(entry.expiresAt).getTime() < Date.now()) return 'invite_expired'
+    if (entry.maxUses !== null && entry.useCount >= entry.maxUses) return 'invite_exhausted'
+
+    // Increment use count
+    try {
+      const newCount = await invoke<number>('db_increment_invite_use_count', { code: token })
+      entry.useCount = newCount
+    } catch {
+      // Non-fatal if increment fails — validation still passed
+    }
+    return 'ok'
+  }
+
+  /** Revoke (delete) an invite code from DB and in-memory map. */
+  async function revokeInviteCode(code: string): Promise<void> {
+    await invoke('db_delete_invite_code', { code })
+    inviteCodes.value.delete(code)
   }
 
   return {
@@ -377,6 +457,7 @@ export const useServersStore = defineStore('servers', () => {
     members,
     joinedServerIds,
     activeServerId,
+    inviteCodes,
     loadServers,
     createServer,
     fetchMembers,
@@ -388,7 +469,9 @@ export const useServersStore = defineStore('servers', () => {
     updateServerAvatar,
     applyServerMutation,
     joinFromManifest,
+    loadInviteCodes,
     createInviteToken,
     validateInviteToken,
+    revokeInviteCode,
   }
 })

@@ -31,9 +31,49 @@
           </button>
         </div>
 
-        <p class="modal-hint small">
-          Invite code: <strong>{{ server?.inviteCode }}</strong>
-        </p>
+        <!-- Invite constraints -->
+        <div class="constraints-row">
+          <div class="constraint-field">
+            <label class="field-label">EXPIRES AFTER</label>
+            <select v-model="selectedExpiry" class="select-input">
+              <option :value="1 * 60 * 60 * 1000">1 hour</option>
+              <option :value="6 * 60 * 60 * 1000">6 hours</option>
+              <option :value="24 * 60 * 60 * 1000">24 hours</option>
+              <option :value="7 * 24 * 60 * 60 * 1000">7 days</option>
+              <option :value="null">Never</option>
+            </select>
+          </div>
+          <div class="constraint-field">
+            <label class="field-label">MAX USES</label>
+            <input
+              v-model="maxUsesInput"
+              type="number"
+              min="1"
+              placeholder="Unlimited"
+              class="text-input constraint-input"
+            />
+          </div>
+        </div>
+
+        <button class="btn-generate" @click="generateNewLink">Generate new link</button>
+
+        <!-- Active codes list -->
+        <div v-if="activeCodes.length > 0" class="codes-section">
+          <button class="codes-toggle" @click="showCodes = !showCodes">
+            Active codes ({{ activeCodes.length }})
+            <svg :style="{ transform: showCodes ? 'rotate(180deg)' : '' }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M7 10l5 5 5-5z"/>
+            </svg>
+          </button>
+          <div v-if="showCodes" class="codes-list">
+            <div v-for="c in activeCodes" :key="c.code" class="code-row">
+              <span class="code-slug">{{ c.code.slice(0, 8) }}…</span>
+              <span class="code-uses">{{ c.useCount }}/{{ c.maxUses ?? '∞' }} uses</span>
+              <span class="code-expiry">{{ formatExpiry(c.expiresAt) }}</span>
+              <button class="btn-revoke" @click="revokeCode(c.code)">Revoke</button>
+            </div>
+          </div>
+        </div>
 
         <div class="modal-actions">
           <button class="btn-primary" @click="close">Done</button>
@@ -50,24 +90,38 @@ import QRCode from 'qrcode'
 import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
+import type { InviteCode } from '@/stores/serversStore'
 import type { PeerInvite, PeerEndpoint } from '@/types/core'
 
 const uiStore        = useUIStore()
 const serversStore   = useServersStore()
 const identityStore  = useIdentityStore()
 
-const qrSvg    = ref<string>('')
-const copied   = ref(false)
+const qrSvg       = ref<string>('')
+const copied      = ref(false)
 const inviteToken = ref<string>('')
 const endpoints   = ref<PeerEndpoint[]>([])
+const showCodes   = ref(false)
+
+// Constraint controls
+const selectedExpiry = ref<number | null>(24 * 60 * 60 * 1000) // default 24h
+const maxUsesInput   = ref<string>('')
 
 const server = computed(() =>
   uiStore.inviteServerId ? serversStore.servers[uiStore.inviteServerId] : null
 )
 
+const activeCodes = computed((): InviteCode[] => {
+  if (!server.value) return []
+  const now = Date.now()
+  return [...serversStore.inviteCodes.values()].filter(c =>
+    c.serverId === server.value!.id &&
+    (c.expiresAt == null || new Date(c.expiresAt).getTime() > now)
+  )
+})
+
 const inviteLink = computed((): string => {
   if (!server.value || !inviteToken.value) return ''
-
   const invite: PeerInvite = {
     v:             2,
     userId:        identityStore.userId        ?? '',
@@ -79,7 +133,6 @@ const inviteLink = computed((): string => {
     serverName:    server.value.name,
     inviteToken:   inviteToken.value,
   }
-
   const encoded = btoa(JSON.stringify(invite))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
   return `gamechat://join/${encoded}`
@@ -89,31 +142,50 @@ watch(() => uiStore.showInviteModal, async (open) => {
   if (!open) return
   if (!server.value) return
 
-  // Generate a fresh invite token for this session.
-  inviteToken.value = serversStore.createInviteToken(server.value.id)
+  // Load existing codes from DB for this server
+  await serversStore.loadInviteCodes(server.value.id)
 
-  // Discover local endpoints (LAN IP:port from the signal server).
+  // Generate a fresh code for immediate use
+  await generateNewLink()
+
+  // Discover local endpoints
   try {
     const raw = await invoke<Array<{ type: string; addr: string; port: number }>>('lan_get_local_addrs')
     endpoints.value = raw.map(e => ({ type: e.type as PeerEndpoint['type'], addr: e.addr, port: e.port }))
   } catch {
     endpoints.value = []
   }
+})
 
-  // Render QR code once we have everything.
-  if (inviteLink.value) {
-    try {
-      qrSvg.value = await QRCode.toString(inviteLink.value, {
-        type: 'svg',
-        margin: 1,
-        width: 140,
-        errorCorrectionLevel: 'L',
-      })
-    } catch {
-      qrSvg.value = ''
-    }
+watch(inviteLink, async (link) => {
+  if (!link) { qrSvg.value = ''; return }
+  try {
+    qrSvg.value = await QRCode.toString(link, {
+      type: 'svg',
+      margin: 1,
+      width: 140,
+      errorCorrectionLevel: 'L',
+    })
+  } catch {
+    qrSvg.value = ''
   }
 })
+
+async function generateNewLink() {
+  if (!server.value) return
+  const maxUses = maxUsesInput.value ? parseInt(maxUsesInput.value, 10) : null
+  inviteToken.value = await serversStore.createInviteToken(server.value.id, {
+    expiresInMs: selectedExpiry.value,
+    maxUses,
+  })
+}
+
+async function revokeCode(code: string) {
+  await serversStore.revokeInviteCode(code)
+  if (inviteToken.value === code) {
+    inviteToken.value = ''
+  }
+}
 
 async function copyLink() {
   try {
@@ -123,6 +195,16 @@ async function copyLink() {
   } catch {
     // clipboard not available
   }
+}
+
+function formatExpiry(expiresAt: string | null): string {
+  if (!expiresAt) return 'Never'
+  const ms = new Date(expiresAt).getTime() - Date.now()
+  if (ms <= 0) return 'Expired'
+  const hours = Math.floor(ms / 3_600_000)
+  const days  = Math.floor(hours / 24)
+  if (days >= 1) return `${days}d`
+  return `${hours}h`
 }
 
 function close() {
@@ -146,7 +228,7 @@ function close() {
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: var(--spacing-xl);
-  width: 400px;
+  width: 420px;
   max-width: 90vw;
   display: flex;
   flex-direction: column;
@@ -176,7 +258,6 @@ function close() {
   font-size: 14px;
   color: var(--text-secondary);
 }
-.modal-hint.small { font-size: 12px; }
 
 .qr-wrapper {
   display: flex;
@@ -195,6 +276,8 @@ function close() {
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--text-secondary);
+  display: block;
+  margin-bottom: 4px;
 }
 
 .link-row {
@@ -225,6 +308,110 @@ function close() {
   align-items: center;
 }
 .btn-copy:hover { background: var(--bg-primary); }
+
+/* Constraint controls */
+.constraints-row {
+  display: flex;
+  gap: var(--spacing-md);
+}
+
+.constraint-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.select-input {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 8px var(--spacing-md);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+.select-input:focus { border-color: var(--accent-color); }
+
+.constraint-input {
+  flex: none;
+  width: 100%;
+  padding: 8px var(--spacing-md);
+}
+.constraint-input:focus { border-color: var(--accent-color); }
+
+.btn-generate {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 8px var(--spacing-md);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+.btn-generate:hover { background: var(--bg-primary); }
+
+/* Active codes list */
+.codes-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.codes-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  text-align: left;
+}
+.codes-toggle:hover { color: var(--text-primary); }
+.codes-toggle svg { transition: transform 0.15s; }
+
+.codes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.code-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 6px 8px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.code-slug {
+  font-family: monospace;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.code-uses, .code-expiry {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.btn-revoke {
+  background: none;
+  border: 1px solid var(--error-color, #f04747);
+  border-radius: 3px;
+  color: var(--error-color, #f04747);
+  font-size: 11px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.btn-revoke:hover { background: var(--error-color, #f04747); color: white; }
 
 .modal-actions {
   display: flex;

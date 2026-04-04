@@ -86,6 +86,14 @@ pub fn run() {
             db_revoke_device,
             // Channel management
             db_delete_channel,
+            // Invite codes
+            db_save_invite_code,
+            db_load_invite_codes,
+            db_increment_invite_use_count,
+            db_delete_invite_code,
+            // Moderation audit log
+            db_save_mod_log_entry,
+            db_load_mod_log,
             // Attachments (Phase 5b)
             get_attachment_path,
             has_attachment,

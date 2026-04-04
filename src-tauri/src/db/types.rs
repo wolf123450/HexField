@@ -88,3 +88,26 @@ pub struct DeviceRow {
     pub revoked: bool,
     pub created_at: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InviteCodeRow {
+    pub code: String,
+    pub server_id: String,
+    pub created_by: String,
+    pub max_uses: Option<i64>,
+    pub use_count: i64,
+    pub expires_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModLogRow {
+    pub id: String,
+    pub server_id: String,
+    pub action: String,
+    pub target_id: String,
+    pub issued_by: String,
+    pub reason: Option<String>,
+    pub detail: Option<String>,
+    pub created_at: String,
+}
