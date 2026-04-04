@@ -402,6 +402,50 @@ export const useServersStore = defineStore('servers', () => {
     useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
   }
 
+  async function voiceMuteMember(serverId: string, targetId: string, reason: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const myId = useIdentityStore().userId!
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'voice_mute',
+      targetId,
+      channelId:  '',
+      authorId:   myId,
+      newContent: JSON.stringify({ reason }),
+      logicalTs:  new Date().toISOString(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    await logModAction(serverId, 'voice_mute', targetId, reason || undefined)
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+  }
+
+  async function voiceUnmuteMember(serverId: string, targetId: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const myId = useIdentityStore().userId!
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'voice_unmute',
+      targetId,
+      channelId:  '',
+      authorId:   myId,
+      newContent: JSON.stringify({}),
+      logicalTs:  new Date().toISOString(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    await logModAction(serverId, 'voice_unmute', targetId)
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+  }
+
   /**
    * Bootstrap a server locally from a self-contained ServerManifest decoded
    * from an invite link.  Idempotent — calling it again for the same server
@@ -696,5 +740,7 @@ export const useServersStore = defineStore('servers', () => {
     loadBans,
     isBanned,
     kickFromVoice,
+    voiceMuteMember,
+    voiceUnmuteMember,
   }
 })

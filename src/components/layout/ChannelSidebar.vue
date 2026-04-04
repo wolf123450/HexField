@@ -123,6 +123,16 @@
       @cancel="voiceKickModal.show = false"
     />
 
+    <!-- Admin-mute confirm modal (admin-only) -->
+    <ModerationActionModal
+      :show="voiceMuteModal.show"
+      title="Admin mute in voice"
+      :body="`Mute ${voiceMuteModal.displayName} in voice? They won't be able to unmute themselves.`"
+      confirm-label="Admin mute"
+      @confirm="doVoiceMute"
+      @cancel="voiceMuteModal.show = false"
+    />
+
     <!-- Per-channel notification popover -->
     <ChannelNotifPopover
       v-if="channelNotifState"
@@ -242,9 +252,41 @@ const voiceKickModal = ref<{
   displayName: string
 }>({ show: false, targetId: '', channelId: '', displayName: '' })
 
+const voiceMuteModal = ref<{
+  show: boolean
+  targetId: string
+  muting: boolean
+  displayName: string
+}>({ show: false, targetId: '', muting: true, displayName: '' })
+
 function onVoicePeerContextMenu(e: MouseEvent, userId: string, channelId: string) {
   const items: MenuItem[] = []
   if (isAdmin.value) {
+    const peer = voiceStore.peers[userId]
+    const isAdminMuted = peer?.adminMuted === true
+    if (!isAdminMuted) {
+      items.push({
+        type: 'action',
+        label: 'Admin mute in voice',
+        callback: () => {
+          voiceMuteModal.value = {
+            show: true,
+            targetId: userId,
+            muting: true,
+            displayName: peerDisplayName(userId),
+          }
+        },
+      })
+    } else {
+      items.push({
+        type: 'action',
+        label: 'Admin unmute in voice',
+        callback: async () => {
+          const sid = serversStore.activeServerId
+          if (sid) await serversStore.voiceUnmuteMember(sid, userId)
+        },
+      })
+    }
     items.push({
       type: 'action',
       label: 'Kick from voice',
@@ -268,6 +310,14 @@ async function doVoiceKick(reason: string) {
   const { targetId, channelId } = voiceKickModal.value
   voiceKickModal.value.show = false
   await serversStore.kickFromVoice(sid, targetId, channelId, reason)
+}
+
+async function doVoiceMute(reason: string) {
+  const sid = serversStore.activeServerId
+  if (!sid) return
+  const { targetId } = voiceMuteModal.value
+  voiceMuteModal.value.show = false
+  await serversStore.voiceMuteMember(sid, targetId, reason)
 }
 
 async function selectChannel(channelId: string) {

@@ -449,6 +449,28 @@ export const useNetworkStore = defineStore('network', () => {
         }
       }
     }
+
+    if (mutation.type === 'voice_mute' || mutation.type === 'voice_unmute') {
+      const muting = mutation.type === 'voice_mute'
+      const { reason } = mutation.newContent ? (JSON.parse(mutation.newContent) as { reason?: string }) : {}
+      const { useVoiceStore } = await import('./voiceStore')
+      const voiceStore = useVoiceStore()
+      const { useIdentityStore } = await import('./identityStore')
+      const myId = useIdentityStore().userId
+
+      if (myId && mutation.targetId === myId) {
+        // I was admin-muted/unmuted
+        voiceStore.setAdminMuted(muting)
+        if (muting) {
+          const { useUIStore } = await import('./uiStore')
+          const msg3 = reason ? `You were muted by an admin: ${reason}` : 'You were muted by an admin'
+          useUIStore().showNotification(msg3, 'warning')
+        }
+      } else {
+        // Another peer was muted/unmuted — update their peer entry
+        voiceStore.updatePeer(mutation.targetId, { adminMuted: muting })
+      }
+    }
   }
 
   async function handleChannelGossip(msg: Record<string, unknown>) {
