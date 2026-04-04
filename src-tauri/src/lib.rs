@@ -96,6 +96,7 @@ pub fn run() {
             lan_start,
             lan_connect_peer,
             lan_get_local_addrs,
+            lan_get_connected_peers,
             // Sync (negentropy set reconciliation)
             sync_initiate,
             sync_respond,
