@@ -120,6 +120,9 @@ pub fn run() {
             // System
             get_app_data_path,
             get_screen_sources,
+            // Maintenance
+            db_prune_expired_bans,
+            db_prune_mod_log,
             // Signaling
             signal_connect,
             signal_disconnect,
