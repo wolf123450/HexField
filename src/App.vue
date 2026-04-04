@@ -34,6 +34,7 @@ import { useMessagesStore } from '@/stores/messagesStore'
 import { useVoiceStore } from '@/stores/voiceStore'
 import { invoke } from '@tauri-apps/api/core'
 import { autoCheckForUpdate } from '@/utils/updateService'
+import { soundService } from '@/services/soundService'
 import { initializeKeyboardShortcuts, registerDefaultShortcuts, keyboardShortcutManager } from '@/utils/keyboard'
 import { createContextMenuResolver } from '@/utils/contextMenuResolver'
 import { APP_ONBOARDING_KEY, APP_NAME } from '@/appConfig'
@@ -142,6 +143,9 @@ onMounted(async () => {
     localStorage.setItem(APP_ONBOARDING_KEY, '1')
     uiStore.showNotification(`Welcome to ${APP_NAME}!`, 'info', 5000)
   }
+
+  // Load custom sound overrides from persisted settings
+  soundService.loadFromSettings(settingsStore.settings.customSounds)
 
   // Auto-update check (deferred)
   setTimeout(() => autoCheckForUpdate(), 10_000)
