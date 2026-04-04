@@ -10,6 +10,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
+import { readFile } from '@tauri-apps/plugin-fs'
 import type { Attachment } from '@/types/core'
 
 export const CHUNK_SIZE = 256 * 1024 // must match Rust CHUNK_SIZE
@@ -199,12 +200,9 @@ export async function createBlobUrl(contentHash: string, mimeType: string): Prom
   const path = await invoke<string | null>('get_attachment_path', { contentHash: hashHex })
   if (!path) return null
 
-  // Use the Tauri asset protocol to load the file
   try {
-    const assetUrl = `https://asset.localhost/${path.replace(/\\/g, '/')}`
-    const resp = await fetch(assetUrl)
-    if (!resp.ok) return null
-    const blob = new Blob([await resp.arrayBuffer()], { type: mimeType })
+    const bytes = await readFile(path)
+    const blob = new Blob([bytes], { type: mimeType })
     return URL.createObjectURL(blob)
   } catch {
     return null
