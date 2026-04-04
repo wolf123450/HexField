@@ -83,6 +83,16 @@ export const useVoiceStore = defineStore('voice', () => {
       channelId,
       serverId,
     })
+    // Notify self: joined voice channel
+    const { useNotificationStore } = await import('./notificationStore')
+    const { useChannelsStore }     = await import('./channelsStore')
+    const ch = Object.values(useChannelsStore().channels).flat().find(c => c.id === channelId)
+    useNotificationStore().notify({
+      type:      'join_self',
+      serverId,
+      channelId,
+      titleText: `You joined ${ch?.name ? `#${ch.name}` : 'voice'}`,
+    }).catch(() => {})
   }
 
   async function leaveVoiceChannel(): Promise<void> {
