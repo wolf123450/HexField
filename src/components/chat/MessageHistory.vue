@@ -32,13 +32,15 @@ import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useMessagesStore } from '@/stores/messagesStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { usePersonalBlocksStore } from '@/stores/personalBlocksStore'
 import MessageBubble from './MessageBubble.vue'
 import TypingIndicator from './TypingIndicator.vue'
 
 const props = defineProps<{ channelId: string }>()
 
-const messagesStore   = useMessagesStore()
-const settingsStore   = useSettingsStore()
+const messagesStore      = useMessagesStore()
+const settingsStore      = useSettingsStore()
+const personalBlocksStore = usePersonalBlocksStore()
 const scrollContainer = ref<HTMLElement | null>(null)
 const topSentinel     = ref<HTMLElement | null>(null)
 const atBottom        = ref(true)
@@ -48,7 +50,8 @@ const allMessages = computed(() => {
   const pending   = messagesStore.pendingMessages[props.channelId] ?? []
   const showDeleted = settingsStore.settings.showDeletedMessagePlaceholder
   const filtered = showDeleted ? confirmed : confirmed.filter(m => m.content !== null)
-  return [...filtered, ...pending]
+  const unblocked = filtered.filter(m => !personalBlocksStore.isBlocked(m.authorId))
+  return [...unblocked, ...pending]
 })
 
 const virtualizer = useVirtualizer(computed(() => ({

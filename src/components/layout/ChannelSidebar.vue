@@ -198,6 +198,7 @@ import { useIdentityStore } from '@/stores/identityStore'
 import { useVoiceStore } from '@/stores/voiceStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useNetworkStore } from '@/stores/networkStore'
+import { usePersonalBlocksStore } from '@/stores/personalBlocksStore'
 import VoiceBar from '@/components/chat/VoiceBar.vue'
 import ChannelNotifPopover from '@/components/layout/ChannelNotifPopover.vue'
 import ModerationActionModal from '@/components/modals/ModerationActionModal.vue'
@@ -211,7 +212,8 @@ const messagesStore = useMessagesStore()
 const identityStore = useIdentityStore()
 const voiceStore    = useVoiceStore()
 const uiStore       = useUIStore()
-const networkStore  = useNetworkStore()
+const networkStore        = useNetworkStore()
+const personalBlocksStore = usePersonalBlocksStore()
 
 function peerDisplayName(userId: string): string {
   const sid = serversStore.activeServerId
@@ -327,6 +329,22 @@ function onVoicePeerContextMenu(e: MouseEvent, userId: string, channelId: string
       },
     })
   }
+
+  // Personal mute/unmute — available for all non-self voice peers
+  const isPersonallyMuted = personalBlocksStore.isMuted(userId)
+  items.push(isPersonallyMuted
+    ? {
+        type: 'action',
+        label: 'Personally unmute',
+        callback: () => personalBlocksStore.unmuteUser(userId),
+      }
+    : {
+        type: 'action',
+        label: 'Personally mute',
+        callback: () => personalBlocksStore.muteUser(userId),
+      }
+  )
+
   if (items.length) uiStore.showContextMenu(e.clientX, e.clientY, items)
 }
 

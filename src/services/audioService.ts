@@ -155,11 +155,28 @@ class AudioService {
     }, 100)
 
     this.peers.set(userId, { element, context, gainNode, analyser, interval, notSpeakingTimer })
+
+    // Re-apply personal mute if this peer was already personally muted before connecting
+    import('@/stores/personalBlocksStore').then(({ usePersonalBlocksStore }) => {
+      const store = usePersonalBlocksStore()
+      if (store.isMuted(userId)) gainNode.gain.value = 0
+    })
   }
 
   setPeerVolume(userId: string, volume: number): void {
     const entry = this.peers.get(userId)
     if (entry) entry.gainNode.gain.value = Math.max(0, volume)
+  }
+
+  /**
+   * Silence (or restore) a specific peer's audio without detaching the stream.
+   * Used for personal (client-side) voice mute. The peer is unaware.
+   */
+  setPersonallyMuted(userId: string, muted: boolean): void {
+    const entry = this.peers.get(userId)
+    if (entry) {
+      entry.gainNode.gain.value = muted ? 0 : 1
+    }
   }
 
   detachRemoteStream(userId: string): void {

@@ -58,6 +58,10 @@ export const useIdentityStore = defineStore('identity', () => {
     // Initialise per-device keypair (separate from identity keypair)
     const { useDevicesStore } = await import('./devicesStore')
     await useDevicesStore().initDeviceIdentity(userId.value!)
+
+    // Initialise personal blocks/mutes (localStorage-backed, keyed by userId)
+    const { usePersonalBlocksStore } = await import('./personalBlocksStore')
+    usePersonalBlocksStore().init(userId.value!)
   }
 
   async function updateDisplayName(name: string) {
