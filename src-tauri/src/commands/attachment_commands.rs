@@ -604,4 +604,78 @@ mod tests {
             "new attachment must survive pruning"
         );
     }
+
+    //  6. Storage usage: total_attachment_bytes sums .bin file sizes exactly 
+
+    #[test]
+    fn total_bytes_reflects_actual_file_sizes() {
+        let dir = TempDir::new();
+
+        // Write two attachments of known sizes
+        let data_a = vec![0xAAu8; 1024]; // 1 KiB
+        let hash_a = blake3_hash(data_a.clone());
+        save_attachment_to(&dir.0, &hash_a, &data_a).unwrap();
+
+        let data_b = vec![0xBBu8; 2048]; // 2 KiB
+        let hash_b = blake3_hash(data_b.clone());
+        save_attachment_to(&dir.0, &hash_b, &data_b).unwrap();
+
+        let total = total_attachment_bytes(&dir.0);
+        assert_eq!(total, 3072, "total_attachment_bytes must equal sum of .bin file sizes");
+    }
+
+    #[test]
+    fn total_bytes_zero_on_empty_dir() {
+        let dir = TempDir::new();
+        assert_eq!(total_attachment_bytes(&dir.0), 0);
+    }
+
+    //  7. Storage limit pruning: prune_to_limit deletes oldest-first 
+
+    #[test]
+    fn prune_to_limit_deletes_oldest_first() {
+        let dir = TempDir::new();
+
+        // Write two attachments of 2000 bytes each → 4000 bytes total
+        let data_old = vec![0x01u8; 2000];
+        let hash_old = blake3_hash(data_old.clone());
+        save_attachment_to(&dir.0, &hash_old, &data_old).unwrap();
+
+        let data_new = vec![0x02u8; 2000];
+        let hash_new = blake3_hash(data_new.clone());
+        save_attachment_to(&dir.0, &hash_new, &data_new).unwrap();
+
+        // Backdate the "old" file so prune_to_limit sees it as older
+        let one_hour_ago = SystemTime::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(bin_path(&dir.0, &hash_old))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(one_hour_ago))
+            .unwrap();
+
+        // Limit to 2500 bytes — old file (2000 B) must be pruned to get under 4000 > 2500
+        let pruned = prune_to_limit(&dir.0, 2500).unwrap();
+
+        assert_eq!(pruned.len(), 1, "exactly one file should be pruned");
+        assert_eq!(pruned[0], hash_old, "the older file must be pruned first");
+        assert!(!bin_path(&dir.0, &hash_old).exists(), "old file must be deleted");
+        assert!(bin_path(&dir.0, &hash_new).exists(), "newer file must survive");
+        assert_eq!(total_attachment_bytes(&dir.0), 2000, "remaining usage must equal the kept file");
+    }
+
+    #[test]
+    fn prune_to_limit_no_op_when_already_under_limit() {
+        let dir = TempDir::new();
+        let data = vec![0xCCu8; 500];
+        let hash = blake3_hash(data.clone());
+        save_attachment_to(&dir.0, &hash, &data).unwrap();
+
+        // Limit of 1000 is larger than the 500-byte file — nothing should be pruned
+        let pruned = prune_to_limit(&dir.0, 1000).unwrap();
+        assert!(pruned.is_empty(), "no pruning when already under limit");
+        assert!(bin_path(&dir.0, &hash).exists());
+    }
 }
