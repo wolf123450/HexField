@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 import { logger } from "@/utils/logger";
 import { APP_STORAGE_PREFIX } from "@/appConfig";
+import type { ServerNotificationPrefs, ChannelNotificationPrefs, KeywordFilter, SoundEvent } from '@/types/core'
 
 export const CUSTOMIZABLE_VARS = [
   // Surfaces
@@ -64,6 +65,12 @@ export interface UserSettings {
   rendezvousServerUrl: string;
   soundEnabled: boolean;
   notificationsEnabled: boolean;
+  // Per-server / channel notification rules
+  serverNotificationPrefs:  Record<string, ServerNotificationPrefs>;
+  channelNotificationPrefs: Record<string, ChannelNotificationPrefs>;
+  keywordFilters:           KeywordFilter[];
+  // Per-event custom sound overrides (data: URLs)
+  customSounds:             Partial<Record<SoundEvent, string>>;
 }
 
 const STORAGE_KEY = APP_STORAGE_PREFIX + 'settings'
@@ -104,6 +111,10 @@ const defaultSettings: UserSettings = {
   rendezvousServerUrl: '',
   soundEnabled: true,
   notificationsEnabled: true,
+  serverNotificationPrefs:  {},
+  channelNotificationPrefs: {},
+  keywordFilters:           [],
+  customSounds:             {},
 };
 
 function loadFromStorage(): UserSettings {
