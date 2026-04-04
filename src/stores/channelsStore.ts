@@ -41,6 +41,12 @@ export const useChannelsStore = defineStore('channels', () => {
       },
     })
     channels.value[serverId] = [...existing, channel]
+    // Broadcast to all connected peers so they get the new channel immediately.
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({
+      type:     'channel_gossip',
+      channel:  channel,
+    })
     return channel
   }
 
@@ -73,12 +79,24 @@ export const useChannelsStore = defineStore('channels', () => {
     activeChannelId.value = channelId
   }
 
-  function applyChannelMutation(mutation: Mutation) {
+  async function applyChannelMutation(mutation: Mutation) {
     if (mutation.type === 'channel_create' && mutation.newContent) {
       const ch: Channel = JSON.parse(mutation.newContent)
       const list = channels.value[ch.serverId] ?? []
       if (!list.find(c => c.id === ch.id)) {
         channels.value[ch.serverId] = [...list, ch]
+        // Persist so the channel survives restart
+        await invoke('db_save_channel', {
+          channel: {
+            id:         ch.id,
+            server_id:  ch.serverId,
+            name:       ch.name,
+            type:       ch.type,
+            position:   ch.position,
+            topic:      ch.topic ?? null,
+            created_at: new Date().toISOString(),
+          },
+        })
       }
     } else if (mutation.type === 'channel_update' && mutation.newContent) {
       const patch = JSON.parse(mutation.newContent)
@@ -90,7 +108,28 @@ export const useChannelsStore = defineStore('channels', () => {
       for (const [sid, list] of Object.entries(channels.value)) {
         channels.value[sid] = list.filter(c => c.id !== mutation.targetId)
       }
+      await invoke('db_delete_channel', { channelId: mutation.targetId })
     }
+  }
+
+  /**
+   * Receive a channel_gossip wire message from a peer: persist + add to in-memory list.
+   */
+  async function receiveChannelGossip(channel: Channel) {
+    const list = channels.value[channel.serverId] ?? []
+    if (list.find(c => c.id === channel.id)) return  // already known
+    channels.value[channel.serverId] = [...list, channel]
+    await invoke('db_save_channel', {
+      channel: {
+        id:         channel.id,
+        server_id:  channel.serverId,
+        name:       channel.name,
+        type:       channel.type,
+        position:   channel.position,
+        topic:      channel.topic ?? null,
+        created_at: new Date().toISOString(),
+      },
+    })
   }
 
   return {
@@ -102,5 +141,6 @@ export const useChannelsStore = defineStore('channels', () => {
     renameChannel,
     setActiveChannel,
     applyChannelMutation,
+    receiveChannelGossip,
   }
 })

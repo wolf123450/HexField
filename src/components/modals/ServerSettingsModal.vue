@@ -56,6 +56,60 @@
           </p>
         </section>
 
+        <!-- Notification preferences for this server -->
+        <section v-if="server" class="settings-section">
+          <h3 class="section-title">NOTIFICATIONS</h3>
+
+          <div class="notif-row">
+            <label class="notif-label">Notification level</label>
+            <select class="notif-select" :value="serverNotifLevel" @change="setServerLevel(($event.target as HTMLSelectElement).value as NotificationLevel)">
+              <option value="all">All Messages</option>
+              <option value="mentions">Only Mentions</option>
+              <option value="muted">Muted</option>
+            </select>
+          </div>
+
+          <div v-if="serverMuteActive" class="notif-mute-badge">
+            <span v-if="serverMuteUntil === Number.MAX_SAFE_INTEGER">Muted indefinitely</span>
+            <span v-else>Muted until {{ new Date(serverMuteUntil!).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
+            <button class="notif-clear-btn" @click="clearServerMute">&#x2715;</button>
+          </div>
+
+          <div class="notif-mute-row">
+            <label class="notif-label">Temporary mute</label>
+            <div class="notif-mute-btns">
+              <button class="btn-secondary-sm" @click="setServerMute(3_600_000)">1 hour</button>
+              <button class="btn-secondary-sm" @click="setServerMute(8 * 3_600_000)">8 hours</button>
+              <button class="btn-secondary-sm" @click="setServerMute(24 * 3_600_000)">24 hours</button>
+              <button class="btn-secondary-sm" @click="setServerMute(-1)">Until I unmute</button>
+            </div>
+          </div>
+
+          <!-- Keyword filters scoped to this server -->
+          <div class="notif-keywords">
+            <div class="notif-label" style="margin-bottom:6px">Keyword filters for this server</div>
+            <div class="notif-keyword-add">
+              <input
+                v-model="newKeyword"
+                class="notif-keyword-input"
+                placeholder="Add keyword…"
+                maxlength="80"
+                @keydown.enter="addKeyword"
+              />
+              <button class="btn-primary-sm" :disabled="!newKeyword.trim()" @click="addKeyword">Add</button>
+            </div>
+            <div v-if="serverKeywords.length === 0" class="section-hint">
+              No keywords for this server.
+            </div>
+            <div v-for="kf in serverKeywords" :key="kf.id" class="notif-keyword-row">
+              <span class="notif-keyword-text">{{ kf.keyword }}</span>
+              <button class="notif-clear-btn" title="Remove" @click="removeKeyword(kf.id)">
+                <AppIcon :path="mdiTrashCan" :size="13" />
+              </button>
+            </div>
+          </div>
+        </section>
+
         <!-- Danger zone (placeholder) -->
         <section v-if="isAdmin" class="settings-section settings-section--danger">
           <h3 class="section-title">DANGER ZONE</h3>
@@ -74,16 +128,20 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { mdiClose, mdiCamera, mdiAccountPlus } from '@mdi/js'
+import { mdiClose, mdiCamera, mdiAccountPlus, mdiTrashCan } from '@mdi/js'
+import { v7 as uuidv7 } from 'uuid'
 import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import { useNetworkStore } from '@/stores/networkStore'
+import { useSettingsStore } from '@/stores/settingsStore'
+import type { NotificationLevel } from '@/types/core'
 
 const uiStore       = useUIStore()
 const serversStore  = useServersStore()
 const identityStore = useIdentityStore()
 const networkStore  = useNetworkStore()
+const settingsStore = useSettingsStore()
 
 const iconInput = ref<HTMLInputElement | null>(null)
 
@@ -109,7 +167,74 @@ function openInvite() {
   uiStore.openInviteModal(sid)
 }
 
-// ── Icon upload ──────────────────────────────────────────────────────────────
+// ── Per-server notification prefs ────────────────────────────────────────────
+
+const serverNotifPrefs = computed(() => {
+  const sid = uiStore.settingsServerId
+  if (!sid) return undefined
+  return settingsStore.settings.serverNotificationPrefs[sid]
+})
+
+const serverNotifLevel = computed<NotificationLevel>(() => serverNotifPrefs.value?.level ?? 'mentions')
+const serverMuteUntil  = computed(() => serverNotifPrefs.value?.muteUntil)
+const serverMuteActive = computed(() => {
+  const mu = serverMuteUntil.value
+  return mu !== undefined && mu > Date.now()
+})
+
+function setServerLevel(level: NotificationLevel) {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  const existing = settingsStore.settings.serverNotificationPrefs
+  settingsStore.updateSetting('serverNotificationPrefs', {
+    ...existing,
+    [sid]: { ...(serverNotifPrefs.value ?? {}), level },
+  })
+}
+
+function setServerMute(ms: number) {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  const existing = settingsStore.settings.serverNotificationPrefs
+  settingsStore.updateSetting('serverNotificationPrefs', {
+    ...existing,
+    [sid]: { ...(serverNotifPrefs.value ?? { level: 'mentions' }), muteUntil: ms === -1 ? Number.MAX_SAFE_INTEGER : Date.now() + ms },
+  })
+}
+
+function clearServerMute() {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  const existing = settingsStore.settings.serverNotificationPrefs
+  const updated = { ...(serverNotifPrefs.value ?? { level: 'mentions' as NotificationLevel }), muteUntil: undefined }
+  settingsStore.updateSetting('serverNotificationPrefs', { ...existing, [sid]: updated })
+}
+
+// ── Keyword filters for this server ──────────────────────────────────────────
+
+const newKeyword = ref('')
+
+const serverKeywords = computed(() => {
+  const sid = uiStore.settingsServerId
+  if (!sid) return []
+  return settingsStore.settings.keywordFilters.filter(kf => kf.serverId === sid)
+})
+
+function addKeyword() {
+  const sid = uiStore.settingsServerId
+  const kw = newKeyword.value.trim()
+  if (!sid || !kw) return
+  settingsStore.updateSetting('keywordFilters', [
+    ...settingsStore.settings.keywordFilters,
+    { id: uuidv7(), keyword: kw, serverId: sid },
+  ])
+  newKeyword.value = ''
+}
+
+function removeKeyword(id: string) {
+  settingsStore.updateSetting('keywordFilters', settingsStore.settings.keywordFilters.filter(kf => kf.id !== id))
+}
+
 
 const SERVER_ICON_DIM        = 64
 const SERVER_ICON_MAX_GIF    = 512 * 1024
@@ -346,4 +471,19 @@ function readAsDataUrl(file: File): Promise<string> {
   cursor: pointer;
 }
 .btn-primary:hover { filter: brightness(1.1); }
+
+/* ── Notification prefs section ─────────────────────────────────────────── */
+.notif-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--spacing-sm); }
+.notif-label { font-size: 13px; color: var(--text-secondary); }
+.notif-select { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; padding: 4px 8px; font-size: 13px; }
+.notif-mute-badge { display: inline-flex; align-items: center; gap: var(--spacing-xs); font-size: 12px; color: var(--text-secondary); background: var(--bg-tertiary); border-radius: 4px; padding: 3px 8px; margin-bottom: var(--spacing-sm); }
+.notif-clear-btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 0; display: inline-flex; align-items: center; }
+.notif-clear-btn:hover { color: var(--text-primary); }
+.notif-mute-row { margin-bottom: var(--spacing-md); }
+.notif-mute-btns { display: flex; flex-wrap: wrap; gap: var(--spacing-xs); margin-top: 4px; }
+.notif-keywords { margin-top: var(--spacing-sm); }
+.notif-keyword-add { display: flex; gap: var(--spacing-sm); margin-bottom: var(--spacing-sm); }
+.notif-keyword-input { flex: 1; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; padding: 5px 8px; font-size: 13px; }
+.notif-keyword-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border-color); font-size: 13px; color: var(--text-primary); }
+.notif-keyword-text { font-family: monospace; }
 </style>

@@ -12,7 +12,7 @@
       <div class="channel-category-row">
         <span class="channel-category-label">TEXT CHANNELS</span>
         <button
-          v-if="serversStore.activeServerId"
+          v-if="isAdmin"
           class="add-channel-btn"
           title="Add text channel"
           @click="promptAddChannel('text')"
@@ -36,7 +36,7 @@
       <div v-if="voiceChannels.length || serversStore.activeServerId" class="channel-category-row" style="margin-top: var(--spacing-sm)">
         <span class="channel-category-label">VOICE CHANNELS</span>
         <button
-          v-if="serversStore.activeServerId"
+          v-if="isAdmin"
           class="add-channel-btn"
           title="Add voice channel"
           @click="promptAddChannel('voice')"
@@ -214,6 +214,13 @@ const serverChannels = computed(() =>
 const textChannels  = computed(() => serverChannels.value.filter(c => c.type === 'text' || c.type === 'announcement'))
 const voiceChannels = computed(() => serverChannels.value.filter(c => c.type === 'voice'))
 
+const isAdmin = computed(() => {
+  const sid = serversStore.activeServerId
+  const uid = identityStore.userId
+  if (!sid || !uid) return false
+  return serversStore.members[sid]?.[uid]?.roles.some(r => r === 'admin' || r === 'owner') ?? false
+})
+
 async function selectChannel(channelId: string) {
   channelsStore.setActiveChannel(channelId)
   messagesStore.markChannelRead(channelId)
@@ -248,6 +255,7 @@ function unread(channelId: string): number {
 async function promptAddChannel(type: ChannelType) {
   const serverId = serversStore.activeServerId
   if (!serverId) return
+  if (!isAdmin.value) return  // guard: only admins/owners can create channels
   const rawName = window.prompt(type === 'voice' ? 'Voice channel name:' : 'Channel name:')
   if (!rawName?.trim()) return
   const channel = await channelsStore.createChannel(serverId, rawName.trim(), type)
@@ -264,25 +272,32 @@ const renameInput        = ref<HTMLInputElement | null>(null)
 const channelNotifState  = ref<{ channelId: string; serverId: string; x: number; y: number } | null>(null)
 
 function openChannelMenu(e: MouseEvent, channelId: string) {
-  const items: MenuItem[] = [
-    {
+  const items: MenuItem[] = []
+
+  if (isAdmin.value) {
+    items.push({
       type: 'action',
       label: 'Rename',
       callback: () => startRename(channelId),
-    },
-    {
-      type: 'action',
-      label: 'Notification settings',
-      callback: () => openChannelNotifPopover(e, channelId),
-    },
-    { type: 'separator' },
-    {
+    })
+  }
+
+  items.push({
+    type: 'action',
+    label: 'Notification settings',
+    callback: () => openChannelNotifPopover(e, channelId),
+  })
+
+  if (isAdmin.value) {
+    items.push({ type: 'separator' })
+    items.push({
       type: 'action',
       label: 'Delete Channel',
       danger: true,
       callback: () => deleteChannel(channelId),
-    },
-  ]
+    })
+  }
+
   uiStore.showContextMenu(e.clientX, e.clientY, items)
 }
 
