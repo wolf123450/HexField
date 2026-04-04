@@ -713,6 +713,7 @@ mod tests {
                 public_sign_key: row.get(5)?,
                 public_dh_key:   row.get(6)?,
                 online_status:   row.get(7)?,
+                avatar_data_url: None,
             }),
         ).ok()
     }
@@ -868,6 +869,7 @@ mod tests {
             public_sign_key: "sign-pub".to_string(),
             public_dh_key:   "dh-pub".to_string(),
             online_status:   "online".to_string(),
+            avatar_data_url: None,
         };
         upsert_member(&conn, &member);
 
@@ -1012,6 +1014,7 @@ mod tests {
             public_sign_key: "original-sign-key".to_string(),
             public_dh_key:   "original-dh-key".to_string(),
             online_status:   "online".to_string(),
+            avatar_data_url: None,
         };
         upsert_member(&conn, &original);
 

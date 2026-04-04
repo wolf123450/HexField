@@ -96,6 +96,7 @@ pub fn run() {
             get_received_chunks,
             blake3_hash,
             delete_attachment,
+            prune_attachments,
             // System
             get_app_data_path,
             get_screen_sources,
