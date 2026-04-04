@@ -32,8 +32,8 @@
         <!-- Mute -->
         <button
           class="ctrl-btn"
-          :class="{ active: voiceStore.isMuted }"
-          :title="voiceStore.isMuted ? 'Unmute (Ctrl+Shift+M)' : 'Mute (Ctrl+Shift+M)'"
+          :class="{ active: voiceStore.isMuted, 'admin-muted': voiceStore.adminMuted }"
+          :title="voiceStore.adminMuted ? 'Muted by admin' : voiceStore.isMuted ? 'Unmute (Ctrl+Shift+M)' : 'Mute (Ctrl+Shift+M)'"
           @click="voiceStore.toggleMute()"
         >
           <AppIcon :path="voiceStore.isMuted ? mdiMicrophoneOff : mdiMicrophone" :size="18" />
@@ -207,6 +207,12 @@ async function toggleScreenShare() {
 .ctrl-btn.active {
   color: var(--accent-color);
   background: rgba(88, 101, 242, 0.15);
+}
+
+.ctrl-btn.admin-muted {
+  color: #f0b232;
+  background: rgba(240, 178, 50, 0.15);
+  cursor: not-allowed;
 }
 
 .ctrl-btn.disconnect {

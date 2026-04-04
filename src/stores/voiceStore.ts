@@ -14,6 +14,7 @@ export const useVoiceStore = defineStore('voice', () => {
   const screenStreams    = ref<Record<string, MediaStream>>({}) // remote screen shares keyed by userId
   const isMuted         = ref<boolean>(false)
   const isDeafened      = ref<boolean>(false)
+  const adminMuted      = ref<boolean>(false)
   const loopbackEnabled = ref<boolean>(false)
   const voiceViewActive = ref<boolean>(false) // false = minimised → show text channel
   const peers              = ref<Record<string, Peer>>({})
@@ -59,6 +60,7 @@ export const useVoiceStore = defineStore('voice', () => {
     localStream.value = stream
     isMuted.value     = false
     isDeafened.value  = false
+    adminMuted.value  = false
     audioService.setLocalStream(stream)
     audioService.setLocalMuted(false)
     audioService.setDeafened(false)
@@ -117,6 +119,7 @@ export const useVoiceStore = defineStore('voice', () => {
     peers.value           = {}
     isMuted.value         = false
     isDeafened.value      = false
+    adminMuted.value      = false
     loopbackEnabled.value = false
     speakingPeers.value   = new Set()
     // Don't wipe peerVoiceChannels on leave — peers may still be in voice
@@ -125,8 +128,17 @@ export const useVoiceStore = defineStore('voice', () => {
   // ── Mute / Deafen ─────────────────────────────────────────────────────────
 
   function toggleMute(): void {
+    if (adminMuted.value) return  // Can't unmute while admin-muted
     isMuted.value = !isMuted.value
     audioService.setLocalMuted(isMuted.value)
+  }
+
+  function setAdminMuted(muted: boolean): void {
+    adminMuted.value = muted
+    if (muted) {
+      isMuted.value = true
+      audioService.setLocalMuted(true)
+    }
   }
 
   function toggleDeafen(): void {
@@ -271,6 +283,7 @@ export const useVoiceStore = defineStore('voice', () => {
     screenStreams,
     isMuted,
     isDeafened,
+    adminMuted,
     loopbackEnabled,
     voiceViewActive,
     peers,
@@ -284,6 +297,7 @@ export const useVoiceStore = defineStore('voice', () => {
     toggleMute,
     toggleDeafen,
     toggleLoopback,
+    setAdminMuted,
     startScreenShare,
     setPeerVoiceChannel,
     clearPeerVoiceChannel,

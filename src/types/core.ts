@@ -177,6 +177,7 @@ export interface Peer {
   videoEnabled:    boolean
   screenSharing:   boolean
   speaking:        boolean
+  adminMuted?:     boolean
 }
 
 export interface VoiceSession {

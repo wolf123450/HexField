@@ -11,7 +11,10 @@
     <div class="avatar-wrap">
       <div class="speaking-ring" />
       <AvatarImage :src="member?.avatarDataUrl ?? null" :name="displayName" :size="36" class="avatar" />
-      <div v-if="!peer.audioEnabled" class="mute-indicator">
+      <div v-if="!peer.audioEnabled && !peer.adminMuted" class="mute-indicator">
+        <AppIcon :path="mdiMicrophoneOff" :size="10" />
+      </div>
+      <div v-if="peer.adminMuted" class="admin-mute-indicator" title="Admin muted">
         <AppIcon :path="mdiMicrophoneOff" :size="10" />
       </div>
       <div v-if="peer.screenSharing" class="screen-indicator">
@@ -105,6 +108,7 @@ const displayName = computed(() => member.value?.displayName ?? props.peer.userI
 }
 
 .mute-indicator,
+.admin-mute-indicator,
 .screen-indicator {
   position: absolute;
   bottom: -2px;
@@ -121,6 +125,11 @@ const displayName = computed(() => member.value?.displayName ?? props.peer.userI
 .mute-indicator {
   background: #ed4245;
   color: white;
+}
+
+.admin-mute-indicator {
+  background: #f0b232;
+  color: #111;
 }
 
 .screen-indicator {
