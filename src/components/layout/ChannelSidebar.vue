@@ -143,6 +143,14 @@
       @close="channelNotifState = null"
     />
 
+    <!-- Channel access settings modal (admin-only) -->
+    <ChannelAccessModal
+      :show="channelAccessState.show"
+      :channelId="channelAccessState.channelId"
+      :serverId="serversStore.activeServerId ?? ''"
+      @close="channelAccessState.show = false"
+    />
+
     <!-- Hidden file input for server icon upload -->
     <!-- NOTE: Icon upload is now handled inside ServerSettingsModal. -->
 
@@ -193,6 +201,7 @@ import { useNetworkStore } from '@/stores/networkStore'
 import VoiceBar from '@/components/chat/VoiceBar.vue'
 import ChannelNotifPopover from '@/components/layout/ChannelNotifPopover.vue'
 import ModerationActionModal from '@/components/modals/ModerationActionModal.vue'
+import ChannelAccessModal from '@/components/modals/ChannelAccessModal.vue'
 import type { ChannelType } from '@/types/core'
 import type { MenuItem } from '@/stores/uiStore'
 
@@ -233,8 +242,25 @@ const serverChannels = computed(() =>
   serversStore.activeServerId ? (channelsStore.channels[serversStore.activeServerId] ?? []) : []
 )
 
-const textChannels  = computed(() => serverChannels.value.filter(c => c.type === 'text' || c.type === 'announcement'))
-const voiceChannels = computed(() => serverChannels.value.filter(c => c.type === 'voice'))
+const myRoles = computed(() => {
+  const sid = serversStore.activeServerId
+  const uid = identityStore.userId
+  if (!sid || !uid) return []
+  return serversStore.members[sid]?.[uid]?.roles ?? []
+})
+
+const textChannels  = computed(() =>
+  serverChannels.value.filter(c =>
+    (c.type === 'text' || c.type === 'announcement') &&
+    (isAdmin.value || channelsStore.isChannelVisible(c.id, identityStore.userId, myRoles.value))
+  )
+)
+const voiceChannels = computed(() =>
+  serverChannels.value.filter(c =>
+    c.type === 'voice' &&
+    (isAdmin.value || channelsStore.isChannelVisible(c.id, identityStore.userId, myRoles.value))
+  )
+)
 
 const isAdmin = computed(() => {
   const sid = serversStore.activeServerId
@@ -369,6 +395,7 @@ async function promptAddChannel(type: ChannelType) {
 const renameState        = ref({ active: false, channelId: '', name: '' })
 const renameInput        = ref<HTMLInputElement | null>(null)
 const channelNotifState  = ref<{ channelId: string; serverId: string; x: number; y: number } | null>(null)
+const channelAccessState = ref<{ show: boolean; channelId: string }>({ show: false, channelId: '' })
 
 function openChannelMenu(e: MouseEvent, channelId: string) {
   const items: MenuItem[] = []
@@ -378,6 +405,11 @@ function openChannelMenu(e: MouseEvent, channelId: string) {
       type: 'action',
       label: 'Rename',
       callback: () => startRename(channelId),
+    })
+    items.push({
+      type: 'action',
+      label: 'Access Settings',
+      callback: () => { channelAccessState.value = { show: true, channelId } },
     })
   }
 

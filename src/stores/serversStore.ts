@@ -446,6 +446,30 @@ export const useServersStore = defineStore('servers', () => {
     useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
   }
 
+  async function updateChannelAcl(serverId: string, acl: import('@/types/core').ChannelACL): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const myId = useIdentityStore().userId!
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'channel_acl_update',
+      targetId:   acl.channelId,
+      channelId:  acl.channelId,
+      authorId:   myId,
+      newContent: JSON.stringify(acl),
+      logicalTs:  new Date().toISOString(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    // Apply locally first
+    const { useChannelsStore } = await import('./channelsStore')
+    await useChannelsStore().persistAndSetAcl(acl)
+
+    const { useNetworkStore: useNet2 } = await import('./networkStore')
+    useNet2().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+  }
+
   /**
    * Bootstrap a server locally from a self-contained ServerManifest decoded
    * from an invite link.  Idempotent — calling it again for the same server
@@ -742,5 +766,6 @@ export const useServersStore = defineStore('servers', () => {
     kickFromVoice,
     voiceMuteMember,
     voiceUnmuteMember,
+    updateChannelAcl,
   }
 })

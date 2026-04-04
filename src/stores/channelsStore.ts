@@ -2,11 +2,12 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
-import type { Channel, ChannelType, Mutation } from '@/types/core'
+import type { Channel, ChannelACL, ChannelType, Mutation } from '@/types/core'
 
 export const useChannelsStore = defineStore('channels', () => {
   const channels        = ref<Record<string, Channel[]>>({})  // keyed by serverId
   const activeChannelId = ref<string | null>(null)
+  const channelAcls     = ref<Record<string, ChannelACL>>({}) // keyed by channelId
 
   async function loadChannels(serverId: string) {
     const rows = await invoke<any[]>('db_load_channels', { serverId })
@@ -18,6 +19,54 @@ export const useChannelsStore = defineStore('channels', () => {
       position:      r.position,
       topic:         r.topic ?? undefined,
     }))
+    await loadChannelAcls(serverId)
+  }
+
+  async function loadChannelAcls(serverId: string) {
+    const rows = await invoke<any[]>('db_load_channel_acls', { serverId })
+    for (const r of rows) {
+      channelAcls.value[r.channel_id] = {
+        channelId:      r.channel_id,
+        allowedRoles:   JSON.parse(r.allowed_roles ?? '[]'),
+        allowedUsers:   JSON.parse(r.allowed_users ?? '[]'),
+        deniedUsers:    JSON.parse(r.denied_users  ?? '[]'),
+        privateChannel: r.private_channel === true || r.private_channel === 1,
+      }
+    }
+  }
+
+  // ACL resolution: returns true if myUserId may access the channel.
+  // Falls back to open if no ACL entry exists or myUserId is unknown.
+  function isChannelVisible(channelId: string, myUserId: string | null, myRoles: string[]): boolean {
+    if (!myUserId) return true
+    const acl = channelAcls.value[channelId]
+    if (!acl) return true
+
+    const { deniedUsers = [], privateChannel = false, allowedUsers = [], allowedRoles = [] } = acl
+
+    // Rule 1: explicitly denied
+    if (deniedUsers.includes(myUserId)) return false
+    // Rule 2: private — only allowed users
+    if (privateChannel) return allowedUsers.includes(myUserId)
+    // Rule 3: allowedUsers whitelist
+    if (allowedUsers.length > 0 && allowedUsers.includes(myUserId)) return true
+    // Rule 4: role gate
+    if (allowedRoles.length > 0) return myRoles.some(r => allowedRoles.includes(r))
+    // Rule 5: default open
+    return true
+  }
+
+  async function persistAndSetAcl(acl: ChannelACL) {
+    channelAcls.value[acl.channelId] = acl
+    await invoke('db_upsert_channel_acl', {
+      acl: {
+        channel_id:      acl.channelId,
+        allowed_roles:   JSON.stringify(acl.allowedRoles ?? []),
+        allowed_users:   JSON.stringify(acl.allowedUsers ?? []),
+        denied_users:    JSON.stringify(acl.deniedUsers  ?? []),
+        private_channel: acl.privateChannel ?? false,
+      },
+    })
   }
 
   async function createChannel(serverId: string, name: string, type: ChannelType = 'text'): Promise<Channel> {
@@ -109,6 +158,9 @@ export const useChannelsStore = defineStore('channels', () => {
         channels.value[sid] = list.filter(c => c.id !== mutation.targetId)
       }
       await invoke('db_delete_channel', { channelId: mutation.targetId })
+    } else if (mutation.type === 'channel_acl_update' && mutation.newContent) {
+      const acl: ChannelACL = JSON.parse(mutation.newContent)
+      await persistAndSetAcl(acl)
     }
   }
 
@@ -135,7 +187,11 @@ export const useChannelsStore = defineStore('channels', () => {
   return {
     channels,
     activeChannelId,
+    channelAcls,
     loadChannels,
+    loadChannelAcls,
+    isChannelVisible,
+    persistAndSetAcl,
     createChannel,
     deleteChannel,
     renameChannel,

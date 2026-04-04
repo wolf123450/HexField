@@ -727,6 +727,53 @@ pub fn db_is_banned(state: State<AppState>, server_id: String, user_id: String) 
     Ok(count > 0)
 }
 
+// ── Channel ACLs ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn db_load_channel_acls(state: State<AppState>, server_id: String) -> Result<Vec<ChannelAclRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT ca.channel_id, ca.allowed_roles, ca.allowed_users, ca.denied_users, ca.private_channel
+         FROM channel_acls ca
+         INNER JOIN channels c ON c.id = ca.channel_id
+         WHERE c.server_id = ?1",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![server_id], |row| {
+        Ok(ChannelAclRow {
+            channel_id:      row.get(0)?,
+            allowed_roles:   row.get(1)?,
+            allowed_users:   row.get(2)?,
+            denied_users:    row.get(3)?,
+            private_channel: row.get::<_, i64>(4)? != 0,
+        })
+    }).map_err(|e| e.to_string())?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn db_upsert_channel_acl(state: State<AppState>, acl: ChannelAclRow) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO channel_acls (channel_id, allowed_roles, allowed_users, denied_users, private_channel)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(channel_id) DO UPDATE SET
+           allowed_roles   = excluded.allowed_roles,
+           allowed_users   = excluded.allowed_users,
+           denied_users    = excluded.denied_users,
+           private_channel = excluded.private_channel",
+        rusqlite::params![
+            acl.channel_id,
+            acl.allowed_roles,
+            acl.allowed_users,
+            acl.denied_users,
+            acl.private_channel as i64,
+        ],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ── System ────────────────────────────────────────────────────────────────────
 
 #[tauri::command]

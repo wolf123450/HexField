@@ -99,6 +99,9 @@ pub fn run() {
             db_load_bans,
             db_delete_ban,
             db_is_banned,
+            // Channel ACLs
+            db_load_channel_acls,
+            db_upsert_channel_acl,
             // Attachments (Phase 5b)
             get_attachment_path,
             has_attachment,
