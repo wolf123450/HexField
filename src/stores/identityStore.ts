@@ -89,6 +89,54 @@ export const useIdentityStore = defineStore('identity', () => {
     }
   }
 
+  /**
+   * Build a portable identity bundle (plain JSON, no passphrase).
+   * The caller is responsible for prompting the user to save the file securely.
+   */
+  async function exportIdentity(): Promise<string> {
+    const signSecret = await invoke<string | null>('db_load_key', { keyId: 'local_sign_secret' })
+    const dhSecret   = await invoke<string | null>('db_load_key', { keyId: 'local_dh_secret' })
+    if (!signSecret || !dhSecret || !userId.value) {
+      throw new Error('Identity not initialised — cannot export.')
+    }
+    return JSON.stringify({
+      v:            1,
+      userId:       userId.value,
+      displayName:  displayName.value,
+      signSecret,
+      dhSecret,
+      exportedAt:   new Date().toISOString(),
+    }, null, 2)
+  }
+
+  /**
+   * Restore identity from a previously exported bundle.
+   * Overwrites current keys in SQLite and restores in-memory state.
+   * The app should reload after this (caller's responsibility).
+   */
+  async function importIdentity(bundleJson: string): Promise<void> {
+    let bundle: { v: number; userId: string; displayName: string; signSecret: string; dhSecret: string }
+    try {
+      bundle = JSON.parse(bundleJson)
+    } catch {
+      throw new Error('Invalid identity file — could not parse JSON.')
+    }
+    if (bundle.v !== 1 || !bundle.userId || !bundle.signSecret || !bundle.dhSecret) {
+      throw new Error('Unsupported or malformed identity bundle.')
+    }
+    // Persist to SQLite (replaces existing keys)
+    await invoke('db_save_key', { keyId: 'local_sign_secret',   keyType: 'sign_secret',   keyData: bundle.signSecret })
+    await invoke('db_save_key', { keyId: 'local_dh_secret',     keyType: 'dh_secret',     keyData: bundle.dhSecret })
+    await invoke('db_save_key', { keyId: 'local_user_id',       keyType: 'user_id',       keyData: bundle.userId })
+    await invoke('db_save_key', { keyId: 'local_display_name',  keyType: 'display_name',  keyData: bundle.displayName ?? displayName.value })
+    // Reload in-memory state
+    await cryptoService.loadKeys(bundle.signSecret, bundle.dhSecret)
+    userId.value        = bundle.userId
+    displayName.value   = bundle.displayName ?? displayName.value
+    publicSignKey.value = cryptoService.getPublicSignKey()
+    publicDHKey.value   = cryptoService.getPublicDHKey()
+  }
+
   return {
     userId,
     displayName,
@@ -104,5 +152,7 @@ export const useIdentityStore = defineStore('identity', () => {
     updateAvatar,
     updateBio,
     updateBanner,
+    exportIdentity,
+    importIdentity,
   }
 })
