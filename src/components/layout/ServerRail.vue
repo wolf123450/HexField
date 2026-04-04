@@ -8,6 +8,7 @@
         :class="{ active: serverId === serversStore.activeServerId }"
         :title="serversStore.servers[serverId]?.name"
         @click="selectServer(serverId)"
+        @contextmenu.prevent="(e) => openServerMenu(e, serverId)"
       >
         <AvatarImage
           :src="serversStore.servers[serverId]?.avatarDataUrl ?? null"
@@ -23,7 +24,7 @@
     </div>
 
     <div class="server-rail-footer">
-      <button class="server-icon add-server" title="Create or join a server" @click="uiStore.showContextMenu(0, 0, addServerMenu)">
+      <button class="server-icon add-server" title="Create or join a server" @click="(e) => uiStore.showContextMenu(e.clientX, e.clientY, addServerMenu)">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
           <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
         </svg>
@@ -59,6 +60,25 @@ function unreadForServer(serverId: string): number {
   const channels = channelsStore.channels[serverId] ?? []
   return channels.reduce((sum, ch) => sum + (messagesStore.unreadCounts[ch.id] ?? 0), 0)
 }
+
+// ── Server icon right-click menu ─────────────────────────────────────────────
+
+function openServerMenu(e: MouseEvent, serverId: string) {
+  uiStore.showContextMenu(e.clientX, e.clientY, [
+    {
+      type: 'action',
+      label: 'Server Settings',
+      callback: () => uiStore.openServerSettings(serverId),
+    },
+    {
+      type: 'action',
+      label: 'Invite People',
+      callback: () => uiStore.openInviteModal(serverId),
+    },
+  ])
+}
+
+// ── Add server footer menu ─────────────────────────────────────────────────────
 
 const addServerMenu: MenuItem[] = [
   {

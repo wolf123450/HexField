@@ -2,7 +2,7 @@
   <aside class="channel-sidebar">
     <div class="server-header">
       <span class="server-name">{{ activeServer?.name ?? 'No server selected' }}</span>
-      <button class="icon-btn" title="Server settings" @click="openServerSettings">
+      <button class="icon-btn" title="Server settings" @contextmenu.prevent="openServerSettings">
         <AppIcon :path="mdiCog" :size="16" />
       </button>
     </div>
@@ -62,7 +62,7 @@
         <div v-if="voiceStore.session?.channelId === ch.id" class="voice-participant" :class="{ speaking: voiceStore.speakingPeers.has('self') }">
           <div class="vp-avatar-wrap">
             <div class="vp-speaking-ring" />
-            <div class="vp-avatar">{{ identityInitials }}</div>
+            <AvatarImage :src="identityStore.avatarDataUrl" :name="identityStore.displayName" :size="24" />
             <div v-if="voiceStore.isMuted" class="vp-mute">
               <AppIcon :path="mdiMicrophoneOff" :size="8" />
             </div>
@@ -78,7 +78,7 @@
         >
           <div class="vp-avatar-wrap">
             <div class="vp-speaking-ring" />
-            <div class="vp-avatar">{{ peerInitials(uid) }}</div>
+            <AvatarImage :src="serversStore.members[serversStore.activeServerId ?? '']?.[uid]?.avatarDataUrl ?? null" :name="peerDisplayName(uid)" :size="24" />
             <div v-if="voiceStore.peers[uid] && !voiceStore.peers[uid].audioEnabled" class="vp-mute">
               <AppIcon :path="mdiMicrophoneOff" :size="8" />
             </div>
@@ -113,13 +113,7 @@
     <VoiceBar />
 
     <!-- Hidden file input for server icon upload -->
-    <input
-      ref="serverIconInput"
-      type="file"
-      accept="image/*,.gif"
-      style="display:none"
-      @change="onServerIconSelected"
-    />
+    <!-- NOTE: Icon upload is now handled inside ServerSettingsModal. -->
 
     <div class="self-panel">
       <div class="self-info">
@@ -183,11 +177,6 @@ function peerDisplayName(userId: string): string {
   return serversStore.members[sid]?.[userId]?.displayName ?? userId.slice(0, 8)
 }
 
-function peerInitials(userId: string): string {
-  const name = peerDisplayName(userId)
-  return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
-}
-
 /**
  * Returns the user IDs of remote peers currently in a given voice channel.
  * When the local user is IN the channel, returns ids from voiceStore.peers (which
@@ -213,11 +202,6 @@ const serverChannels = computed(() =>
 
 const textChannels  = computed(() => serverChannels.value.filter(c => c.type === 'text' || c.type === 'announcement'))
 const voiceChannels = computed(() => serverChannels.value.filter(c => c.type === 'voice'))
-
-const identityInitials = computed(() => {
-  const name = identityStore.displayName || '?'
-  return name.split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()
-})
 
 async function selectChannel(channelId: string) {
   channelsStore.setActiveChannel(channelId)
@@ -266,7 +250,6 @@ async function promptAddChannel(type: ChannelType) {
 
 const renameState        = ref({ active: false, channelId: '', name: '' })
 const renameInput        = ref<HTMLInputElement | null>(null)
-const serverIconInput    = ref<HTMLInputElement | null>(null)
 
 function openChannelMenu(e: MouseEvent, channelId: string) {
   const items: MenuItem[] = [
@@ -312,82 +295,29 @@ async function deleteChannel(channelId: string) {
 
 // ── Server settings ───────────────────────────────────────────────────────────
 
-const SERVER_ICON_DIM = 64
-const SERVER_ICON_MAX_GIF = 512 * 1024   // 512 KB
-const SERVER_ICON_MAX_STATIC = 4 * 1024 * 1024 // 4 MB
-
-function openServerSettings() {
+function openServerSettings(e: MouseEvent) {
   const sid = serversStore.activeServerId
   if (!sid) return
-  const uid = identityStore.userId
-  const isAdmin = uid ? (serversStore.members[sid]?.[uid]?.roles.includes('admin') ?? false) : false
-  const items: MenuItem[] = [
+  uiStore.showContextMenu(e.clientX, e.clientY, [
+    {
+      type: 'action',
+      label: 'Server Settings',
+      callback: () => uiStore.openServerSettings(sid),
+    },
     {
       type: 'action',
       label: 'Invite People',
       callback: () => uiStore.openInviteModal(sid),
     },
-  ]
-  if (isAdmin) {
-    items.push({
-      type: 'action',
-      label: 'Change Server Icon',
-      callback: () => { serverIconInput.value?.click() },
-    })
-  }
-  uiStore.showContextMenu(0, 48, items)
-}
-
-async function onServerIconSelected(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  if (!file) return
-  ;(e.target as HTMLInputElement).value = ''
-  const sid = serversStore.activeServerId
-  if (!sid) return
-
-  if (file.type === 'image/gif') {
-    if (file.size > SERVER_ICON_MAX_GIF) return
-    const dataUrl = await readServerIconAsDataUrl(file)
-    await serversStore.updateServerAvatar(sid, dataUrl)
-    networkStore.broadcastServerAvatar(sid, dataUrl).catch(() => {})
-    return
-  }
-
-  if (file.size > SERVER_ICON_MAX_STATIC) return
-  const objectUrl = URL.createObjectURL(file)
-  const imgEl = new Image()
-  imgEl.onload = async () => {
-    URL.revokeObjectURL(objectUrl)
-    const canvas = document.createElement('canvas')
-    canvas.width  = SERVER_ICON_DIM
-    canvas.height = SERVER_ICON_DIM
-    const ctx = canvas.getContext('2d')!
-    const scale = Math.max(SERVER_ICON_DIM / imgEl.width, SERVER_ICON_DIM / imgEl.height)
-    const w = imgEl.width  * scale
-    const h = imgEl.height * scale
-    ctx.drawImage(imgEl, (SERVER_ICON_DIM - w) / 2, (SERVER_ICON_DIM - h) / 2, w, h)
-    const dataUrl = canvas.toDataURL('image/png', 0.9)
-    await serversStore.updateServerAvatar(sid, dataUrl)
-    networkStore.broadcastServerAvatar(sid, dataUrl).catch(() => {})
-  }
-  imgEl.onerror = () => URL.revokeObjectURL(objectUrl)
-  imgEl.src = objectUrl
-}
-
-function readServerIconAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload  = () => resolve(reader.result as string)
-    reader.onerror = () => reject(new Error('FileReader error'))
-    reader.readAsDataURL(file)
-  })
+  ])
 }
 
 // ── Own status ────────────────────────────────────────────────────────────────
 
 const STATUS_KEY = 'gamechat_own_status'
+const statusKey  = () => identityStore.userId ? `${STATUS_KEY}_${identityStore.userId}` : STATUS_KEY
 const ownStatus = ref<'online' | 'idle' | 'dnd' | 'offline'>(
-  (localStorage.getItem(STATUS_KEY) as any) ?? 'online'
+  (localStorage.getItem(statusKey()) as any) ?? 'online'
 )
 
 function openStatusPicker(e: MouseEvent) {
@@ -402,7 +332,7 @@ function openStatusPicker(e: MouseEvent) {
 
 function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline') {
   ownStatus.value = status
-  localStorage.setItem(STATUS_KEY, status)
+  localStorage.setItem(statusKey(), status)
   // Update member record for every joined server
   const uid = identityStore.userId
   if (!uid) return
@@ -642,20 +572,6 @@ function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline') {
 @keyframes pulse-ring {
   0%, 100% { box-shadow: 0 0 0 2px rgba(59, 165, 93, 0.35); }
   50%       { box-shadow: 0 0 0 4px rgba(59, 165, 93, 0.12); }
-}
-
-.vp-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--accent-color);
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 700;
-  user-select: none;
 }
 
 .vp-mute {

@@ -9,6 +9,7 @@
   <JoinModal />
   <DeviceLinkModal />
   <UserProfileModal />
+  <ServerSettingsModal />
 </template>
 
 <script setup lang="ts">
@@ -23,6 +24,7 @@ import InviteModal from '@/components/modals/InviteModal.vue'
 import JoinModal from '@/components/modals/JoinModal.vue'
 import DeviceLinkModal from '@/components/modals/DeviceLinkModal.vue'
 import UserProfileModal from '@/components/modals/UserProfileModal.vue'
+import ServerSettingsModal from '@/components/modals/ServerSettingsModal.vue'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useIdentityStore } from '@/stores/identityStore'
@@ -65,9 +67,20 @@ onMounted(async () => {
     await networkStore.init(identityStore.userId)
 
     // Start LAN signal server + mDNS (idempotent, non-fatal).
-    invoke('lan_start', { userId: identityStore.userId }).catch(() => {
-      // LAN discovery is optional — app works without it.
-    })
+    // After a webview refresh the Rust process keeps running with existing LAN WS
+    // connections, so we retrieve already-known peers and re-initiate WebRTC to them.
+    invoke('lan_start', { userId: identityStore.userId })
+      .then(() => invoke<string[]>('lan_get_connected_peers'))
+      .then((knownPeers) => {
+        for (const peerId of knownPeers) {
+          if (!networkStore.connectedPeers.includes(peerId)) {
+            networkStore.connectToPeer(peerId).catch(() => {})
+          }
+        }
+      })
+      .catch(() => {
+        // LAN discovery is optional — app works without it.
+      })
 
     // Connect to rendezvous server if configured
     const rendezvousUrl = settingsStore.settings.rendezvousServerUrl

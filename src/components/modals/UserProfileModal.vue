@@ -204,7 +204,7 @@ function setVolume(e: Event) {
 
 // ── Avatar upload ─────────────────────────────────────────────────────────────
 
-const MAX_GIF_BYTES    = 512 * 1024         // 512 KB — per spec §16a
+const MAX_GIF_BYTES    = 20 * 1024 * 1024   // 20 MB
 const MAX_STATIC_BYTES = 25 * 1024 * 1024  // 25 MB
 const AVATAR_DIM       = 128
 
@@ -220,7 +220,7 @@ async function onAvatarFileSelected(e: Event) {
 
   if (file.type === 'image/gif') {
     if (file.size > MAX_GIF_BYTES) {
-      uploadError.value = `GIF too large (max ${MAX_GIF_BYTES / 1024} KB)`
+      uploadError.value = `GIF too large (max 20 MB)`
       return
     }
     const dataUrl = await readFileAsDataUrl(file)
