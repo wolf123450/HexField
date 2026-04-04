@@ -31,12 +31,14 @@
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useMessagesStore } from '@/stores/messagesStore'
+import { useSettingsStore } from '@/stores/settingsStore'
 import MessageBubble from './MessageBubble.vue'
 import TypingIndicator from './TypingIndicator.vue'
 
 const props = defineProps<{ channelId: string }>()
 
 const messagesStore   = useMessagesStore()
+const settingsStore   = useSettingsStore()
 const scrollContainer = ref<HTMLElement | null>(null)
 const topSentinel     = ref<HTMLElement | null>(null)
 const atBottom        = ref(true)
@@ -44,7 +46,9 @@ const atBottom        = ref(true)
 const allMessages = computed(() => {
   const confirmed = messagesStore.getMessagesWithMutations(props.channelId)
   const pending   = messagesStore.pendingMessages[props.channelId] ?? []
-  return [...confirmed, ...pending]
+  const showDeleted = settingsStore.settings.showDeletedMessagePlaceholder
+  const filtered = showDeleted ? confirmed : confirmed.filter(m => m.content !== null)
+  return [...filtered, ...pending]
 })
 
 const virtualizer = useVirtualizer(computed(() => ({

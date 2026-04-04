@@ -154,6 +154,24 @@ async function buildAttachment(file: File): Promise<Attachment | null> {
   const isImage = file.type.startsWith('image/')
 
   if (isImage) {
+    // GIFs must not pass through Canvas (that would flatten animation to a single JPEG frame).
+    // Read them as raw bytes and embed as-is if they fit within the inline limit.
+    if (file.type === 'image/gif') {
+      if (file.size <= MAX_INLINE_BYTES) {
+        const inlineData = await fileToBase64(file)
+        return {
+          id:            uuidv7(),
+          name:          file.name,
+          size:          file.size,
+          mimeType:      'image/gif',
+          inlineData,
+          transferState: 'inline',
+        }
+      }
+      // GIF too large for inline — use P2P content-addressed transfer (preserves animation)
+      return prepareAttachment(file)
+    }
+
     // Downscale if necessary, then embed as base64
     const inlineData = await imageToBase64(file, MAX_IMAGE_DIMENSION)
     const byteLength = Math.ceil(inlineData.length * 0.75) // approx decoded size
