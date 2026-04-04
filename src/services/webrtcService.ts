@@ -15,6 +15,32 @@ const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun1.l.google.com:19302' },
 ]
 
+// ── Chunking constants ──────────────────────────────────────────────────────
+// Chromium SCTP max message size is 256 KiB.  We chunk conservatively below
+// that to avoid RTCError events that kill the data channel.
+const MAX_SAFE_MSG_LEN = 200_000 // characters — messages under this are sent as-is
+const CHUNK_RAW_BYTES  = 48_000  // raw UTF-8 bytes per chunk payload
+
+// Helpers to convert between Uint8Array and base64 without stack overflow
+function uint8ToBase64(bytes: Uint8Array): string {
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  return btoa(bin)
+}
+function base64ToUint8(b64: string): Uint8Array {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+interface ChunkFrame {
+  _c: string  // chunk group ID
+  _i: number  // chunk index (0-based)
+  _n: number  // total chunk count
+  _d: string  // base64 payload slice
+}
+
 interface PeerState {
   pc: RTCPeerConnection
   dc: RTCDataChannel | null
@@ -29,6 +55,8 @@ class WebRTCService {
   private onPeerDisconnected: ((userId: string) => void) | null = null
   private onRemoteTrack: RemoteTrackHandler | null = null
   private localUserId = ''
+  /** Per-peer chunk reassembly buffers: chunkId → { parts[], received, total } */
+  private chunkBuffers = new Map<string, { parts: string[]; received: number; total: number }>()
 
   /**
    * Set the local user ID and register handlers.
@@ -85,6 +113,7 @@ class WebRTCService {
     const answer = await state.pc.createAnswer()
     await state.pc.setLocalDescription(answer)
 
+    console.debug(`[webrtc] sending answer to ${userId.slice(0,8)}`)
     await signalingService.send({
       type: 'signal_answer',
       to: userId,
@@ -178,23 +207,47 @@ class WebRTCService {
 
   /**
    * Send data over the data channel to a specific peer.
+   * Automatically chunks messages that exceed the SCTP safe limit.
    */
   sendToPeer(userId: string, data: unknown): boolean {
     const state = this.peers.get(userId)
+
     if (!state?.dc || state.dc.readyState !== 'open') return false
-    state.dc.send(JSON.stringify(data))
+    this.sendViaChannel(state.dc, JSON.stringify(data))
     return true
   }
 
   /**
    * Broadcast data to all connected peers.
+   * Automatically chunks messages that exceed the SCTP safe limit.
    */
   broadcast(data: unknown): void {
     const json = JSON.stringify(data)
     for (const [, state] of this.peers) {
       if (state.dc?.readyState === 'open') {
-        state.dc.send(json)
+        this.sendViaChannel(state.dc, json)
       }
+    }
+  }
+
+  /**
+   * Send a JSON string through a data channel, chunking if necessary.
+   * Messages under MAX_SAFE_MSG_LEN are sent as-is.
+   * Larger messages are split into base64-encoded chunks that the receiver
+   * reassembles transparently.
+   */
+  private sendViaChannel(dc: RTCDataChannel, json: string): void {
+    if (json.length <= MAX_SAFE_MSG_LEN) {
+      dc.send(json)
+      return
+    }
+    const raw = new TextEncoder().encode(json)
+    const id = Math.random().toString(36).slice(2, 8)
+    const n = Math.ceil(raw.byteLength / CHUNK_RAW_BYTES)
+    for (let i = 0; i < n; i++) {
+      const slice = raw.subarray(i * CHUNK_RAW_BYTES, (i + 1) * CHUNK_RAW_BYTES)
+      const frame: ChunkFrame = { _c: id, _i: i, _n: n, _d: uint8ToBase64(slice) }
+      dc.send(JSON.stringify(frame))
     }
   }
 
@@ -309,6 +362,10 @@ class WebRTCService {
   private setupDataChannel(userId: string, state: PeerState, dc: RTCDataChannel): void {
     state.dc = dc
 
+    dc.onerror = (event) => {
+      console.error(`[webrtc] DC error ${userId.slice(0,8)}:`, event)
+    }
+
     dc.onopen = () => {
       console.debug(`[webrtc] Data channel open with ${userId}`)
       // Fire connected callback now that the DC is actually open and sendToPeer works.
@@ -321,10 +378,43 @@ class WebRTCService {
 
     dc.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data)
-        this.onDataMessage?.(userId, data)
+        const parsed = JSON.parse(event.data)
+        // Chunk frame — accumulate and reassemble
+        if (parsed._c && typeof parsed._i === 'number' && typeof parsed._n === 'number') {
+          this.handleChunkFrame(userId, parsed as ChunkFrame)
+          return
+        }
+        this.onDataMessage?.(userId, parsed)
       } catch (e) {
         console.error('[webrtc] Failed to parse data channel message:', e)
+      }
+    }
+  }
+
+  /**
+   * Reassemble a chunked message.  Chunks share a `_c` (chunk-group ID);
+   * each carries a base64 slice of the original UTF-8 JSON bytes.
+   * When all `_n` chunks have arrived they are concatenated, decoded,
+   * parsed, and delivered as a single logical message.
+   */
+  private handleChunkFrame(userId: string, frame: ChunkFrame): void {
+    let buf = this.chunkBuffers.get(frame._c)
+    if (!buf) {
+      buf = { parts: new Array<string>(frame._n), received: 0, total: frame._n }
+      this.chunkBuffers.set(frame._c, buf)
+    }
+    buf.parts[frame._i] = frame._d
+    buf.received++
+    if (buf.received === buf.total) {
+      this.chunkBuffers.delete(frame._c)
+      try {
+        const fullB64 = buf.parts.join('')
+        const bytes = base64ToUint8(fullB64)
+        const json = new TextDecoder().decode(bytes)
+        const data = JSON.parse(json)
+        this.onDataMessage?.(userId, data)
+      } catch (e) {
+        console.error('[webrtc] chunk reassembly failed:', e)
       }
     }
   }

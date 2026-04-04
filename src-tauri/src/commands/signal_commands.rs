@@ -140,7 +140,7 @@ pub async fn signal_send(
     if let Some(ref to_id) = to_user_id {
         let lan_sender = {
             let peers = state.lan_peers.lock().await;
-            peers.get(to_id).cloned()
+            peers.get(to_id).map(|(_, s)| s.clone())
         };
         if let Some(sender) = lan_sender {
             return sender.send(payload).map_err(|e| e.to_string());
@@ -159,6 +159,17 @@ pub async fn signal_send(
 }
 
 // ── LAN commands ──────────────────────────────────────────────────────────
+
+/// Return the user IDs of all currently connected LAN peers.
+/// Used after a webview refresh to reconnect WebRTC without waiting for
+/// mDNS re-discovery (the Rust WS connections stay alive across refreshes).
+#[tauri::command]
+pub async fn lan_get_connected_peers(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let peers = state.lan_peers.lock().await;
+    Ok(peers.keys().cloned().collect())
+}
 
 /// Start the local LAN signal server and register mDNS.
 /// Idempotent — safe to call multiple times (skips restart if already running).

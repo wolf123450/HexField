@@ -369,19 +369,20 @@ pub fn db_load_members(state: State<AppState>, server_id: String) -> Result<Vec<
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT user_id, server_id, display_name, roles, joined_at,
-         public_sign_key, public_dh_key, online_status
+         public_sign_key, public_dh_key, online_status, avatar_data_url
          FROM members WHERE server_id = ?1"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&server_id], |row| {
         Ok(MemberRow {
-            user_id:        row.get(0)?,
-            server_id:      row.get(1)?,
-            display_name:   row.get(2)?,
-            roles:          row.get(3)?,
-            joined_at:      row.get(4)?,
-            public_sign_key: row.get(5)?,
-            public_dh_key:  row.get(6)?,
-            online_status:  row.get(7)?,
+            user_id:          row.get(0)?,
+            server_id:        row.get(1)?,
+            display_name:     row.get(2)?,
+            roles:            row.get(3)?,
+            joined_at:        row.get(4)?,
+            public_sign_key:  row.get(5)?,
+            public_dh_key:    row.get(6)?,
+            online_status:    row.get(7)?,
+            avatar_data_url:  row.get(8)?,
         })
     }).map_err(|e| e.to_string())?
     .collect::<Result<Vec<_>, _>>()
@@ -394,11 +395,12 @@ pub fn db_upsert_member(state: State<AppState>, member: MemberRow) -> Result<(),
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT OR REPLACE INTO members
-         (user_id, server_id, display_name, roles, joined_at, public_sign_key, public_dh_key, online_status)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+         (user_id, server_id, display_name, roles, joined_at, public_sign_key, public_dh_key, online_status, avatar_data_url)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
         rusqlite::params![
             member.user_id, member.server_id, member.display_name, member.roles,
-            member.joined_at, member.public_sign_key, member.public_dh_key, member.online_status
+            member.joined_at, member.public_sign_key, member.public_dh_key, member.online_status,
+            member.avatar_data_url,
         ],
     ).map_err(|e| e.to_string())?;
     Ok(())

@@ -64,6 +64,7 @@ pub struct MemberRow {
     pub public_sign_key: String,
     pub public_dh_key: String,
     pub online_status: String,
+    pub avatar_data_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

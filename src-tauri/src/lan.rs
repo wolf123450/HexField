@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
@@ -34,8 +35,14 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{accept_async, tungstenite::Message as WsMessage};
 
-/// `userId → WS sender` for every connected LAN peer (incoming or outgoing).
-pub type LanPeers = Mutex<HashMap<String, UnboundedSender<Value>>>;
+/// Monotonically increasing counter used to give each `register_peer` call a
+/// unique generation ID so that stale cleanup tasks cannot remove a newer entry.
+static PEER_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// `userId → (generation, WS sender)` for every connected LAN peer.
+/// The generation field lets cleanup tasks avoid removing a fresher entry that
+/// replaced their own (see the comment in `register_peer`).
+pub type LanPeers = Mutex<HashMap<String, (u64, UnboundedSender<Value>)>>;
 
 // ── Local WS signal server ─────────────────────────────────────────────────
 
@@ -190,12 +197,13 @@ async fn register_peer(
                + Unpin
                + Send),
 ) {
+    let gen = PEER_GENERATION.fetch_add(1, Ordering::SeqCst);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
 
     {
         let mut peers = lan_peers.lock().await;
         // Drop any previous sender — its task detects the closed channel and exits.
-        peers.insert(user_id.clone(), tx);
+        peers.insert(user_id.clone(), (gen, tx));
     }
 
     let uid = user_id.clone();
@@ -242,14 +250,17 @@ async fn register_peer(
         }
     }
 
-    // Clean up map entry if it still points to this connection.
+    // Only remove the map entry if it still belongs to this task's generation.
+    // When mDNS causes both sides to dial each other simultaneously, the second
+    // connection replaces our entry (gen changes). If we removed unconditionally
+    // we would delete the valid replacement and leave the map empty.
     {
         let mut peers = peers_ref.lock().await;
-        // Only remove if the tx in the map is already dead (can't compare Senders,
-        // so we just remove unconditionally — a new connection would re-insert).
-        peers.remove(&uid);
+        if peers.get(&uid).map(|(g, _)| *g) == Some(gen) {
+            peers.remove(&uid);
+            let _ = app_ref.emit("lan_peer_lost", json!({ "userId": uid }));
+        }
     }
-    let _ = app_ref.emit("lan_peer_lost", json!({ "userId": uid }));
 }
 
 // ── mDNS ──────────────────────────────────────────────────────────────────
