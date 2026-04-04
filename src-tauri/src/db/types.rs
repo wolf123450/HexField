@@ -121,3 +121,12 @@ pub struct BanRow {
     pub banned_at: String,
     pub expires_at: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChannelAclRow {
+    pub channel_id: String,
+    pub allowed_roles: String,   // JSON array
+    pub allowed_users: String,   // JSON array
+    pub denied_users: String,    // JSON array
+    pub private_channel: bool,
+}

@@ -471,6 +471,11 @@ export const useNetworkStore = defineStore('network', () => {
         voiceStore.updatePeer(mutation.targetId, { adminMuted: muting })
       }
     }
+
+    if (mutation.type === 'channel_acl_update' && mutation.newContent) {
+      const { useChannelsStore } = await import('./channelsStore')
+      await useChannelsStore().persistAndSetAcl(JSON.parse(mutation.newContent))
+    }
   }
 
   async function handleChannelGossip(msg: Record<string, unknown>) {

@@ -75,7 +75,7 @@ export type MutationType =
   | 'edit' | 'delete' | 'reaction_add' | 'reaction_remove'
   | 'server_update'
   | 'role_assign' | 'role_revoke'
-  | 'channel_create' | 'channel_update' | 'channel_delete'
+  | 'channel_create' | 'channel_update' | 'channel_delete' | 'channel_acl_update'
   | 'device_attest' | 'device_revoke'
   | 'member_kick' | 'member_ban' | 'member_unban'
   | 'voice_kick' | 'voice_mute' | 'voice_unmute'
@@ -185,6 +185,14 @@ export interface VoiceSession {
   serverId:        string
   joinedAt:        string
   peers:           Record<string, Peer>
+}
+
+export interface ChannelACL {
+  channelId:       string
+  allowedRoles?:   string[]
+  allowedUsers?:   string[]
+  deniedUsers?:    string[]
+  privateChannel?: boolean
 }
 
 export interface InviteLink {
