@@ -102,6 +102,10 @@ pub fn run() {
             // Channel ACLs
             db_load_channel_acls,
             db_upsert_channel_acl,
+            // Join requests (Phase H)
+            db_save_join_request,
+            db_load_join_requests,
+            db_update_join_request_status,
             // Attachments (Phase 5b)
             get_attachment_path,
             has_attachment,

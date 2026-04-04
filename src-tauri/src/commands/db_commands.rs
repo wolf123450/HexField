@@ -774,6 +774,61 @@ pub fn db_upsert_channel_acl(state: State<AppState>, acl: ChannelAclRow) -> Resu
     Ok(())
 }
 
+// ── Join Requests ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn db_save_join_request(state: State<AppState>, req: JoinRequestRow) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO join_requests (id, server_id, user_id, display_name, public_sign_key, public_dh_key, requested_at, status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO NOTHING",
+        rusqlite::params![
+            req.id, req.server_id, req.user_id, req.display_name,
+            req.public_sign_key, req.public_dh_key, req.requested_at, req.status,
+        ],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn db_load_join_requests(state: State<AppState>, server_id: String) -> Result<Vec<JoinRequestRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, server_id, user_id, display_name, public_sign_key, public_dh_key, requested_at, status
+         FROM join_requests WHERE server_id = ?1 ORDER BY requested_at ASC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![server_id], |row| {
+        Ok(JoinRequestRow {
+            id:              row.get(0)?,
+            server_id:       row.get(1)?,
+            user_id:         row.get(2)?,
+            display_name:    row.get(3)?,
+            public_sign_key: row.get(4)?,
+            public_dh_key:   row.get(5)?,
+            requested_at:    row.get(6)?,
+            status:          row.get(7)?,
+        })
+    }).map_err(|e| e.to_string())?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn db_update_join_request_status(
+    state: State<AppState>,
+    request_id: String,
+    status: String,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE join_requests SET status = ?1 WHERE id = ?2",
+        rusqlite::params![status, request_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ── System ────────────────────────────────────────────────────────────────────
 
 #[tauri::command]

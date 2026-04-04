@@ -21,6 +21,8 @@ export interface Server {
   inviteCode?:     string
   customEmoji:     CustomEmoji[]
   historyStartsAt?: string       // set when server is re-baselined (Phase 6)
+  accessMode?:     'open' | 'closed'   // default 'open'
+  inviteMode?:     'code_open' | 'code_approval' | 'reverse_invite_only' // default 'code_open'
 }
 
 export interface ServerMember {
@@ -39,6 +41,17 @@ export interface ServerMember {
 }
 
 export type OnlineStatus = 'online' | 'idle' | 'dnd' | 'offline'
+
+export interface JoinRequest {
+  id:             string
+  serverId:       string
+  userId:         string
+  displayName:    string
+  publicSignKey:  string
+  publicDHKey:    string
+  requestedAt:    string
+  status:         'pending' | 'approved' | 'denied'
+}
 
 // ── Channels ───────────────────────────────────────────────────────────────────
 export type ChannelType = 'text' | 'voice' | 'announcement'
@@ -79,6 +92,7 @@ export type MutationType =
   | 'device_attest' | 'device_revoke'
   | 'member_kick' | 'member_ban' | 'member_unban'
   | 'voice_kick' | 'voice_mute' | 'voice_unmute'
+  | 'access_mode_update'
 
 export interface Mutation {
   id:              string

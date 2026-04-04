@@ -143,7 +143,16 @@ async function join() {
     uiStore.showJoinModal = false
     uiStore.showNotification(`Joined ${server.name}!`, 'success', 3000)
   } catch (e: unknown) {
-    statusMsg.value = e instanceof Error ? e.message : 'Could not join server.'
+    const msg = e instanceof Error ? e.message : 'Could not join server.'
+    if (msg === 'server_closed') {
+      statusMsg.value = 'This server requires admin approval. Your request has been queued — you will be notified when approved.'
+    } else if (msg === 'invite_expired') {
+      statusMsg.value = 'This invite link has expired. Ask the server owner for a new one.'
+    } else if (msg === 'invite_exhausted') {
+      statusMsg.value = 'This invite link has reached its maximum number of uses.'
+    } else {
+      statusMsg.value = msg
+    }
     isError.value   = true
   } finally {
     joining.value      = false

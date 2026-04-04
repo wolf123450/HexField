@@ -20,6 +20,11 @@
           v-if="unreadForServer(serverId) > 0"
           class="unread-badge"
         >{{ unreadForServer(serverId) }}</span>
+        <span
+          v-if="pendingJoinCount(serverId) > 0"
+          class="pending-badge"
+          :title="`${pendingJoinCount(serverId)} pending join request(s)`"
+        >{{ pendingJoinCount(serverId) }}</span>
       </button>
     </div>
 
@@ -40,10 +45,13 @@ import { useChannelsStore } from '@/stores/channelsStore'
 import { useMessagesStore } from '@/stores/messagesStore'
 import type { MenuItem } from '@/stores/uiStore'
 
+import { useIdentityStore } from '@/stores/identityStore'
+
 const serversStore  = useServersStore()
 const channelsStore = useChannelsStore()
 const messagesStore = useMessagesStore()
 const uiStore       = useUIStore()
+const identityStore = useIdentityStore()
 
 async function selectServer(serverId: string) {
   serversStore.setActiveServer(serverId)
@@ -59,6 +67,17 @@ async function selectServer(serverId: string) {
 function unreadForServer(serverId: string): number {
   const channels = channelsStore.channels[serverId] ?? []
   return channels.reduce((sum, ch) => sum + (messagesStore.unreadCounts[ch.id] ?? 0), 0)
+}
+
+function isAdminOfServer(serverId: string): boolean {
+  const uid = identityStore.userId
+  if (!uid) return false
+  return serversStore.members[serverId]?.[uid]?.roles.some(r => r === 'admin' || r === 'owner') ?? false
+}
+
+function pendingJoinCount(serverId: string): number {
+  if (!isAdminOfServer(serverId)) return 0
+  return serversStore.pendingRequestCount(serverId)
 }
 
 // ── Server icon right-click menu ─────────────────────────────────────────────
@@ -164,6 +183,21 @@ const addServerMenu: MenuItem[] = [
   right: -2px;
   background: var(--error-color);
   color: white;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 1px 5px;
+  min-width: 16px;
+  text-align: center;
+  line-height: 14px;
+}
+
+.pending-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  background: #f0b232;
+  color: #1a1a1a;
   font-size: 10px;
   font-weight: 700;
   border-radius: 10px;

@@ -184,6 +184,41 @@
           </template>
         </section>
 
+        <!-- Access control (admin only) -->
+        <section v-if="isAdmin" class="settings-section">
+          <h3 class="section-title">ACCESS CONTROL</h3>
+          <div class="access-mode-row">
+            <label class="notif-label">Server access mode</label>
+            <select
+              class="notif-select"
+              :value="server?.accessMode ?? 'open'"
+              @change="onAccessModeChange(($event.target as HTMLSelectElement).value)"
+            >
+              <option value="open">Open — Anyone with an invite can join immediately</option>
+              <option value="closed">Closed — Joins require admin approval</option>
+            </select>
+          </div>
+
+          <!-- Pending join requests (visible when closed) -->
+          <template v-if="(server?.accessMode ?? 'open') === 'closed'">
+            <div class="section-header-row" style="margin-top: 8px">
+              <span class="notif-label">Join Requests</span>
+              <button class="mod-log-toggle btn-secondary-sm" @click="refreshJoinRequests">Refresh</button>
+            </div>
+            <div v-if="pendingRequests.length === 0" class="mod-log-hint">No pending requests.</div>
+            <div v-else class="join-requests-list">
+              <div v-for="req in pendingRequests" :key="req.id" class="join-request-row">
+                <span class="join-request-name">{{ req.displayName }}</span>
+                <span class="join-request-time">{{ formatLogTime(req.requestedAt) }}</span>
+                <div class="join-request-actions">
+                  <button class="join-approve-btn" @click="doApprove(req.id)">Approve</button>
+                  <button class="join-deny-btn" @click="doDeny(req.id)">Deny</button>
+                </div>
+              </div>
+            </div>
+          </template>
+        </section>
+
         <!-- Danger zone (placeholder) -->
         <section v-if="isAdmin" class="settings-section settings-section--danger">
           <h3 class="section-title">DANGER ZONE</h3>
@@ -201,7 +236,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { mdiClose, mdiCamera, mdiAccountPlus, mdiTrashCan } from '@mdi/js'
 import { v7 as uuidv7 } from 'uuid'
@@ -234,6 +269,16 @@ const isAdmin = computed(() => {
 function close() {
   uiStore.showServerSettingsModal = false
 }
+
+// Load join requests whenever the modal opens for a server in closed mode
+watch(() => uiStore.showServerSettingsModal, (open) => {
+  if (open) {
+    const sid = uiStore.settingsServerId
+    if (sid && (serversStore.servers[sid]?.accessMode ?? 'open') === 'closed') {
+      serversStore.loadJoinRequests(sid).catch(() => {})
+    }
+  }
+})
 
 function openInvite() {
   const sid = uiStore.settingsServerId
@@ -387,6 +432,39 @@ async function doUnban(userId: string) {
   if (!sid) return
   await serversStore.unbanMember(sid, userId)
   banList.value = banList.value.filter(b => b.userId !== userId)
+}
+
+
+// ── Access control ────────────────────────────────────────────────────────────
+
+const pendingRequests = computed(() => {
+  const sid = uiStore.settingsServerId
+  if (!sid) return []
+  return (serversStore.joinRequests[sid] ?? []).filter(r => r.status === 'pending')
+})
+
+async function onAccessModeChange(value: string) {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  await serversStore.setAccessMode(sid, value as 'open' | 'closed')
+}
+
+async function refreshJoinRequests() {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  await serversStore.loadJoinRequests(sid)
+}
+
+async function doApprove(requestId: string) {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  await serversStore.approveJoinRequest(sid, requestId)
+}
+
+async function doDeny(requestId: string) {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  await serversStore.denyJoinRequest(sid, requestId)
 }
 
 
@@ -723,4 +801,76 @@ function readAsDataUrl(file: File): Promise<string> {
   background: var(--bg-tertiary);
   color: var(--text-primary);
 }
+
+/* ── Access control section ─────────────────────────────────────────────── */
+.access-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.join-requests-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.join-request-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 6px 10px;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  font-size: 13px;
+}
+
+.join-request-name {
+  flex: 1;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.join-request-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.join-request-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.join-approve-btn {
+  background: rgba(87, 242, 135, 0.15);
+  border: 1px solid rgba(87, 242, 135, 0.4);
+  color: #57f287;
+  border-radius: 4px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.join-approve-btn:hover { background: rgba(87, 242, 135, 0.25); }
+
+.join-deny-btn {
+  background: rgba(237, 66, 69, 0.12);
+  border: 1px solid rgba(237, 66, 69, 0.4);
+  color: #ed4245;
+  border-radius: 4px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.join-deny-btn:hover { background: rgba(237, 66, 69, 0.22); }
 </style>

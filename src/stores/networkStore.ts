@@ -368,6 +368,9 @@ export const useNetworkStore = defineStore('network', () => {
       case 'server_manifest':
         handleServerManifestReceived(msg)
         break
+      case 'server_join_denied':
+        handleServerJoinDenied(msg)
+        break
       case 'channel_gossip':
         handleChannelGossip(msg).catch(e =>
           console.warn('[network] channel_gossip error:', e)
@@ -404,7 +407,8 @@ export const useNetworkStore = defineStore('network', () => {
     await messagesStore.applyMutation(mutation)
     // Server-level mutations also update in-memory server/member state
     if (['server_update', 'role_assign', 'role_revoke',
-         'member_kick', 'member_ban', 'member_unban'].includes(mutation.type)) {
+         'member_kick', 'member_ban', 'member_unban',
+         'access_mode_update'].includes(mutation.type)) {
       const { useServersStore } = await import('./serversStore')
       const serversStore = useServersStore()
       serversStore.applyServerMutation(mutation)
@@ -1009,9 +1013,7 @@ export const useNetworkStore = defineStore('network', () => {
     })
   }
 
-  // ── New data-channel handlers ────────────────────────────────────────────
-
-  /** Received by the server owner — validate token, send back full manifest. */
+  /** Received by the server owner — validate token, send back full manifest (or queue if closed). */
   async function handleServerJoinRequest(
     fromUserId: string,
     msg: Record<string, unknown>,
@@ -1019,6 +1021,7 @@ export const useNetworkStore = defineStore('network', () => {
     const { useServersStore }  = await import('./serversStore')
     const { useChannelsStore } = await import('./channelsStore')
     const { useIdentityStore } = await import('./identityStore')
+    const { v7: uuidv7 } = await import('uuid')
 
     const serversStore  = useServersStore()
     const channelsStore = useChannelsStore()
@@ -1027,15 +1030,48 @@ export const useNetworkStore = defineStore('network', () => {
     const token    = msg.inviteToken as string
     const serverId = msg.serverId   as string
 
-    if (!serversStore.validateInviteToken(token, serverId)) {
-      sendToPeer(fromUserId, { type: 'server_join_error', error: 'Invalid or expired invite token' })
+    const tokenStatus = await serversStore.validateInviteToken(token, serverId)
+    if (tokenStatus !== 'ok') {
+      const reasonMap: Record<string, string> = {
+        not_found:        'Invalid or expired invite token',
+        invite_expired:   'This invite link has expired',
+        invite_exhausted: 'This invite link has reached its maximum uses',
+      }
+      sendToPeer(fromUserId, { type: 'server_join_denied', reason: tokenStatus, error: reasonMap[tokenStatus] ?? 'Invalid token' })
       return
     }
 
-    // Upsert the joiner as a member so we can encrypt messages to them.
+    const server = serversStore.servers[serverId]
+    if (!server) {
+      sendToPeer(fromUserId, { type: 'server_join_denied', reason: 'not_found', error: 'Server not found' })
+      return
+    }
+
     const joinerDisplayName   = (msg.displayName   as string | undefined) ?? 'Player'
     const joinerPublicSignKey = (msg.publicSignKey as string | undefined) ?? ''
     const joinerPublicDHKey   = (msg.publicDHKey   as string | undefined) ?? ''
+
+    // If the server is in closed mode — queue the request and notify the joiner
+    if (server.accessMode === 'closed') {
+      const req = {
+        id:            uuidv7(),
+        serverId,
+        userId:        fromUserId,
+        displayName:   joinerDisplayName,
+        publicSignKey: joinerPublicSignKey,
+        publicDHKey:   joinerPublicDHKey,
+        requestedAt:   new Date().toISOString(),
+        status:        'pending' as const,
+      }
+      await serversStore.queueJoinRequest(req)
+      sendToPeer(fromUserId, { type: 'server_join_denied', reason: 'server_closed' })
+      // Notify local admins
+      const { useUIStore } = await import('./uiStore')
+      useUIStore().showNotification(`${joinerDisplayName} requested to join ${server.name}`, 'info')
+      return
+    }
+
+    // Open mode — upsert the joiner and send manifest immediately
     if (joinerPublicSignKey && joinerPublicDHKey) {
       await serversStore.upsertMember({
         userId:        fromUserId,
@@ -1047,12 +1083,6 @@ export const useNetworkStore = defineStore('network', () => {
         joinedAt:      new Date().toISOString(),
         onlineStatus:  'online',
       })
-    }
-
-    const server = serversStore.servers[serverId]
-    if (!server) {
-      sendToPeer(fromUserId, { type: 'server_join_error', error: 'Server not found' })
-      return
     }
 
     const manifest: ServerManifest = {
@@ -1079,6 +1109,30 @@ export const useNetworkStore = defineStore('network', () => {
       return
     }
     _pendingServerJoin?.resolve(manifest)
+    _pendingServerJoin = null
+  }
+
+  /** Received by the joiner when the admin denies (or defers) the join request. */
+  async function handleServerJoinDenied(msg: Record<string, unknown>) {
+    const reason = msg.reason as string | undefined
+    const { useUIStore } = await import('./uiStore')
+    const uiStore = useUIStore()
+
+    if (reason === 'server_closed') {
+      _pendingServerJoin?.reject(new Error('server_closed'))
+      uiStore.showNotification('This server requires admin approval. Your request has been queued.', 'info')
+    } else if (reason === 'invite_expired') {
+      _pendingServerJoin?.reject(new Error('invite_expired'))
+      uiStore.showNotification('This invite link has expired. Ask for a new one.', 'warning')
+    } else if (reason === 'invite_exhausted') {
+      _pendingServerJoin?.reject(new Error('invite_exhausted'))
+      uiStore.showNotification('This invite link has reached its maximum uses.', 'warning')
+    } else if (reason === 'request_denied') {
+      uiStore.showNotification('Your join request was denied by an admin.', 'warning')
+    } else {
+      _pendingServerJoin?.reject(new Error(msg.error as string ?? 'Join request denied'))
+      uiStore.showNotification('Join request was denied.', 'warning')
+    }
     _pendingServerJoin = null
   }
 
