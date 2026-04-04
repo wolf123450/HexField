@@ -282,12 +282,12 @@
   - [x] `SettingsNotificationsTab.vue` rewritten: global toggles, sound customization, per-server prefs, keyword filters
 - [x] Unread badges on `ServerIcon` and `ChannelItem`
 - [x] Mention highlights (`@username` parsing in messages)
-- [ ] Message search — SQLite FTS5 (only indexes non-null content)
+- [x] Message search — SQLite FTS5 (only indexes non-null content)
 - [ ] Passphrase-wrapped key storage (Phase 2 crypto tier: Argon2id → requires `libsodium-wrappers-sumo`)
 - [ ] OS keychain integration (Phase 3 crypto tier: `keyring` crate)
-- [ ] Storage limit enforcement (5 GB default, 10 GB max, user-configurable)
-  - [ ] Background pruning: attachment files (oldest first), then message content
-  - [ ] Storage usage display in Settings > Privacy
+- [x] Storage limit enforcement (5 GB default, 10 GB max, user-configurable)
+  - [x] Background pruning: attachment files (oldest first), then message content
+  - [x] Storage usage display in Settings > Privacy
 - [ ] Server admin archive / re-baseline
   - [ ] Archive bundle export (signed, compressed snapshot)
   - [ ] `server_rebaseline` mutation with `historyStartsAt` + `gamechat://archive/...` deep link
@@ -296,7 +296,7 @@
 - [ ] Linux Wayland screen share via XDG Desktop Portal
 - [ ] Auto-update flow (already in skeleton — verify works end-to-end)
 - [ ] Key export / import / device revocation UI in Settings > Privacy
-- [ ] Privacy settings: show-deleted-placeholder toggle, confirm-before-delete toggle
+- [x] Privacy settings: show-deleted-placeholder toggle, confirm-before-delete toggle
 - [ ] **Edit & delete messages**
   - [x] Permission model: own messages — edit + delete always allowed; others' messages — delete only for admins/owners; edit never allowed on others' messages
   - [x] `sendEditMutation(messageId, channelId, serverId, newContent)` in `messagesStore` — wraps existing `applyMutation` + broadcast (data layer already handles HLC last-write-wins)
