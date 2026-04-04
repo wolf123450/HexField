@@ -1472,5 +1472,155 @@ mod tests {
         assert_eq!(loaded.public_dh_key,   original.public_dh_key,   "dh key must be preserved");
         assert_eq!(loaded.joined_at,       original.joined_at,       "joined_at must be preserved");
     }
+
+    // ── FTS5 search ───────────────────────────────────────────────────────────
+
+    fn search_messages_in(
+        conn: &Connection,
+        server_id: &str,
+        query: &str,
+        channel_id: Option<&str>,
+    ) -> Vec<MessageRow> {
+        // Reproduce the same sanitisation as the Tauri command
+        let fts_query = if query.contains('"') || query.contains('*') {
+            query.to_string()
+        } else {
+            format!("\"{}\"", query.replace('"', "\"\""))
+        };
+
+        let rows: Vec<MessageRow> = if let Some(cid) = channel_id {
+            let sql = "SELECT m.id, m.channel_id, m.server_id, m.author_id, m.content, m.content_type,
+                       m.reply_to_id, m.created_at, m.logical_ts, m.verified, m.raw_attachments
+                       FROM messages m
+                       WHERE m.server_id = ?1
+                         AND m.channel_id = ?2
+                         AND m.content IS NOT NULL
+                         AND m.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?3)
+                       ORDER BY m.logical_ts DESC LIMIT 50";
+            let mut stmt = conn.prepare(sql).unwrap();
+            stmt.query_map(rusqlite::params![server_id, cid, fts_query], |row| {
+                Ok(MessageRow {
+                    id:              row.get(0)?,
+                    channel_id:      row.get(1)?,
+                    server_id:       row.get(2)?,
+                    author_id:       row.get(3)?,
+                    content:         row.get(4)?,
+                    content_type:    row.get(5)?,
+                    reply_to_id:     row.get(6)?,
+                    created_at:      row.get(7)?,
+                    logical_ts:      row.get(8)?,
+                    verified:        row.get::<_, i64>(9)? != 0,
+                    raw_attachments: row.get(10)?,
+                })
+            }).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        } else {
+            let sql = "SELECT m.id, m.channel_id, m.server_id, m.author_id, m.content, m.content_type,
+                       m.reply_to_id, m.created_at, m.logical_ts, m.verified, m.raw_attachments
+                       FROM messages m
+                       WHERE m.server_id = ?1
+                         AND m.content IS NOT NULL
+                         AND m.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?2)
+                       ORDER BY m.logical_ts DESC LIMIT 50";
+            let mut stmt = conn.prepare(sql).unwrap();
+            stmt.query_map(rusqlite::params![server_id, fts_query], |row| {
+                Ok(MessageRow {
+                    id:              row.get(0)?,
+                    channel_id:      row.get(1)?,
+                    server_id:       row.get(2)?,
+                    author_id:       row.get(3)?,
+                    content:         row.get(4)?,
+                    content_type:    row.get(5)?,
+                    reply_to_id:     row.get(6)?,
+                    created_at:      row.get(7)?,
+                    logical_ts:      row.get(8)?,
+                    verified:        row.get::<_, i64>(9)? != 0,
+                    raw_attachments: row.get(10)?,
+                })
+            }).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        rows
+    }
+
+    fn insert_message_with_content(conn: &Connection, id: &str, channel_id: &str, server_id: &str, content: Option<&str>) {
+        save_message(conn, &MessageRow {
+            id:              id.to_string(),
+            channel_id:      channel_id.to_string(),
+            server_id:       server_id.to_string(),
+            author_id:       "author-1".to_string(),
+            content:         content.map(str::to_string),
+            content_type:    "text".to_string(),
+            reply_to_id:     None,
+            created_at:      "1000".to_string(),
+            logical_ts:      format!("{}-000001", id),
+            verified:        true,
+            raw_attachments: None,
+        });
+    }
+
+    #[test]
+    fn fts5_exact_match_returns_message() {
+        let conn = test_conn();
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        insert_message_with_content(&conn, "msg-1", "ch-1", "srv-1", Some("Hello world, this is a test message"));
+        insert_message_with_content(&conn, "msg-2", "ch-1", "srv-1", Some("An unrelated message about cats"));
+
+        let results = search_messages_in(&conn, "srv-1", "Hello world", None);
+        assert_eq!(results.len(), 1, "exact phrase should match exactly one message");
+        assert_eq!(results[0].id, "msg-1");
+    }
+
+    #[test]
+    fn fts5_partial_word_match() {
+        let conn = test_conn();
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        insert_message_with_content(&conn, "msg-a", "ch-1", "srv-1", Some("The quick brown fox jumps"));
+        insert_message_with_content(&conn, "msg-b", "ch-1", "srv-1", Some("Foxes are clever animals"));
+
+        // FTS5 phrase search is word-boundary; "fox" alone won't match "Foxes" unless trailing *
+        // Use wildcard syntax for prefix match
+        let results = search_messages_in(&conn, "srv-1", "fox*", None);
+        assert!(results.len() >= 1, "wildcard prefix should match at least one message");
+    }
+
+    #[test]
+    fn fts5_no_results_for_absent_term() {
+        let conn = test_conn();
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        insert_message_with_content(&conn, "msg-x", "ch-1", "srv-1", Some("Hello everyone"));
+
+        let results = search_messages_in(&conn, "srv-1", "xyzzy_nonexistent", None);
+        assert!(results.is_empty(), "absent term should return no results");
+    }
+
+    #[test]
+    fn fts5_excludes_null_content_deleted_rows() {
+        let conn = test_conn();
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        // Insert a message that was later deleted (content set to NULL)
+        insert_message_with_content(&conn, "msg-del", "ch-1", "srv-1", Some("This message will be deleted"));
+        conn.execute("UPDATE messages SET content = NULL WHERE id = 'msg-del'", []).unwrap();
+        // The FTS index update trigger should fire on the UPDATE
+        let results = search_messages_in(&conn, "srv-1", "deleted", None);
+        assert!(results.is_empty(), "deleted messages (content IS NULL) must not appear in search results");
+    }
+
+    #[test]
+    fn fts5_channel_scope_filter() {
+        let conn = test_conn();
+        seed_server(&conn, "srv-1");
+        conn.execute("INSERT OR IGNORE INTO channels (id, server_id, name, type, position, created_at) VALUES ('ch-a','srv-1','general','text',0,'1000')", []).unwrap();
+        conn.execute("INSERT OR IGNORE INTO channels (id, server_id, name, type, position, created_at) VALUES ('ch-b','srv-1','random','text',1,'1000')", []).unwrap();
+        insert_message_with_content(&conn, "m-gen", "ch-a", "srv-1", Some("Unique phrase in general"));
+        insert_message_with_content(&conn, "m-rand", "ch-b", "srv-1", Some("Unique phrase in random"));
+
+        // Search all channels — should find both
+        let all = search_messages_in(&conn, "srv-1", "Unique phrase", None);
+        assert_eq!(all.len(), 2);
+
+        // Scope to ch-a only — should find one
+        let scoped = search_messages_in(&conn, "srv-1", "Unique phrase", Some("ch-a"));
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].id, "m-gen");
+    }
 }
 
