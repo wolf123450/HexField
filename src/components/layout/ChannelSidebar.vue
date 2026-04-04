@@ -150,7 +150,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, nextTick } from 'vue'
+import { computed, ref, watchEffect, onMounted, onUnmounted, nextTick } from 'vue'
 import { mdiCog, mdiMicrophone, mdiMicrophoneOff } from '@mdi/js'
 import { useServersStore } from '@/stores/serversStore'
 import { useChannelsStore } from '@/stores/channelsStore'
@@ -316,9 +316,48 @@ function openServerSettings(e: MouseEvent) {
 
 const STATUS_KEY = 'gamechat_own_status'
 const statusKey  = () => identityStore.userId ? `${STATUS_KEY}_${identityStore.userId}` : STATUS_KEY
-const ownStatus = ref<'online' | 'idle' | 'dnd' | 'offline'>(
-  (localStorage.getItem(statusKey()) as any) ?? 'online'
-)
+// Read the correct scoped key once userId is known (identity loads asynchronously).
+const ownStatus = ref<'online' | 'idle' | 'dnd' | 'offline'>('online')
+watchEffect(() => {
+  if (identityStore.userId) {
+    ownStatus.value = (localStorage.getItem(statusKey()) as typeof ownStatus.value | null) ?? 'online'
+  }
+})
+
+// ── Auto-idle ─────────────────────────────────────────────────────────────────
+// Automatically transition to 'idle' after the window has been unfocused for
+// IDLE_DELAY_MS. Reverts to 'online' when focus returns (only if we auto-set it).
+
+const IDLE_DELAY_MS = 5 * 60 * 1000 // 5 minutes
+let idleTimer: ReturnType<typeof setTimeout> | null = null
+let autoIdled = false
+
+function onWindowBlur() {
+  if (ownStatus.value !== 'online') return
+  idleTimer = setTimeout(() => {
+    autoIdled = true
+    setOwnStatus('idle')
+  }, IDLE_DELAY_MS)
+}
+
+function onWindowFocus() {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+  if (autoIdled) {
+    autoIdled = false
+    setOwnStatus('online')
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('blur',  onWindowBlur)
+  window.addEventListener('focus', onWindowFocus)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('blur',  onWindowBlur)
+  window.removeEventListener('focus', onWindowFocus)
+  if (idleTimer) clearTimeout(idleTimer)
+})
 
 function openStatusPicker(e: MouseEvent) {
   const items: MenuItem[] = [
@@ -331,6 +370,11 @@ function openStatusPicker(e: MouseEvent) {
 }
 
 function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline') {
+  // If the user manually sets a status, cancel any pending auto-idle and clear the flag.
+  if (!autoIdled) {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+  }
+  autoIdled = false
   ownStatus.value = status
   localStorage.setItem(statusKey(), status)
   // Update member record for every joined server
