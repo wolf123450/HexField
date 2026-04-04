@@ -268,9 +268,9 @@
 
 **Goal**: Production-ready: notifications, search, key security, pruning, storage limits.
 
-- [ ] OS notifications via `tauri-plugin-notification` (mentions, DMs)
-- [ ] Unread badges on `ServerIcon` and `ChannelItem`
-- [ ] Mention highlights (`@username` parsing in messages)
+- [x] OS notifications via `tauri-plugin-notification` (mentions, DMs)
+- [x] Unread badges on `ServerIcon` and `ChannelItem`
+- [x] Mention highlights (`@username` parsing in messages)
 - [ ] Message search — SQLite FTS5 (only indexes non-null content)
 - [ ] Passphrase-wrapped key storage (Phase 2 crypto tier: Argon2id → requires `libsodium-wrappers-sumo`)
 - [ ] OS keychain integration (Phase 3 crypto tier: `keyring` crate)
