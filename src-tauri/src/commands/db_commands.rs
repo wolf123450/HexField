@@ -666,6 +666,75 @@ pub fn db_load_mod_log(
     Ok(rows)
 }
 
+// ── Search ────────────────────────────────────────────────────────────────────
+
+/// Full-text search over message content using the FTS5 index.
+/// `server_id` is required; `channel_id` optionally restricts results to one channel.
+/// Returns up to `limit` rows (default 50), ordered newest-first.
+#[tauri::command]
+pub fn db_search_messages(
+    state: State<AppState>,
+    server_id: String,
+    query: String,
+    channel_id: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<MessageRow>, String> {
+    let conn  = state.db.lock().map_err(|e| e.to_string())?;
+    let limit = limit.unwrap_or(50) as i64;
+
+    // Escape special FTS5 characters to avoid query parse errors from user input.
+    // We wrap the sanitised query in double-quotes for a phrase search unless the
+    // user has explicitly typed FTS5 syntax (contains " or *).
+    let fts_query = if query.contains('"') || query.contains('*') {
+        query.clone()
+    } else {
+        format!("\"{}\"", query.replace('"', "\"\""))
+    };
+
+    let rows = if let Some(cid) = channel_id {
+        let sql = "SELECT m.id, m.channel_id, m.server_id, m.author_id, m.content, m.content_type,
+                   m.reply_to_id, m.created_at, m.logical_ts, m.verified, m.raw_attachments
+                   FROM messages m
+                   WHERE m.server_id = ?1
+                     AND m.channel_id = ?2
+                     AND m.content IS NOT NULL
+                     AND m.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?3)
+                   ORDER BY m.logical_ts DESC
+                   LIMIT ?4";
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![server_id, cid, fts_query, limit],
+                row_to_message,
+            )
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    } else {
+        let sql = "SELECT m.id, m.channel_id, m.server_id, m.author_id, m.content, m.content_type,
+                   m.reply_to_id, m.created_at, m.logical_ts, m.verified, m.raw_attachments
+                   FROM messages m
+                   WHERE m.server_id = ?1
+                     AND m.content IS NOT NULL
+                     AND m.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?2)
+                   ORDER BY m.logical_ts DESC
+                   LIMIT ?3";
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![server_id, fts_query, limit],
+                row_to_message,
+            )
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+
+    Ok(rows)
+}
+
 // ── System ────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
