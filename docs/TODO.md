@@ -232,17 +232,17 @@
 - [x] Chunked download over WebRTC data channels (chunk size 256KB)
 - [x] `attachment_want` / `attachment_have` gossip protocol
 - [x] Partial download tracking (`.part` bitfield file + `.bits` sidecar)
-- [ ] Chunk integrity verification against content hash
+- [x] Chunk integrity verification against content hash
 - [x] Seeding: serve chunks from local cache to requesting peers
-- [ ] Retention setting (default 30 days) — wired to auto-pruning
+- [x] Retention setting (default 30 days) — wired to auto-pruning
 - [x] Phase 1 inline base64 path remains active for ≤100KB
 - [x] `AttachmentPreview.vue`: image/video/audio/file + lightbox + progress bar + download button
-- [ ] **Tests**
-  - [ ] BLAKE3 hash is deterministic for same content
-  - [ ] Chunk reassembly produces byte-identical file to original
-  - [ ] Partial download resumes from correct chunk offset
-  - [ ] Chunk integrity: corrupted chunk is rejected and re-requested
-  - [ ] Retention pruning removes files older than configured threshold
+- [x] **Tests**
+  - [x] BLAKE3 hash is deterministic for same content
+  - [x] Chunk reassembly produces byte-identical file to original
+  - [x] Partial download resumes from correct chunk offset
+  - [x] Chunk integrity: corrupted chunk is rejected and re-requested
+  - [x] Retention pruning removes files older than configured threshold
 
 ---
 
