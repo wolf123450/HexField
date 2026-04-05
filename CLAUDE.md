@@ -380,6 +380,7 @@ Issues that have already been encountered and fixed. **Do not re-introduce these
 
 | Pitfall | Fix |
 |---------|-----|
+| `ResizeObserver loop completed with undelivered notifications` shown as fatal startup error | This is a benign Chromium/WebView2 noise; `window.onerror` and `unhandledrejection` handlers in `main.ts` now filter it out with `msg.includes('ResizeObserver loop')` |
 | `libsodium-wrappers` ESM build references non-existent `libsodium.mjs` | Aliased to CJS build in `vite.config.ts` resolve.alias |
 | `macOS.infoPlist` in `tauri.conf.json` rejects inline JSON objects | Must be a file path string or empty object; see `src-tauri/Info.plist` |
 | `useVirtualizer` options passed as plain object with computed fields | Wrap entire options in `computed(() => ({ ... }))` |

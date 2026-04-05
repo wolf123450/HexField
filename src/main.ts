@@ -34,11 +34,16 @@ if (import.meta.env.PROD) {
 
   window.addEventListener('unhandledrejection', (ev) => {
     const r = ev.reason
-    showError(`Unhandled rejection:\n${r instanceof Error ? (r.stack ?? r.message) : String(r)}`)
+    const msg = r instanceof Error ? (r.stack ?? r.message) : String(r)
+    if (msg.includes('ResizeObserver loop')) return
+    showError(`Unhandled rejection:\n${msg}`)
   })
 
   window.onerror = (_msg, _src, _line, _col, err) => {
-    showError(`Uncaught error:\n${err instanceof Error ? (err.stack ?? err.message) : String(err ?? _msg)}`)
+    // ResizeObserver loop notifications are a benign Chromium/WebView2 quirk — never fatal.
+    const msg = err instanceof Error ? (err.stack ?? err.message) : String(err ?? _msg)
+    if (msg.includes('ResizeObserver loop')) return
+    showError(`Uncaught error:\n${msg}`)
   }
 
   const prev = localStorage.getItem('__app_last_error')
