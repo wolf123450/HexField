@@ -251,17 +251,17 @@
 
 **Goal**: Connect peers behind symmetric NAT without requiring a central server.
 
-- [ ] NAT type detection at startup (dual-STUN comparison → `detectNATType()`)
-- [ ] Relay capability advertisement in gossip/presence messages
-- [ ] `buildICEConfig(userId)` — dynamic ICE config using known relay peers
+- [x] NAT type detection at startup (dual-STUN comparison → `detectNATType()`)
+- [x] Relay capability advertisement in gossip/presence messages
+- [x] `buildICEConfig(userId)` — dynamic ICE config using known relay peers
 - [ ] Evaluate `turn` crate (webrtc-rs) for client-side TURN listener
 - [ ] Rendezvous server TURN endpoint (if server configured)
-- [ ] Settings > Voice: manual TURN server entry
+- [x] Settings > Voice: manual TURN server entry
 - [ ] Test: symmetric NAT simulation (two clients behind carrier-grade NAT), verify relay fallback
-- [ ] **Tests**
-  - [ ] `detectNATType()` returns expected type for full-cone, port-restricted, and symmetric setups (mock STUN)
-  - [ ] `buildICEConfig` includes relay candidates when NAT type is symmetric
-  - [ ] Relay peer advertisement is included in gossip message schema
+- [x] **Tests**
+  - [x] `detectNATType()` returns expected type for full-cone, port-restricted, and symmetric setups (mock STUN)
+  - [x] `buildICEConfig` includes relay candidates when NAT type is symmetric
+  - [x] Relay peer advertisement is included in gossip message schema
 
 ---
 
