@@ -393,6 +393,7 @@ Issues that have already been encountered and fixed. **Do not re-introduce these
 | Members appear 'online' by default on fresh load even when offline | `fetchMembers` now sets remote members to `'offline'`; own status read from `localStorage.getItem('gamechat_own_status')` |
 | Status mirroring: B changes to 'busy', A's status in B's view becomes 'busy' after ~10s | `gamechat_own_status` localStorage key was not user-scoped; two instances on same machine shared it. All reads/writes now use `gamechat_own_status_${userId}` |
 | mDNS causes both peers to dial each other simultaneously; stale `register_peer` cleanup emptied `lan_peers` | Added `PEER_GENERATION: AtomicU64` to `lan.rs`; `LanPeers` is now `HashMap<String, (u64, UnboundedSender<Value>)>`; cleanup only removes if `gen` still matches |
+| `gossipOwnDevice/Membership/Presence/Profile/ServerAvatars` called without `.catch()` in `onConnected` callback | Any async failure (e.g. import mock mismatch in tests) produces an unhandled rejection that poisons the test run; all five gossip calls now have `.catch(e => console.warn(...))` |
 
 ---
 
