@@ -308,7 +308,7 @@
   - [x] Deleted message placeholder: render `"[message deleted]"` in muted italic when `content === null` — controlled by Privacy settings toggle
   - [x] Admin override: `isAdmin` check uses `roles.some(r => r === 'admin' || r === 'owner')` (already in codebase)
   - [x] P2P propagation: no new network code needed — `mutation` broadcast already in `sendMutation` flow; negentropy sync propagates mutations to late-joining peers
-- [ ] **Tests**
+- [x] **Tests**
   - [x] FTS5 message search: exact match, partial match, no results
   - [x] FTS5 search excludes `content = NULL` (deleted) rows
   - [x] Passphrase key wrap: wrapped key cannot be decrypted with wrong passphrase
@@ -360,9 +360,9 @@
 - [ ] Click "Install update" → verify download, install, restart prompt
 
 - [ ] **Tests**
-  - [ ] `checkForUpdate()` returns `{ available: false }` when `import.meta.env.DEV` is true
-  - [ ] `checkForUpdate()` returns `{ available: false }` when `!isTauri`
-  - [ ] `autoCheckForUpdate()` shows notification when `checkForUpdate` returns `available: true` (mock)
+  - [x] `checkForUpdate()` returns `{ available: false }` when `import.meta.env.DEV` is true
+  - [x] `checkForUpdate()` returns `{ available: false }` when `!isTauri`
+  - [x] `autoCheckForUpdate()` shows notification when `checkForUpdate` returns `available: true` (mock)
 
 ---
 
