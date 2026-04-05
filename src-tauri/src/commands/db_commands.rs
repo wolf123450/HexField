@@ -1042,6 +1042,13 @@ pub fn get_screen_sources() -> Result<Vec<serde_json::Value>, String> {
     Ok(vec![])
 }
 
+/// Opens the browser developer tools panel for the requesting webview window.
+/// Requires the `devtools` Cargo feature (already enabled in Cargo.toml).
+#[tauri::command]
+pub fn open_devtools(window: tauri::WebviewWindow) {
+    window.open_devtools();
+}
+
 // ── Background maintenance ────────────────────────────────────────────────────
 
 /// Prune bans whose `expires_at` timestamp (ISO-8601 string) is in the past.
