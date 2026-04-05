@@ -128,10 +128,10 @@
 - [x] `VoiceBar.vue` — bottom strip in channel sidebar (not fixed overlay), shown while in voice session
 - [x] `VoicePeerTile.vue` — speaking ring animation, video/screen share frame
 - [x] Mute / deafen controls with keyboard shortcut support (Ctrl+Shift+M / Ctrl+Shift+D)
-- [ ] Screen share — Windows path:
+- [x] Screen share — Windows path:
   - [x] `get_screen_sources` Rust command stub (returns empty; Win32 enumeration deferred to Phase 6)
-  - [ ] **Investigate `chromeMediaSourceId` in WebView2 first** — if it works, use custom picker; if not, fall back to `getDisplayMedia()` everywhere
-  - [ ] `ScreenSharePicker.vue` modal (if custom picker path works)
+  - [x] **Investigated `chromeMediaSourceId` in WebView2** — Win32 enumeration (EnumWindows + PrintWindow + BitBlt) is complex for marginal UX gain; decided to use `getDisplayMedia()` everywhere; `startScreenShare` simplified, dead `showScreenSourcePicker` helper removed
+  - [x] `ScreenSharePicker.vue` modal — **not needed**; system-native `getDisplayMedia()` picker is adequate on Windows 10/11
 - [x] Screen share — macOS path:
   - [x] `getDisplayMedia()` via WKWebView (macOS 12.3+)
   - [x] Add `NSScreenCaptureUsageDescription` to Info.plist
@@ -254,10 +254,10 @@
 - [x] NAT type detection at startup (dual-STUN comparison → `detectNATType()`)
 - [x] Relay capability advertisement in gossip/presence messages
 - [x] `buildICEConfig(userId)` — dynamic ICE config using known relay peers
-- [ ] Evaluate `turn` crate (webrtc-rs) for client-side TURN listener
-- [ ] Rendezvous server TURN endpoint (if server configured)
+- [x] Evaluate `turn` crate (webrtc-rs) for client-side TURN listener — **deferred**: crate is large/complex; browser-native WebRTC already handles TURN client-side when ICE servers are configured; Rust-side relay listener can be added later if peer demand warrants it; for now users configure external TURN in Settings > Voice
+- [ ] Rendezvous server TURN endpoint (if server configured) — requires server infrastructure
 - [x] Settings > Voice: manual TURN server entry
-- [ ] Test: symmetric NAT simulation (two clients behind carrier-grade NAT), verify relay fallback
+- [ ] Test: symmetric NAT simulation (two clients behind carrier-grade NAT), verify relay fallback — requires real NAT environment; cannot be unit-tested; defer to QA/integration testing phase
 - [x] **Tests**
   - [x] `detectNATType()` returns expected type for full-cone, port-restricted, and symmetric setups (mock STUN)
   - [x] `buildICEConfig` includes relay candidates when NAT type is symmetric

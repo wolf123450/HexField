@@ -97,7 +97,7 @@ See [TODO.md](TODO.md) for full task lists with checkboxes.
 | Architecture | **Server-optional P2P** | QR code + mDNS + peer-relay as primary; rendezvous server is optional convenience |
 | Rendezvous server | **Optional, separate repo** (`gamechat-server`) | Self-hostable; graceful degradation when unavailable |
 | Screen capture (macOS) | **Native `getDisplayMedia()`** | WKWebView doesn't support chromeMediaSourceId; macOS 12.3+ shows its own picker |
-| Screen capture (Windows) | **Investigate chromeMediaSourceId at Phase 5; fallback to `getDisplayMedia()` if it fails** | WebView2 support unverified; custom picker is nice-to-have, not required |
+| Screen capture (Windows) | **`getDisplayMedia()` everywhere** | Win32 source enumeration (EnumWindows + PrintWindow + BitBlt) investigated and dropped — complex for marginal UX gain; system-native picker (Windows 10/11) is adequate |
 | Screen capture (macOS < 12.3) | **Rust-side `CGDisplayStream` fallback (Phase 6)** | Only implement if `getDisplayMedia()` proves insufficient in testing |
 | Emoji storage | **Files on disk, metadata in SQLite** | Avoids multi-MB SQLite blob reads; lazy-load images on demand |
 | Attachments (Phase 1) | **Inline base64 ≤100KB, external URLs** | Simple, no extra infrastructure |
