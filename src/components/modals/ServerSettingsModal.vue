@@ -29,6 +29,29 @@
             </div>
           </div>
 
+          <!-- Background color picker (shown when no avatar is set) -->
+          <div v-if="isAdmin && !server?.avatarDataUrl" class="icon-bg-row">
+            <span class="icon-bg-label">Icon background</span>
+            <div class="icon-bg-swatches">
+              <button
+                v-for="color in DEFAULT_BG_COLORS"
+                :key="color"
+                class="color-swatch"
+                :class="{ selected: (server?.iconBgColor ?? derivedBgColor) === color }"
+                :style="{ background: color }"
+                :title="color"
+                @click="pickIconBgColor(color)"
+              />
+              <label class="color-swatch color-swatch--custom" :title="'Custom color'">
+                <input
+                  type="color"
+                  :value="server?.iconBgColor ?? derivedBgColor"
+                  @input="pickIconBgColor(($event.target as HTMLInputElement).value)"
+                />
+              </label>
+            </div>
+          </div>
+
           <!-- Hidden file input for icon upload -->
           <input
             ref="iconInput"
@@ -235,11 +258,30 @@
               <span>Import Archive…</span>
               <input type="file" accept=".json" style="display:none" @change="doImportArchive" />
             </label>
-            <button class="settings-btn settings-btn--danger" :disabled="rebaselining" @click="doRebaseline">
+            <button class="settings-btn settings-btn--danger" :disabled="rebaselining" @click="confirmRebaseline = true">
               <AppIcon :path="mdiCalendarRemove" :size="18" />
-              <span>{{ rebaselining ? 'Applying…' : 'Re-baseline Server' }}</span>
+              <span>Re-baseline Server</span>
             </button>
           </div>
+
+          <!-- Inline re-baseline confirmation -->
+          <div v-if="confirmRebaseline" class="rebaseline-confirm">
+            <div class="rebaseline-confirm-title">⚠ Confirm Re-baseline</div>
+            <p class="rebaseline-confirm-body">
+              Setting a new baseline means <strong>new members who join after this point will only
+              receive messages sent from now onward</strong> — they will not see any earlier chat history.
+              Existing members keep their full local history unchanged.
+              <br /><br />
+              This action is irreversible. The baseline timestamp is broadcast to all connected peers.
+            </p>
+            <div class="rebaseline-confirm-actions">
+              <button class="settings-btn" @click="confirmRebaseline = false">Cancel</button>
+              <button class="settings-btn settings-btn--danger" :disabled="rebaselining" @click="doRebaseline">
+                {{ rebaselining ? 'Applying…' : 'Yes, Re-baseline Now' }}
+              </button>
+            </div>
+          </div>
+
           <p v-if="server?.historyStartsAt" class="section-hint" style="margin-top:8px">
             Current baseline: {{ new Date(server.historyStartsAt).toLocaleString() }}
           </p>
@@ -281,9 +323,23 @@ const settingsStore = useSettingsStore()
 
 const iconInput = ref<HTMLInputElement | null>(null)
 
+const DEFAULT_BG_COLORS = ['#5865F2', '#3BA55D', '#ED4245', '#FAA61A', '#EB459E', '#9B59B6', '#607D8B']
+
 const server = computed(() =>
   uiStore.settingsServerId ? serversStore.servers[uiStore.settingsServerId] : null
 )
+
+const derivedBgColor = computed(() => {
+  const sid = uiStore.settingsServerId
+  if (!sid) return DEFAULT_BG_COLORS[0]
+  return DEFAULT_BG_COLORS[sid.charCodeAt(0) % DEFAULT_BG_COLORS.length]
+})
+
+async function pickIconBgColor(color: string) {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  await serversStore.updateServerIconBgColor(sid, color)
+}
 
 const isAdmin = computed(() => {
   const sid = uiStore.settingsServerId
@@ -493,8 +549,9 @@ async function doDeny(requestId: string) {
   await serversStore.denyJoinRequest(sid, requestId)
 }
 
-const exporting    = ref(false)
-const rebaselining = ref(false)
+const exporting       = ref(false)
+const rebaselining    = ref(false)
+const confirmRebaseline = ref(false)
 
 async function doExportArchive() {
   const sid = uiStore.settingsServerId
@@ -522,9 +579,11 @@ async function doImportArchive(e: Event) {
 async function doRebaseline() {
   const sid = uiStore.settingsServerId
   if (!sid) return
-  if (!confirm('Re-baseline this server? New joiners will only receive messages from this point forward.')) return
   rebaselining.value = true
-  try { await serversStore.applyRebaseline(sid) }
+  try {
+    await serversStore.applyRebaseline(sid)
+    confirmRebaseline.value = false
+  }
   catch (err: unknown) { alert(err instanceof Error ? err.message : 'Re-baseline failed.') }
   finally { rebaselining.value = false }
 }
@@ -761,6 +820,87 @@ function readAsDataUrl(file: File): Promise<string> {
 
 .archive-import-label {
   cursor: pointer;
+}
+
+.rebaseline-confirm {
+  margin-top: var(--spacing-md);
+  background: var(--bg-primary);
+  border: 1px solid var(--error-color);
+  border-radius: 6px;
+  padding: var(--spacing-md);
+}
+
+.rebaseline-confirm-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--error-color);
+  margin-bottom: var(--spacing-sm);
+}
+
+.rebaseline-confirm-body {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0 0 var(--spacing-md) 0;
+}
+
+.rebaseline-confirm-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  justify-content: flex-end;
+}
+
+/* ── Icon background color picker ──────────────────────────────────────── */
+.icon-bg-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-sm);
+}
+
+.icon-bg-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 110px;
+}
+
+.icon-bg-swatches {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.color-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: border-color 0.1s, transform 0.1s;
+  transform: none;
+}
+.color-swatch:hover { transform: scale(1.15); border-color: rgba(255,255,255,0.4); }
+.color-swatch.selected { border-color: white; }
+
+.color-swatch--custom {
+  background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.color-swatch--custom input[type="color"] {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  border: none;
+  padding: 0;
 }
 
 .modal-actions {

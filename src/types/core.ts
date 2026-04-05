@@ -15,6 +15,7 @@ export interface Server {
   description?:    string
   iconUrl?:        string
   avatarDataUrl?:  string | null
+  iconBgColor?:    string          // background color for the default (no avatar) icon
   ownerId:         string
   memberCount:     number
   createdAt:       string        // ISO 8601

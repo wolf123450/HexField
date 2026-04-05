@@ -201,6 +201,39 @@ export const useServersStore = defineStore('servers', () => {
     })
   }
 
+  async function updateServerIconBgColor(serverId: string, color: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const myId = useIdentityStore().userId!
+    const server = servers.value[serverId]
+    if (!server) return
+    server.iconBgColor = color
+    await invoke('db_save_server', {
+      server: {
+        id:          server.id,
+        name:        server.name,
+        description: server.description ?? null,
+        icon_url:    server.iconUrl ?? null,
+        owner_id:    server.ownerId,
+        invite_code: server.inviteCode ?? null,
+        created_at:  server.createdAt,
+        raw_json:    JSON.stringify(server),
+      },
+    })
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'server_update',
+      targetId:   serverId,
+      channelId:  '__server__',
+      authorId:   myId,
+      newContent: JSON.stringify({ iconBgColor: color }),
+      logicalTs:  new Date().toISOString(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+  }
+
   function applyServerMutation(mutation: Mutation) {
     if (mutation.type === 'server_update' && mutation.newContent) {
       const patch = JSON.parse(mutation.newContent)
@@ -1113,6 +1146,7 @@ export const useServersStore = defineStore('servers', () => {
     updateMemberDisplayName,
     updateMemberProfile,
     updateServerAvatar,
+    updateServerIconBgColor,
     applyServerMutation,
     joinFromManifest,
     loadInviteCodes,

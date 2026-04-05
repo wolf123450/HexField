@@ -767,6 +767,11 @@ export const useNetworkStore = defineStore('network', () => {
     broadcast({ type: 'profile_update', payload })
   }
 
+  /** Request a profile_update from a specific peer. */
+  async function requestProfile(peerId: string) {
+    webrtcService.sendToPeer(peerId, { type: 'profile_request' })
+  }
+
   /** Send own presence+profile to a single newly connected peer. */
   async function gossipOwnPresence(peerId: string) {
     const { useIdentityStore } = await import('./identityStore')
@@ -1271,6 +1276,7 @@ export const useNetworkStore = defineStore('network', () => {
     getTypingUsers,
     broadcastPresence,
     broadcastProfile,
+    requestProfile,
     broadcastServerAvatar,
     broadcastAttachmentWant,
   }
