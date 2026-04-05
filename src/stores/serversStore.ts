@@ -139,17 +139,20 @@ export const useServersStore = defineStore('servers', () => {
         publicSignKey: r.public_sign_key,
         publicDHKey:   r.public_dh_key,
         onlineStatus,
-        // Prefer DB-persisted avatar; fall back to any in-memory gossip value not yet flushed.
+        // Prefer DB-persisted values; fall back to any in-memory gossip not yet flushed.
         avatarDataUrl: r.avatar_data_url ?? existing[r.user_id]?.avatarDataUrl,
-        bio:           existing[r.user_id]?.bio,
-        bannerColor:   existing[r.user_id]?.bannerColor,
-        bannerDataUrl: existing[r.user_id]?.bannerDataUrl,
+        bio:           r.bio           ?? existing[r.user_id]?.bio,
+        bannerColor:   r.banner_color  ?? existing[r.user_id]?.bannerColor,
+        bannerDataUrl: r.banner_data_url ?? existing[r.user_id]?.bannerDataUrl,
       }
     }
-    // Hydrate own member record with current identity data (source of truth for name/avatar).
+    // Hydrate own member record with current identity data (source of truth for name/avatar/bio/banner).
     if (uid && map[uid]) {
       map[uid].displayName   = identityStore.displayName
       map[uid].avatarDataUrl = identityStore.avatarDataUrl
+      if (identityStore.bio)          map[uid].bio          = identityStore.bio
+      if (identityStore.bannerColor)  map[uid].bannerColor  = identityStore.bannerColor
+      if (identityStore.bannerDataUrl) map[uid].bannerDataUrl = identityStore.bannerDataUrl
     }
     members.value[serverId] = map
   }
@@ -188,6 +191,23 @@ export const useServersStore = defineStore('servers', () => {
     if (payload.bio           !== undefined) m.bio           = payload.bio
     if (payload.bannerColor   !== undefined) m.bannerColor   = payload.bannerColor
     if (payload.bannerDataUrl !== undefined) m.bannerDataUrl = payload.bannerDataUrl
+    // Persist the updated member record to DB so bios/banners survive restarts
+    invoke('db_upsert_member', {
+      member: {
+        user_id:          m.userId,
+        server_id:        m.serverId,
+        display_name:     m.displayName,
+        roles:            JSON.stringify(m.roles),
+        joined_at:        m.joinedAt,
+        public_sign_key:  m.publicSignKey,
+        public_dh_key:    m.publicDHKey,
+        online_status:    m.onlineStatus,
+        avatar_data_url:  m.avatarDataUrl ?? null,
+        bio:              m.bio           ?? null,
+        banner_color:     m.bannerColor   ?? null,
+        banner_data_url:  m.bannerDataUrl ?? null,
+      },
+    }).catch(() => {}) // fire-and-forget; in-memory state is already updated
   }
 
   async function updateServerAvatar(serverId: string, dataUrl: string | null) {
@@ -869,9 +889,14 @@ export const useServersStore = defineStore('servers', () => {
     roles: string[]
     joinedAt: string
     onlineStatus: string
-    avatarDataUrl?: string
+    avatarDataUrl?: string | null
+    bio?: string | null
+    bannerColor?: string | null
+    bannerDataUrl?: string | null
   }) {
     if (!servers.value[m.serverId]) return // Unknown server — reject silently
+    // Preserve existing profile fields if caller doesn't supply them
+    const existing = members.value[m.serverId]?.[m.userId]
     await invoke('db_upsert_member', {
       member: {
         user_id:          m.userId,
@@ -882,12 +907,13 @@ export const useServersStore = defineStore('servers', () => {
         public_sign_key:  m.publicSignKey,
         public_dh_key:    m.publicDHKey,
         online_status:    m.onlineStatus,
-        avatar_data_url:  m.avatarDataUrl ?? null,
+        avatar_data_url:  m.avatarDataUrl !== undefined ? m.avatarDataUrl : (existing?.avatarDataUrl ?? null),
+        bio:              m.bio           !== undefined ? m.bio           : (existing?.bio ?? null),
+        banner_color:     m.bannerColor   !== undefined ? m.bannerColor   : (existing?.bannerColor ?? null),
+        banner_data_url:  m.bannerDataUrl !== undefined ? m.bannerDataUrl : (existing?.bannerDataUrl ?? null),
       },
     })
     if (!members.value[m.serverId]) members.value[m.serverId] = {}
-    // Preserve existing avatarDataUrl if caller didn't supply a new one
-    const existingAvatar = members.value[m.serverId][m.userId]?.avatarDataUrl
     members.value[m.serverId][m.userId] = {
       userId:        m.userId,
       serverId:      m.serverId,
@@ -897,7 +923,10 @@ export const useServersStore = defineStore('servers', () => {
       roles:         m.roles,
       joinedAt:      m.joinedAt,
       onlineStatus:  m.onlineStatus as ServerMember['onlineStatus'],
-      avatarDataUrl: m.avatarDataUrl ?? existingAvatar,
+      avatarDataUrl: m.avatarDataUrl !== undefined ? m.avatarDataUrl : existing?.avatarDataUrl,
+      bio:           m.bio           !== undefined ? m.bio           : existing?.bio,
+      bannerColor:   m.bannerColor   !== undefined ? m.bannerColor   : existing?.bannerColor,
+      bannerDataUrl: m.bannerDataUrl !== undefined ? m.bannerDataUrl : existing?.bannerDataUrl,
     }
   }
 
