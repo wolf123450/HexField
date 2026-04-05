@@ -1,5 +1,5 @@
 <template>
-  <div class="message-input-wrap">
+  <div ref="wrapRef" class="message-input-wrap">
     <form class="message-form" @submit.prevent="submit">
       <div class="input-area">
         <!-- Attachment button -->
@@ -55,7 +55,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useMessagesStore } from '@/stores/messagesStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useNetworkStore } from '@/stores/networkStore'
@@ -76,11 +76,29 @@ const channelsStore   = useChannelsStore()
 const networkStore    = useNetworkStore()
 const inputRef        = ref<HTMLTextAreaElement | null>(null)
 const fileInputRef    = ref<HTMLInputElement | null>(null)
+const wrapRef         = ref<HTMLDivElement | null>(null)
 const draft           = ref('')
 const pendingAttachments = ref<Attachment[]>([])
 
 let typingTimeout: ReturnType<typeof setTimeout> | null = null
 let isTyping = false
+
+// ── Visual Viewport — keep input above software keyboard on mobile ────────────
+onMounted(() => {
+  const vv = window.visualViewport
+  if (!vv) return
+  function onVVResize() {
+    if (!wrapRef.value) return
+    const offset = window.innerHeight - vv!.offsetTop - vv!.height
+    wrapRef.value.style.marginBottom = offset > 0 ? `${offset}px` : ''
+  }
+  vv.addEventListener('resize', onVVResize)
+  vv.addEventListener('scroll', onVVResize)
+  onUnmounted(() => {
+    vv.removeEventListener('resize', onVVResize)
+    vv.removeEventListener('scroll', onVVResize)
+  })
+})
 
 const canSend = computed(() =>
   draft.value.trim().length > 0 || pendingAttachments.value.length > 0

@@ -1,6 +1,9 @@
 <template>
   <aside class="channel-sidebar">
     <div class="server-header">
+      <button v-if="isMobile" class="mobile-back-btn" aria-label="Back to servers" @click="uiStore.setMobilePanelView('servers')">
+        <AppIcon :path="mdiChevronLeft" :size="20" />
+      </button>
       <span class="server-name">{{ activeServer?.name ?? 'No server selected' }}</span>
       <div class="server-header-actions">
         <button
@@ -205,7 +208,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watchEffect, onMounted, onUnmounted, nextTick } from 'vue'
-import { mdiCog, mdiMicrophone, mdiMicrophoneOff, mdiAccountPlus } from '@mdi/js'
+import { mdiCog, mdiMicrophone, mdiMicrophoneOff, mdiAccountPlus, mdiChevronLeft } from '@mdi/js'
 import { useServersStore } from '@/stores/serversStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useMessagesStore } from '@/stores/messagesStore'
@@ -214,6 +217,7 @@ import { useVoiceStore } from '@/stores/voiceStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import { usePersonalBlocksStore } from '@/stores/personalBlocksStore'
+import { useBreakpoint } from '@/utils/useBreakpoint'
 import VoiceBar from '@/components/chat/VoiceBar.vue'
 import ChannelNotifPopover from '@/components/layout/ChannelNotifPopover.vue'
 import ModerationActionModal from '@/components/modals/ModerationActionModal.vue'
@@ -229,6 +233,7 @@ const voiceStore    = useVoiceStore()
 const uiStore       = useUIStore()
 const networkStore        = useNetworkStore()
 const personalBlocksStore = usePersonalBlocksStore()
+const { isMobile } = useBreakpoint()
 
 function peerDisplayName(userId: string): string {
   const sid = serversStore.activeServerId
@@ -601,6 +606,27 @@ function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline') {
   height: 48px;
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
+}
+
+.mobile-back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  transform: none;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
+.mobile-back-btn:hover {
+  color: var(--text-primary);
+  transform: none;
 }
 
 .server-name {

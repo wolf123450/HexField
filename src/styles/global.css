@@ -402,3 +402,37 @@ body.pane-resizing .sidebar-collapsed {
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Mobile: modals full-screen (< 640 px) ────────────────────────────────── */
+/*
+ * Scoped component styles use attribute selectors (e.g. .modal-box[data-v-xxx])
+ * so !important is required here to override them at the breakpoint.
+ */
+@media (max-width: 639px) {
+  .modal-box,
+  .profile-modal,
+  .mod-box,
+  .modal.device-link-modal {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100% !important;
+    max-height: 100% !important;
+    border-radius: 0 !important;
+    overflow-y: auto !important;
+  }
+}
+
+/* ── Mobile: touch target sizes (WCAG 2.5.5, ≥ 44×44 px) ───────────────── */
+@media (max-width: 639px) {
+  button,
+  [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* List items that are interactive */
+  .channel-item,
+  .server-item {
+    min-height: 44px;
+  }
+}
