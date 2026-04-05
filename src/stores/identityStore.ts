@@ -16,6 +16,8 @@ export const useIdentityStore = defineStore('identity', () => {
   const isRegistered      = ref<boolean>(false)
   /** True when the identity keys are stored passphrase-wrapped (Phase 2 crypto tier). */
   const passphraseProtected = ref<boolean>(false)
+  /** True when the identity keys are stored in the OS-native keychain (Phase 3 crypto tier). */
+  const keychainProtected   = ref<boolean>(false)
 
   async function initializeIdentity() {
     await cryptoService.init()
@@ -28,27 +30,40 @@ export const useIdentityStore = defineStore('identity', () => {
     const existingAvatar   = await invoke<string | null>('db_load_key', { keyId: 'local_avatar_data' })
 
     if (existingSignKey && existingDHKey && existingUserId) {
-      // Detect whether keys are passphrase-wrapped (version 2).
-      // A wrapped bundle is stored as a JSON string with { version: 2, ... }.
-      let isWrapped = false
-      try {
-        const maybeJson = JSON.parse(existingSignKey)
-        if (maybeJson && maybeJson.version === 2) isWrapped = true
-      } catch { /* raw base64 key — not wrapped */ }
-
-      if (isWrapped) {
-        // Keys are wrapped — leave keys null in memory; caller must call
-        // unlockWithPassphrase() before the identity is fully usable.
-        passphraseProtected.value = true
+      // Detect the active key storage tier.
+      // Tier 3 — OS keychain: sentinel value '__keychain__'
+      if (existingSignKey === '__keychain__') {
+        const signSecret = await invoke<string | null>('keychain_load', { service: 'gamechat', account: 'identity_sign_secret' })
+        const dhSecret   = await invoke<string | null>('keychain_load', { service: 'gamechat', account: 'identity_dh_secret' })
+        if (signSecret && dhSecret) {
+          await cryptoService.loadKeys(signSecret, dhSecret)
+          keychainProtected.value = true
+        }
+        // If keychain load fails (key deleted by OS), fall through with no keys loaded —
+        // the caller can handle the locked state.
       } else {
-        // Load existing raw keys
-        await cryptoService.loadKeys(existingSignKey, existingDHKey)
-        passphraseProtected.value = false
+        // Detect whether keys are passphrase-wrapped (version 2).
+        // A wrapped bundle is stored as a JSON string with { version: 2, ... }.
+        let isWrapped = false
+        try {
+          const maybeJson = JSON.parse(existingSignKey)
+          if (maybeJson && maybeJson.version === 2) isWrapped = true
+        } catch { /* raw base64 key — not wrapped */ }
+
+        if (isWrapped) {
+          // Keys are wrapped — leave keys null in memory; caller must call
+          // unlockWithPassphrase() before the identity is fully usable.
+          passphraseProtected.value = true
+        } else {
+          // Load existing raw keys
+          await cryptoService.loadKeys(existingSignKey, existingDHKey)
+          passphraseProtected.value = false
+        }
       }
 
       userId.value        = existingUserId
       displayName.value   = existingName ?? 'Anonymous'
-      if (!isWrapped) {
+      if (!passphraseProtected.value || keychainProtected.value) {
         publicSignKey.value = cryptoService.getPublicSignKey()
         publicDHKey.value   = cryptoService.getPublicDHKey()
       }
@@ -190,6 +205,38 @@ export const useIdentityStore = defineStore('identity', () => {
   }
 
   /**
+   * Enable OS keychain storage: save raw secrets to the OS credential store
+   * and replace the SQLite key_store entry with a sentinel.
+   * Keys must already be loaded in memory (not passphrase-locked).
+   */
+  async function saveToKeychain(): Promise<void> {
+    const raw = cryptoService.getRawIdentitySecrets()
+    if (!raw) throw new Error('Keys not in memory — cannot save to keychain')
+    await invoke('keychain_save', { service: 'gamechat', account: 'identity_sign_secret', secret: raw.signSecret })
+    await invoke('keychain_save', { service: 'gamechat', account: 'identity_dh_secret',   secret: raw.dhSecret })
+    // Write sentinel to SQLite so we know to load from keychain on next launch
+    await invoke('db_save_key', { keyId: 'local_sign_secret', keyType: 'sign_secret', keyData: '__keychain__' })
+    await invoke('db_save_key', { keyId: 'local_dh_secret',   keyType: 'dh_secret',   keyData: '__keychain__' })
+    keychainProtected.value = true
+  }
+
+  /**
+   * Disable OS keychain storage: load raw secrets back from the keychain,
+   * save them as plain base64 in SQLite, and delete the keychain entries.
+   * Keys must already be loaded in memory.
+   */
+  async function removeFromKeychain(): Promise<void> {
+    const signSecret = await invoke<string | null>('keychain_load', { service: 'gamechat', account: 'identity_sign_secret' })
+    const dhSecret   = await invoke<string | null>('keychain_load', { service: 'gamechat', account: 'identity_dh_secret' })
+    if (!signSecret || !dhSecret) throw new Error('Keychain entry not found — cannot remove')
+    await invoke('db_save_key', { keyId: 'local_sign_secret', keyType: 'sign_secret', keyData: signSecret })
+    await invoke('db_save_key', { keyId: 'local_dh_secret',   keyType: 'dh_secret',   keyData: dhSecret })
+    await invoke('keychain_delete', { service: 'gamechat', account: 'identity_sign_secret' })
+    await invoke('keychain_delete', { service: 'gamechat', account: 'identity_dh_secret' })
+    keychainProtected.value = false
+  }
+
+  /**
    * Disable passphrase protection: re-write the raw secrets back to key_store.
    * Caller must have already unlocked (keys must be in memory).
    */
@@ -212,6 +259,7 @@ export const useIdentityStore = defineStore('identity', () => {
     bannerDataUrl,
     isRegistered,
     passphraseProtected,
+    keychainProtected,
     initializeIdentity,
     updateDisplayName,
     updateAvatar,
@@ -222,5 +270,7 @@ export const useIdentityStore = defineStore('identity', () => {
     unlockWithPassphrase,
     setPassphrase,
     removePassphrase,
+    saveToKeychain,
+    removeFromKeychain,
   }
 })

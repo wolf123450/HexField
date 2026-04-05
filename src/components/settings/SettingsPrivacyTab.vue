@@ -87,6 +87,39 @@
       </div>
     </div>
 
+    <!-- ── OS Keychain ──────────────────────────────────────────── -->
+    <div class="form-row">
+      <label class="form-label">OS Keychain</label>
+      <p class="form-hint" style="margin-bottom: var(--spacing-sm)">
+        Store your identity keys in the OS-native credential store (Windows Credential Manager /
+        macOS Keychain / libsecret). Keys are never written to disk — only a sentinel
+        reference is kept in the database.
+      </p>
+
+      <div v-if="!identityStore.keychainProtected" class="passphrase-box">
+        <p class="passphrase-status passphrase-off">Keys not stored in OS keychain</p>
+        <p v-if="identityStore.passphraseProtected" class="passphrase-error" style="margin-bottom: var(--spacing-xs)">
+          Disable passphrase protection first before enabling OS keychain.
+        </p>
+        <p v-if="keychainError" class="passphrase-error">{{ keychainError }}</p>
+        <button
+          class="btn-set-passphrase"
+          :disabled="savingToKeychain || identityStore.passphraseProtected"
+          @click="doSaveToKeychain"
+        >
+          {{ savingToKeychain ? 'Saving…' : 'Store in OS Keychain' }}
+        </button>
+      </div>
+
+      <div v-else class="passphrase-box">
+        <p class="passphrase-status passphrase-on">Keys stored in OS keychain</p>
+        <p v-if="keychainError" class="passphrase-error">{{ keychainError }}</p>
+        <button class="btn-remove-passphrase" :disabled="removingFromKeychain" @click="doRemoveFromKeychain">
+          {{ removingFromKeychain ? 'Removing…' : 'Remove from OS Keychain' }}
+        </button>
+      </div>
+    </div>
+
     <!-- ── Identity Export / Import ─────────────────────────────────── -->
     <div class="form-row">
       <label class="form-label">Identity Backup</label>
@@ -297,6 +330,37 @@ async function doRemovePassphrase() {
     passphraseError.value = e instanceof Error ? e.message : 'Failed to remove passphrase.'
   } finally {
     removingPassphrase.value = false
+  }
+}
+
+// ── OS Keychain ───────────────────────────────────────────────────────────
+const keychainError       = ref('')
+const savingToKeychain    = ref(false)
+const removingFromKeychain = ref(false)
+
+async function doSaveToKeychain() {
+  keychainError.value = ''
+  savingToKeychain.value = true
+  try {
+    await identityStore.saveToKeychain()
+    uiStore.showNotification('Identity keys saved to OS keychain.', 'success')
+  } catch (e: unknown) {
+    keychainError.value = e instanceof Error ? e.message : 'Failed to save to keychain.'
+  } finally {
+    savingToKeychain.value = false
+  }
+}
+
+async function doRemoveFromKeychain() {
+  keychainError.value = ''
+  removingFromKeychain.value = true
+  try {
+    await identityStore.removeFromKeychain()
+    uiStore.showNotification('Keys moved back to local database.', 'info')
+  } catch (e: unknown) {
+    keychainError.value = e instanceof Error ? e.message : 'Failed to remove from keychain.'
+  } finally {
+    removingFromKeychain.value = false
   }
 }
 </script>

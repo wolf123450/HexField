@@ -9,6 +9,7 @@ mod lan;
 
 use commands::attachment_commands::*;
 use commands::db_commands::*;
+use commands::keychain_commands::*;
 use commands::signal_commands::*;
 use commands::sync_commands::*;
 
@@ -119,6 +120,10 @@ pub fn run() {
             prune_attachments,
             get_attachment_storage_bytes,
             enforce_storage_limit,
+            // OS Keychain
+            keychain_save,
+            keychain_load,
+            keychain_delete,
             // System
             get_app_data_path,
             get_screen_sources,
