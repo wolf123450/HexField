@@ -219,6 +219,32 @@
           </template>
         </section>
 
+        <!-- Archive & Re-baseline (admin only) -->
+        <section v-if="isAdmin" class="settings-section">
+          <h3 class="section-title">ARCHIVE</h3>
+          <p class="section-hint">
+            Export a signed snapshot of this server's history, import an archive to bootstrap a new member,
+            or re-baseline to cut off pre-date history from future sync.
+          </p>
+          <div class="archive-actions">
+            <button class="settings-btn" :disabled="exporting" @click="doExportArchive">
+              <AppIcon :path="mdiArchiveArrowDown" :size="18" />
+              <span>{{ exporting ? 'Exporting…' : 'Export Archive…' }}</span>
+            </button>
+            <label class="settings-btn archive-import-label">
+              <span>Import Archive…</span>
+              <input type="file" accept=".json" style="display:none" @change="doImportArchive" />
+            </label>
+            <button class="settings-btn settings-btn--danger" :disabled="rebaselining" @click="doRebaseline">
+              <AppIcon :path="mdiCalendarRemove" :size="18" />
+              <span>{{ rebaselining ? 'Applying…' : 'Re-baseline Server' }}</span>
+            </button>
+          </div>
+          <p v-if="server?.historyStartsAt" class="section-hint" style="margin-top:8px">
+            Current baseline: {{ new Date(server.historyStartsAt).toLocaleString() }}
+          </p>
+        </section>
+
         <!-- Danger zone (placeholder) -->
         <section v-if="isAdmin" class="settings-section settings-section--danger">
           <h3 class="section-title">DANGER ZONE</h3>
@@ -238,7 +264,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { mdiClose, mdiCamera, mdiAccountPlus, mdiTrashCan } from '@mdi/js'
+import { mdiClose, mdiCamera, mdiAccountPlus, mdiTrashCan, mdiArchiveArrowDown, mdiCalendarRemove } from '@mdi/js'
 import { v7 as uuidv7 } from 'uuid'
 import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
@@ -467,6 +493,42 @@ async function doDeny(requestId: string) {
   await serversStore.denyJoinRequest(sid, requestId)
 }
 
+const exporting    = ref(false)
+const rebaselining = ref(false)
+
+async function doExportArchive() {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  exporting.value = true
+  try { await serversStore.exportArchive(sid) }
+  catch (err: unknown) { alert(err instanceof Error ? err.message : 'Export failed.') }
+  finally { exporting.value = false }
+}
+
+async function doImportArchive(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  ;(e.target as HTMLInputElement).value = ''
+  try {
+    const text = await file.text()
+    const srv = await serversStore.importArchive(text)
+    alert(`Server "${srv.name}" imported successfully.`)
+    close()
+  } catch (err: unknown) {
+    alert(err instanceof Error ? err.message : 'Import failed.')
+  }
+}
+
+async function doRebaseline() {
+  const sid = uiStore.settingsServerId
+  if (!sid) return
+  if (!confirm('Re-baseline this server? New joiners will only receive messages from this point forward.')) return
+  rebaselining.value = true
+  try { await serversStore.applyRebaseline(sid) }
+  catch (err: unknown) { alert(err instanceof Error ? err.message : 'Re-baseline failed.') }
+  finally { rebaselining.value = false }
+}
+
 
 const SERVER_ICON_DIM        = 64
 const SERVER_ICON_MAX_GIF    = 512 * 1024
@@ -686,6 +748,20 @@ function readAsDataUrl(file: File): Promise<string> {
   align-self: flex-start;
 }
 .settings-btn:hover { background: var(--bg-primary); }
+.settings-btn--danger { color: var(--error-color); border-color: var(--error-color); }
+.settings-btn--danger:hover { background: rgba(var(--error-color-rgb, 237,66,69), 0.1); }
+.settings-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.archive-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-sm);
+}
+
+.archive-import-label {
+  cursor: pointer;
+}
 
 .modal-actions {
   display: flex;

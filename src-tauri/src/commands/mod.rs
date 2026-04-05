@@ -1,3 +1,4 @@
+pub mod archive_commands;
 pub mod attachment_commands;
 pub mod db_commands;
 pub mod keychain_commands;

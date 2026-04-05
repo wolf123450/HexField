@@ -86,7 +86,7 @@ export interface Message {
 
 export type MutationType =
   | 'edit' | 'delete' | 'reaction_add' | 'reaction_remove'
-  | 'server_update'
+  | 'server_update' | 'server_rebaseline'
   | 'role_assign' | 'role_revoke'
   | 'channel_create' | 'channel_update' | 'channel_delete' | 'channel_acl_update'
   | 'device_attest' | 'device_revoke'

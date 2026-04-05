@@ -288,10 +288,10 @@
 - [x] Storage limit enforcement (5 GB default, 10 GB max, user-configurable)
   - [x] Background pruning: attachment files (oldest first), then message content
   - [x] Storage usage display in Settings > Privacy
-- [ ] Server admin archive / re-baseline
-  - [ ] Archive bundle export (signed, compressed snapshot)
-  - [ ] `server_rebaseline` mutation with `historyStartsAt` + `gamechat://archive/...` deep link
-  - [ ] Archive import flow (import prompt on deep-link click)
+- [x] Server admin archive / re-baseline
+  - [x] Archive bundle export (signed, compressed snapshot)
+  - [x] `server_rebaseline` mutation with `historyStartsAt` + `gamechat://archive/...` deep link
+  - [x] Archive import flow (import prompt on deep-link click)
 - [ ] macOS Rust-side screen capture fallback (`CGDisplayStream`) for macOS < 12.3
 - [ ] Linux Wayland screen share via XDG Desktop Portal
 - [ ] Auto-update flow (already in skeleton — verify works end-to-end)
@@ -315,8 +315,8 @@
   - [x] Passphrase key wrap: correct passphrase recovers original keypair
   - [x] Storage pruning: oldest attachments deleted first; messages pruned only after attachments
   - [x] Storage usage calculation matches sum of attachment file sizes
-  - [ ] Archive export produces a valid signed bundle; import restores server state
-  - [ ] `server_rebaseline` mutation: messages before `historyStartsAt` are not synced to joining peers
+  - [x] Archive export produces a valid signed bundle; import restores server state
+  - [x] `server_rebaseline` mutation: messages before `historyStartsAt` are not synced to joining peers
   - [x] OS notification fires on mention; does not fire when window is focused
   - [x] Auto-update: version comparison correctly identifies when an update is available
   - [x] `sendEditMutation`: optimistic edit reflected in `getMessagesWithMutations` immediately; HLC last-write-wins rejects older edit
