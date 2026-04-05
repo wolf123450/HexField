@@ -92,10 +92,19 @@ class WebRTCService {
    * we do nothing — further renegotiation (e.g. adding voice tracks) is handled
    * entirely by onnegotiationneeded to avoid m-line ordering violations.
    */
+  /** Returns true when WebRTC APIs are available in this WebView. */
+  static isAvailable(): boolean {
+    return typeof RTCPeerConnection !== 'undefined'
+  }
+
   async createOffer(userId: string): Promise<void> {
     if (this.peers.has(userId)) return
-    this.getOrCreatePeer(userId, true)
-    // onnegotiationneeded fires when the data channel is created and sends the offer.
+    try {
+      this.getOrCreatePeer(userId, true)
+      // onnegotiationneeded fires when the data channel is created and sends the offer.
+    } catch (e) {
+      console.warn('[webrtc] createOffer failed (WebRTC unavailable?):', e)
+    }
   }
 
   /**
@@ -115,24 +124,25 @@ class WebRTCService {
       }
     }
 
-    const state = this.getOrCreatePeer(userId, false)
-
-    // Perfect negotiation: if we're making an offer too, the "polite" peer
-    // (higher userId) rolls back. The "impolite" peer (lower userId) ignores.
-    const isPolite = this.localUserId > userId
-    const offerCollision = state.makingOffer || state.pc.signalingState !== 'stable'
-
-    if (offerCollision && !isPolite) {
-      // We're impolite — ignore the incoming offer
-      return
-    }
-
-    if (offerCollision && isPolite) {
-      // We're polite — rollback our offer
-      await state.pc.setLocalDescription({ type: 'rollback' })
-    }
-
     try {
+      const state = this.getOrCreatePeer(userId, false)
+
+      // Perfect negotiation: if we're making an offer too, the "polite" peer
+      // (higher userId) rolls back. The "impolite" peer (lower userId) ignores.
+      const isPolite = this.localUserId > userId
+      const offerCollision = state.makingOffer || state.pc.signalingState !== 'stable'
+
+      if (offerCollision && !isPolite) {
+        // We're impolite — ignore the incoming offer
+        return
+      }
+
+      if (offerCollision && isPolite) {
+        // We're polite — rollback our offer
+        await state.pc.setLocalDescription({ type: 'rollback' })
+      }
+
+      try {
       await state.pc.setRemoteDescription({ type: 'offer', sdp })
       const answer = await state.pc.createAnswer()
       await state.pc.setLocalDescription(answer)
@@ -144,8 +154,11 @@ class WebRTCService {
         from: this.localUserId,
         sdp: state.pc.localDescription!.sdp,
       })
+      } catch (e) {
+        console.warn('[webrtc] handleOffer failed:', e)
+      }
     } catch (e) {
-      console.warn('[webrtc] handleOffer failed:', e)
+      console.warn('[webrtc] handleOffer failed (WebRTC unavailable?):', e)
     }
   }
 
@@ -320,6 +333,10 @@ class WebRTCService {
   private getOrCreatePeer(userId: string, createDataChannel: boolean): PeerState {
     let state = this.peers.get(userId)
     if (state) return state
+
+    if (typeof RTCPeerConnection === 'undefined') {
+      throw new Error('RTCPeerConnection is not available in this WebView')
+    }
 
     const pc = new RTCPeerConnection({ iceServers: this.iceConfigBuilder(userId) })
 
