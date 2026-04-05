@@ -182,42 +182,11 @@ export const useVoiceStore = defineStore('voice', () => {
     }
     const maxBitrateKbps = bitrateMap[settings.videoBitrate]
 
-    // On Windows/Linux try chromeMediaSourceId path; fall back to getDisplayMedia
-    const isMacOS = navigator.platform.toLowerCase().includes('mac')
-
-    if (!isMacOS) {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core')
-        const sources = await invoke<{ id: string; name: string; thumbnail: string }[]>('get_screen_sources')
-        if (sources.length > 0) {
-          const { useUIStore } = await import('./uiStore')
-          const selected = await showScreenSourcePicker(sources, useUIStore())
-          if (selected) {
-            stream = await (navigator.mediaDevices as MediaDevices & {
-              getUserMedia(c: object): Promise<MediaStream>
-            }).getUserMedia({
-              audio: false,
-              video: {
-                // @ts-ignore — Chromium-specific extension
-                mandatory: {
-                  chromeMediaSource: 'desktop',
-                  chromeMediaSourceId: selected,
-                  maxWidth: dim?.width ?? 1920, maxHeight: dim?.height ?? 1080, maxFrameRate: settings.videoFrameRate,
-                },
-              },
-            })
-          } else {
-            return // User cancelled picker
-          }
-        } else {
-          stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: videoConstraints, audio: false })
-        }
-      } catch {
-        stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: videoConstraints, audio: false })
-      }
-    } else {
-      stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: videoConstraints, audio: false })
-    }
+    // getDisplayMedia() works on all platforms (Windows 10+, macOS 12.3+).
+    // The chromeMediaSourceId/Win32 custom-picker path was investigated and
+    // dropped — the system-native picker is adequate and Win32 enumeration
+    // (EnumWindows + PrintWindow + BitBlt) adds non-trivial complexity.
+    stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: videoConstraints, audio: false })
 
     screenStream.value = stream
     const videoTrack = stream.getVideoTracks()[0]
@@ -317,21 +286,5 @@ function defaultPeer(userId: string): Peer {
     screenSharing: false,
     speaking: false,
   }
-}
-
-/** Minimal picker: returns the chosen source ID or null for cancellation. */
-function showScreenSourcePicker(
-  sources: { id: string; name: string; thumbnail: string }[],
-  _uiStore: ReturnType<typeof import('./uiStore').useUIStore>,
-): Promise<string | null> {
-  return new Promise((resolve) => {
-    // Very simple prompt-based picker. ScreenSharePicker.vue replaces this in Phase 6.
-    const names = sources.map((s, i) => `${i + 1}: ${s.name}`).join('\n')
-    const input = window.prompt(`Select screen source:\n${names}\n\nEnter number:`)
-    if (!input) { resolve(null); return }
-    const idx = parseInt(input, 10) - 1
-    if (idx >= 0 && idx < sources.length) resolve(sources[idx].id)
-    else resolve(null)
-  })
 }
 
