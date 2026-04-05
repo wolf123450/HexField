@@ -26,6 +26,7 @@
           <SettingsNotificationsTab v-else-if="activeTab === 'notifications'" />
           <SettingsAppearanceTab    v-else-if="activeTab === 'appearance'" />
           <SettingsShortcutsTab     v-else-if="activeTab === 'shortcuts'" />
+          <SettingsHelpTab          v-else-if="activeTab === 'help'" />
         </div>
 
         <div class="settings-footer">
@@ -51,6 +52,7 @@ import SettingsPrivacyTab from './settings/SettingsPrivacyTab.vue'
 import SettingsNotificationsTab from './settings/SettingsNotificationsTab.vue'
 import SettingsAppearanceTab from './settings/SettingsAppearanceTab.vue'
 import SettingsShortcutsTab from './settings/SettingsShortcutsTab.vue'
+import SettingsHelpTab from './settings/SettingsHelpTab.vue'
 
 const uiStore = useUIStore()
 const settingsStore = useSettingsStore()
@@ -58,7 +60,7 @@ const settingsStore = useSettingsStore()
 const modalEl = ref<HTMLElement | null>(null)
 useFocusTrap(modalEl, computed(() => uiStore.showSettings))
 
-const activeTab = ref<'profile' | 'voice' | 'privacy' | 'notifications' | 'appearance' | 'shortcuts'>('profile')
+const activeTab = ref<'profile' | 'voice' | 'privacy' | 'notifications' | 'appearance' | 'shortcuts' | 'help'>('profile')
 
 const tabs = [
   { key: 'profile',       label: 'Profile' },
@@ -67,6 +69,7 @@ const tabs = [
   { key: 'notifications', label: 'Notifications' },
   { key: 'appearance',    label: 'Appearance' },
   { key: 'shortcuts',     label: 'Shortcuts' },
+  { key: 'help',          label: 'Help' },
 ] as const
 
 function resetDefaults() {
