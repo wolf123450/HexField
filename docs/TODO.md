@@ -284,7 +284,7 @@
 - [x] Mention highlights (`@username` parsing in messages)
 - [x] Message search — SQLite FTS5 (only indexes non-null content)
 - [x] Passphrase-wrapped key storage (Phase 2 crypto tier: Argon2id → requires `libsodium-wrappers-sumo`)
-- [ ] OS keychain integration (Phase 3 crypto tier: `keyring` crate)
+- [x] OS keychain integration (Phase 3 crypto tier: `keyring` crate)
 - [x] Storage limit enforcement (5 GB default, 10 GB max, user-configurable)
   - [x] Background pruning: attachment files (oldest first), then message content
   - [x] Storage usage display in Settings > Privacy
