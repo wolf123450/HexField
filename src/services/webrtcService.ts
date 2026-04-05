@@ -10,7 +10,7 @@ import { signalingService } from './signalingService'
 export type DataChannelMessageHandler = (userId: string, data: unknown) => void
 export type RemoteTrackHandler        = (userId: string, stream: MediaStream, track: MediaStreamTrack) => void
 
-const ICE_SERVERS: RTCIceServer[] = [
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
 ]
@@ -57,6 +57,16 @@ class WebRTCService {
   private localUserId = ''
   /** Per-peer chunk reassembly buffers: chunkId → { parts[], received, total } */
   private chunkBuffers = new Map<string, { parts: string[]; received: number; total: number }>()
+  /** Pluggable ICE config builder — injected by networkStore after NAT detection. */
+  private iceConfigBuilder: (userId: string) => RTCIceServer[] = () => DEFAULT_ICE_SERVERS
+
+  /**
+   * Override the ICE server list on a per-peer basis.
+   * networkStore calls this once during init to inject relay peers + custom TURN.
+   */
+  setICEConfigBuilder(fn: (userId: string) => RTCIceServer[]): void {
+    this.iceConfigBuilder = fn
+  }
 
   /**
    * Set the local user ID and register handlers.
@@ -303,7 +313,7 @@ class WebRTCService {
     let state = this.peers.get(userId)
     if (state) return state
 
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
+    const pc = new RTCPeerConnection({ iceServers: this.iceConfigBuilder(userId) })
 
     state = { pc, dc: null, makingOffer: false, localStream: null }
     this.peers.set(userId, state)

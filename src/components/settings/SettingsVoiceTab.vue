@@ -65,6 +65,14 @@
     </div>
 
     <div class="form-row">
+      <label class="form-label">NAT Type</label>
+      <div class="nat-status">
+        <span class="nat-badge" :class="`nat-${networkStore.natType}`">{{ natLabel }}</span>
+        <span class="nat-hint">{{ natDescription }}</span>
+      </div>
+    </div>
+
+    <div class="form-row">
       <label class="form-label">Custom TURN Servers</label>
       <textarea
         v-model="turnServersText"
@@ -91,13 +99,29 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useNetworkStore } from '@/stores/networkStore'
 
 const settingsStore = useSettingsStore()
+const networkStore  = useNetworkStore()
 const inputDevice   = ref(settingsStore.settings.inputDeviceId)
 const outputDevice  = ref(settingsStore.settings.outputDeviceId)
 const rendezvousUrl = ref(settingsStore.settings.rendezvousServerUrl)
+
+const natLabel = computed(() => ({
+  open:       'Open',
+  restricted: 'Restricted',
+  symmetric:  'Symmetric (relay needed)',
+  unknown:    'Detecting…',
+}[networkStore.natType] ?? 'Unknown'))
+
+const natDescription = computed(() => ({
+  open:       'Direct peer connections work reliably.',
+  restricted: 'Most peer connections succeed; relay used as fallback.',
+  symmetric:  'Behind strict NAT — relay peers or TURN servers are required.',
+  unknown:    'NAT detection is still in progress.',
+}[networkStore.natType] ?? ''))
 const noiseSuppression = ref(settingsStore.settings.noiseSuppression)
 const videoQuality  = ref(settingsStore.settings.videoQuality)
 const videoBitrate  = ref(settingsStore.settings.videoBitrate)
@@ -144,4 +168,12 @@ function saveTURNServers() {
 .form-hint { font-size: 11px; color: var(--text-tertiary); margin-top: var(--spacing-xs); }
 .toggle-row { display: flex; align-items: center; gap: var(--spacing-sm); cursor: pointer; font-size: 14px; color: var(--text-primary); }
 .toggle-row input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent-color); }
+
+.nat-status { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; }
+.nat-badge { display: inline-block; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 600; }
+.nat-open       { background: rgba(87, 242, 135, 0.15); color: var(--success-color); }
+.nat-restricted { background: rgba(254, 231, 92,  0.15); color: var(--warning-color); }
+.nat-symmetric  { background: rgba(237, 66,  69,  0.15); color: var(--error-color); }
+.nat-unknown    { background: var(--bg-secondary); color: var(--text-secondary); }
+.nat-hint { font-size: 12px; color: var(--text-secondary); }
 </style>

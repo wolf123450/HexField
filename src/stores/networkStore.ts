@@ -9,6 +9,8 @@ import { startSync, handleSyncMessage, setSendFn } from '@/services/syncService'
 import type { SyncWireMessage } from '@/services/syncService'
 import type { ServerManifest } from '@/types/core'
 import * as attachmentService from '@/services/attachmentService'
+import { detectNATType } from '@/utils/natDetection'
+import type { NATType } from '@/utils/natDetection'
 
 export type SignalingState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -16,7 +18,11 @@ export const useNetworkStore = defineStore('network', () => {
   const signalingState   = ref<SignalingState>('disconnected')
   const serverUrl        = ref<string>('')
   const reconnectAttempt = ref<number>(0)
-  const natType          = ref<'open' | 'restricted' | 'symmetric' | 'unknown'>('unknown')
+  const natType          = ref<NATType>('unknown')
+  /** Own external IP:port discovered by STUN (null until NAT detection completes). */
+  const ownPublicAddr    = ref<{ ip: string; port: number } | null>(null)
+  /** Peers that are relay-capable: userId → relayAddr string (e.g. '203.0.113.1:3479'). */
+  const relayCapablePeers = ref<Record<string, string>>({})
   const connectedPeers   = ref<string[]>([])
   // userId -> { channelId, timestamp }
   const typingUsers      = ref<Record<string, { channelId: string; timeout: ReturnType<typeof setTimeout> }>>({})
@@ -29,6 +35,8 @@ export const useNetworkStore = defineStore('network', () => {
 
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let initialized = false
+  /** Snapshot of custom TURN servers from settingsStore — refreshed on init. */
+  let _cachedCustomTURN: RTCIceServer[] = []
 
   // ── Heartbeat ─────────────────────────────────────────────────────────────
   // Keep peers' online status accurate without relying solely on WebRTC teardown.
@@ -159,6 +167,62 @@ export const useNetworkStore = defineStore('network', () => {
         chunkIndices,
       })
     })
+
+    // NAT detection — run after WebRTC is initialised (off the critical path).
+    detectNATType().then(async (type) => {
+      natType.value = type
+      // Cache own public address from a single STUN probe for relay advertisement.
+      if (type !== 'symmetric') {
+        const { querySTUN } = await import('@/utils/natDetection')
+        const addr = await querySTUN('stun.l.google.com:19302')
+        if (addr) ownPublicAddr.value = addr
+      }
+      console.debug(`[network] NAT type: ${type}`)
+    }).catch(e => console.warn('[network] NAT detection error:', e))
+
+    // Inject a per-peer ICE config builder so relay peers and custom TURN
+    // servers are automatically used for new connections.
+    // Sync the custom TURN cache from settings immediately so buildICEConfig
+    // has the right values on first connection attempt.
+    import('@/stores/settingsStore').then(({ useSettingsStore }) => {
+      _cachedCustomTURN = useSettingsStore().settings.customTURNServers ?? []
+    }).catch(() => { /* ignore in tests */ })
+
+    webrtcService.setICEConfigBuilder(buildICEConfig)
+  }
+
+  /**
+   * Build a per-peer RTCIceServer list.
+   * Priority: public STUN → relay-capable peers (if we need relay) → custom TURN → rendezvous TURN.
+   * NOTE: This is called synchronously from RTCPeerConnection constructor, so we
+   * read settingsStore state via a cached reference set in init().
+   */
+  function buildICEConfig(_targetUserId: string): RTCIceServer[] {
+    const base: RTCIceServer[] = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ]
+
+    // Only add TURN candidates when we're behind symmetric NAT (or unknown) —
+    // for open/restricted NAT, plain STUN is sufficient.
+    const needRelay = natType.value === 'symmetric' || natType.value === 'unknown'
+
+    if (needRelay) {
+      for (const [peerId, relayAddr] of Object.entries(relayCapablePeers.value)) {
+        base.push({
+          urls:       `turn:${relayAddr}`,
+          username:   _targetUserId,
+          credential: peerId,
+        })
+      }
+    }
+
+    // User-configured custom TURN servers are always appended (regardless of NAT type).
+    if (_cachedCustomTURN.length > 0) {
+      base.push(..._cachedCustomTURN)
+    }
+
+    return base
   }
 
   /**
@@ -626,6 +690,16 @@ export const useNetworkStore = defineStore('network', () => {
     if (!status) return
     // Treat any incoming presence as a heartbeat from that peer.
     if (status !== 'offline') lastHeartbeatFrom.set(fromUserId, Date.now())
+
+    // Track relay capability — used by buildICEConfig for future peer connections.
+    if (msg.relayCapable === true && typeof msg.relayAddr === 'string') {
+      relayCapablePeers.value = { ...relayCapablePeers.value, [fromUserId]: msg.relayAddr }
+    } else if (status === 'offline') {
+      const updated = { ...relayCapablePeers.value }
+      delete updated[fromUserId]
+      relayCapablePeers.value = updated
+    }
+
     const { useServersStore } = await import('./serversStore')
     const serversStore = useServersStore()
     for (const sid of serversStore.joinedServerIds) {
@@ -669,7 +743,17 @@ export const useNetworkStore = defineStore('network', () => {
     const { useIdentityStore } = await import('./identityStore')
     const identityStore = useIdentityStore()
     if (!identityStore.userId) return
-    broadcast({ type: 'presence_update', userId: identityStore.userId, status, timestamp: Date.now() })
+    const isRelayCapable = natType.value === 'open' || natType.value === 'restricted'
+    broadcast({
+      type:         'presence_update',
+      userId:       identityStore.userId,
+      status,
+      timestamp:    Date.now(),
+      relayCapable: isRelayCapable,
+      relayAddr:    isRelayCapable && ownPublicAddr.value
+        ? `${ownPublicAddr.value.ip}:3479`
+        : undefined,
+    })
   }
 
   /** Send a profile_update to all connected peers. */
@@ -690,11 +774,16 @@ export const useNetworkStore = defineStore('network', () => {
     if (!identityStore.userId) return
     const statusKey = `gamechat_own_status_${identityStore.userId}`
     const status = (localStorage.getItem(statusKey) as string | null) ?? 'online'
+    const isRelayCapable = natType.value === 'open' || natType.value === 'restricted'
     webrtcService.sendToPeer(peerId, {
-      type:      'presence_update',
-      userId:    identityStore.userId,
+      type:         'presence_update',
+      userId:       identityStore.userId,
       status,
-      timestamp: Date.now(),
+      timestamp:    Date.now(),
+      relayCapable: isRelayCapable,
+      relayAddr:    isRelayCapable && ownPublicAddr.value
+        ? `${ownPublicAddr.value.ip}:3479`
+        : undefined,
     })
   }
 
@@ -1162,6 +1251,8 @@ export const useNetworkStore = defineStore('network', () => {
     serverUrl,
     reconnectAttempt,
     natType,
+    ownPublicAddr,
+    relayCapablePeers,
     connectedPeers,
     typingUsers,
     init,
