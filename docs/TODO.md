@@ -10,23 +10,18 @@
 
 **Goal**: Runnable skeleton with identity, layout shell, and SQLite wired up.
 
-- [ ] Copy `tauri-app-skeleton` → `GameChat/`, rename all references
-  - [ ] `src/appConfig.ts` — `APP_NAME`, `STORAGE_PREFIX`
-  - [ ] `src-tauri/Cargo.toml` — crate name + description
-  - [ ] `src-tauri/tauri.conf.json` — `productName`, `identifier`, window size 1280×800
-  - [ ] `index.html` title, `package.json` name
-  - [ ] Delete `notesStore.ts`, `NoteItem.vue`, `Sidebar.vue`
-- [ ] Install new npm dependencies (`@tanstack/virtual-core`, `libsodium-wrappers`, `date-fns`, `uuid`, `qrcode`)
-- [ ] Add new Cargo dependencies (`rusqlite`, `rusqlite_migration`, `tokio`, `tokio-tungstenite`, `negentropy`, `blake3`, `mdns-sd`, `tauri-plugin-deep-link`, etc.)
-- [ ] Update CSP in `tauri.conf.json` (add `wss:`, `wasm-unsafe-eval`, `media-src blob:`)
-- [ ] Add `vue-router` + `src/router/index.ts`
-- [ ] Build 4-column layout shell (`ServerRail`, `ChannelSidebar`, `MainPane`, `MemberList` CSS grid)
-- [ ] `identityStore` — generate Ed25519/X25519 keypair on first launch, persist to SQLite
-- [ ] `cryptoService.init()` — WASM init, load or generate keys
-- [ ] SQLite init: `rusqlite_migration` setup, embed `001_initial.sql`
-- [ ] Run migration on startup; verify tables exist
-- [ ] Extend Settings modal: Profile, Voice, Privacy, Notifications tabs (stubs ok)
-- [ ] Privacy tab: deletion behaviour explanation text
+- [x] Copy `tauri-app-skeleton` → `GameChat/`, rename all references
+- [x] Install new npm dependencies (`@tanstack/virtual-core`, `libsodium-wrappers`, `date-fns`, `uuid`, `qrcode`)
+- [x] Add new Cargo dependencies (`rusqlite`, `rusqlite_migration`, `tokio`, `tokio-tungstenite`, `negentropy`, `blake3`, `mdns-sd`, `tauri-plugin-deep-link`, etc.)
+- [x] Update CSP in `tauri.conf.json` (add `wss:`, `wasm-unsafe-eval`, `media-src blob:`)
+- [x] Add `vue-router` + `src/router/index.ts`
+- [x] Build 4-column layout shell (`ServerRail`, `ChannelSidebar`, `MainPane`, `MemberList` CSS grid)
+- [x] `identityStore` — generate Ed25519/X25519 keypair on first launch, persist to SQLite
+- [x] `cryptoService.init()` — WASM init, load or generate keys
+- [x] SQLite init: `rusqlite_migration` setup, embed `001_initial.sql`
+- [x] Run migration on startup; verify tables exist
+- [x] Extend Settings modal: Profile, Voice, Privacy, Notifications tabs
+- [x] Privacy tab: deletion behaviour explanation text
 
 ---
 
@@ -34,16 +29,16 @@
 
 **Goal**: Create/join servers, manage channels, member list, messages in SQLite.
 
-- [ ] `serversStore` — create, join (via invite code), leave, list
-- [ ] `channelsStore` — create, reorder, delete, set active
-- [ ] Server creation UI flow (name, icon upload)
-- [ ] Invite link generation (`InviteModal.vue`) + join flow
-- [ ] Channel management UI (create, rename, delete)
-- [ ] `messagesStore` — SQLite-backed, windowed 100-message cache, cursor pagination
-- [ ] `MemberList.vue` — right panel, collapsible, online status
-- [ ] Server manifest generation + signing on server create
-- [ ] QR code generation for invites (`qrcode` npm package → SVG display)
-- [ ] `tauri-plugin-deep-link` — register `gamechat://` handler, route to join flow
+- [x] `serversStore` — create, join (via invite code), leave, list
+- [x] `channelsStore` — create, reorder, delete, set active
+- [x] Server creation UI flow (name, icon upload)
+- [x] Invite link generation (`InviteModal.vue`) + join flow
+- [x] Channel management UI (create, rename, delete)
+- [x] `messagesStore` — SQLite-backed, windowed 100-message cache, cursor pagination
+- [x] `MemberList.vue` — right panel, collapsible, online status
+- [x] Server manifest generation + signing on server create
+- [x] QR code generation for invites (`qrcode` npm package → SVG display)
+- [x] `tauri-plugin-deep-link` — register `gamechat://` handler, route to join flow
 
 ---
 
@@ -366,7 +361,7 @@
 - [ ] Install the release build, run it — verify `autoCheckForUpdate()` fires and notification appears
 - [ ] Click "Install update" → verify download, install, restart prompt
 
-- [ ] **Tests**
+- [x] **Tests**
   - [x] `checkForUpdate()` returns `{ available: false }` when `import.meta.env.DEV` is true
   - [x] `checkForUpdate()` returns `{ available: false }` when `!isTauri`
   - [x] `autoCheckForUpdate()` shows notification when `checkForUpdate` returns `available: true` (mock)
@@ -387,8 +382,8 @@
 - [ ] Hide screen share UI when running on mobile (no `getDisplayMedia` equivalent)
 
 ### 8b — Responsive layout
-- [ ] Add `useBreakpoint` composable in `src/utils/` — `mobile` (< 640 px), `tablet` (640–1024 px), `desktop` (> 1024 px) via `window.matchMedia`
-- [ ] `MainLayout.vue`: on mobile replace 4-column CSS grid with a single-column view + bottom tab-bar; ServerRail and ChannelSidebar become swipe-in drawers; MemberList becomes a bottom sheet
+- [x] Add `useBreakpoint` composable in `src/utils/` — `mobile` (< 640 px), `tablet` (640–1024 px), `desktop` (> 1024 px) via `window.matchMedia`
+- [x] `MainLayout.vue`: on mobile replace 4-column CSS grid with a single-column view + bottom tab-bar; ServerRail and ChannelSidebar become swipe-in drawers; MemberList becomes a bottom sheet
 - [ ] `ChannelSidebar.vue`: full-screen when open on mobile; back button closes it
 - [ ] `MessageInput.vue`: bind to `visualViewport` resize so the input floats above the keyboard on iOS/Android
 - [ ] `MessageHistory.vue`: verify TanStack Virtual works with touch scroll; add pull-to-refresh for older history
@@ -404,8 +399,8 @@
 - [ ] Upload `.apk` / `.ipa` as release assets alongside desktop installers
 
 - [ ] **Tests**
-  - [ ] `useBreakpoint` identifies `mobile` / `tablet` / `desktop` at breakpoint boundaries (mock `matchMedia`)
-  - [ ] `MainLayout.vue` renders tab-bar/drawer mode below 640 px and grid mode above 1024 px
+  - [x] `useBreakpoint` identifies `mobile` / `tablet` / `desktop` at breakpoint boundaries (mock `matchMedia`)
+  - [x] `MainLayout.vue` renders tab-bar/drawer mode below 640 px and grid mode above 1024 px
   - [ ] `MessageInput.vue` stays within viewport when `visualViewport.height` shrinks (mock resize)
 
 ---
