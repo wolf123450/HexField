@@ -39,7 +39,7 @@ pub fn run() {
             tauri_plugin_log::Builder::new()
                 .targets([
                     tauri_plugin_log::Target::new(
-                        tauri_plugin_log::TargetKind::LogDir { file_name: Some("gamechat".into()) }
+                        tauri_plugin_log::TargetKind::LogDir { file_name: Some("hexfield".into()) }
                     ),
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
                 ])
@@ -171,5 +171,5 @@ pub fn run() {
             sync_list_channels,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running GameChat");
+        .expect("error while running HexField");
 }

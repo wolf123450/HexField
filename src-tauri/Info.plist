@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
   <key>NSCameraUsageDescription</key>
-  <string>GameChat uses your camera for video calls.</string>
+  <string>HexField uses your camera for video calls.</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>GameChat uses your microphone for voice chat.</string>
+  <string>HexField uses your microphone for voice chat.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>GameChat uses screen capture for screen sharing.</string>
+  <string>HexField uses screen capture for screen sharing.</string>
 </dict>
 </plist>

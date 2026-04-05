@@ -21,9 +21,9 @@ const local  = process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local')
 const roaming = process.env.APPDATA    ?? join(homedir(), 'AppData', 'Roaming')
 
 const instances = {
-  merlin: join(roaming, 'com.gamechat.app', 'gamechat.db'),
-  alice:  join(local, 'GameChat-dev', 'alice', 'gamechat.db'),
-  bob:    join(local, 'GameChat-dev', 'bob',   'gamechat.db'),
+  merlin: join(roaming, 'com.hexfield.app', 'hexfield.db'),
+  alice:  join(local, 'HexField-dev', 'alice', 'hexfield.db'),
+  bob:    join(local, 'HexField-dev', 'bob',   'hexfield.db'),
 }
 
 for (const [name, dbPath] of Object.entries(instances)) {

@@ -73,7 +73,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: GameChat ${{ github.ref_name }}
+          releaseName: HexField ${{ github.ref_name }}
           releaseBody: |
             See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
           releaseDraft: ${{ github.event.inputs.draft == 'true' || github.event_name == 'workflow_dispatch' }}
@@ -124,7 +124,7 @@ jobs:
 
             const manifest = {
               version: tag,
-              notes: `GameChat ${tag}`,
+              notes: `HexField ${tag}`,
               pub_date: new Date().toISOString(),
               platforms,
             };

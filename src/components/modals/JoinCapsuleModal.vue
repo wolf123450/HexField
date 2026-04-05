@@ -87,7 +87,7 @@ watch(() => props.show, async (open) => {
 
     const encoded = btoa(JSON.stringify(capsule))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
-    capsuleLink.value = `gamechat://approve/${encoded}`
+    capsuleLink.value = `hexfield://approve/${encoded}`
 
     qrSvg.value = await QRCode.toString(capsuleLink.value, {
       type: 'svg',

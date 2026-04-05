@@ -347,7 +347,7 @@ class WebRTCService {
 
     // If we're the offerer, create the data channel
     if (createDataChannel) {
-      const dc = pc.createDataChannel('gamechat', { ordered: true })
+      const dc = pc.createDataChannel('hexfield', { ordered: true })
       this.setupDataChannel(userId, state, dc)
     }
 

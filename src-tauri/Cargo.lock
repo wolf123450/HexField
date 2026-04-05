@@ -1515,40 +1515,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gamechat"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "blake3",
- "ed25519-dalek",
- "futures-util",
- "keyring",
- "log",
- "mdns-sd",
- "negentropy",
- "rand 0.8.5",
- "reqwest 0.12.28",
- "rusqlite",
- "rusqlite_migration",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-deep-link",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-log",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-updater",
- "tokio",
- "tokio-tungstenite",
- "uuid",
- "windows 0.58.0",
-]
-
-[[package]]
 name = "gdk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1936,6 +1902,40 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hexfield"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "ed25519-dalek",
+ "futures-util",
+ "keyring",
+ "log",
+ "mdns-sd",
+ "negentropy",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "rusqlite_migration",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-deep-link",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-log",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-updater",
+ "tokio",
+ "tokio-tungstenite",
+ "uuid",
+ "windows 0.58.0",
+]
 
 [[package]]
 name = "html5ever"

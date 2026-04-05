@@ -515,7 +515,7 @@ function openServerInvite() {
 
 // ── Own status ────────────────────────────────────────────────────────────────
 
-const STATUS_KEY = 'gamechat_own_status'
+const STATUS_KEY = 'hexfield_own_status'
 const statusKey  = () => identityStore.userId ? `${STATUS_KEY}_${identityStore.userId}` : STATUS_KEY
 // Read the correct scoped key once userId is known (identity loads asynchronously).
 const ownStatus = ref<'online' | 'idle' | 'dnd' | 'offline'>('online')
