@@ -144,7 +144,11 @@ Follow this loop for every change:
 
 1. **Check docs** — read `TODO.md` and the relevant spec(s) before writing any code
 2. **Look up library APIs** — use Context7 for any library API you're about to use, especially if it's the first time in this project or you're unsure of the exact signature
-3. **Verify baseline** — confirm the app builds cleanly before making changes:
+3. **Branch** — always work on a feature branch; `main` has push protection and requires a PR:
+   ```bash
+   git checkout -b feat/your-feature-name
+   ```
+4. **Verify baseline** — confirm the app builds cleanly before making changes:
    ```bash
    npm run build          # Frontend: vue-tsc --noEmit && vite build
    cd src-tauri && cargo check   # Rust: type-check without full compile
