@@ -16,6 +16,14 @@
         Open repository
       </button>
     </div>
+
+    <div class="help-section">
+      <h3 class="help-section-title">Developer</h3>
+      <p class="setting-hint">Open the browser developer tools for debugging.</p>
+      <button class="btn-sm help-btn" @click="openDevTools">
+        Open developer tools
+      </button>
+    </div>
   </div>
 </template>
 
@@ -57,6 +65,14 @@ function openRepo() {
     import('@tauri-apps/plugin-opener').then(m => m.openUrl(repoUrl)).catch(() => {})
   } else {
     window.open(repoUrl, '_blank', 'noopener')
+  }
+}
+
+function openDevTools() {
+  if (isTauri) {
+    import('@tauri-apps/api/core')
+      .then(m => m.invoke('open_devtools'))
+      .catch(e => console.warn('[devtools] open_devtools failed:', e))
   }
 }
 </script>
