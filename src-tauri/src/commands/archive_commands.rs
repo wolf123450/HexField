@@ -146,7 +146,8 @@ pub fn db_export_archive(
     // Members
     let mut stmt = conn
         .prepare("SELECT user_id, server_id, display_name, roles, joined_at,
-                  public_sign_key, public_dh_key, online_status, avatar_data_url
+                  public_sign_key, public_dh_key, online_status, avatar_data_url,
+                  bio, banner_color, banner_data_url
                   FROM members WHERE server_id = ?1")
         .map_err(|e| e.to_string())?;
     let members: Vec<MemberRow> = stmt
@@ -161,6 +162,9 @@ pub fn db_export_archive(
                 public_dh_key:   r.get(6)?,
                 online_status:   r.get(7)?,
                 avatar_data_url: r.get(8)?,
+                bio:             r.get(9)?,
+                banner_color:    r.get(10)?,
+                banner_data_url: r.get(11)?,
             })
         })
         .map_err(|e| e.to_string())?

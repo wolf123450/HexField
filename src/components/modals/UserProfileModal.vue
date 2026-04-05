@@ -64,7 +64,7 @@
           </div>
 
           <!-- Bio -->
-          <div v-if="isEditable || !isSelf" class="profile-section">
+          <div class="profile-section">
             <label class="section-label">Bio</label>
             <textarea
               v-if="isEditable"
