@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: 'Publish as draft pre-release'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ''
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Node ────────────────────────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # ── Rust ────────────────────────────────────────────────────────────────
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # ── Linux system deps ──────────────────────────────────────────────────
+      - name: Install Linux deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            pkg-config
+
+      # ── Build ──────────────────────────────────────────────────────────────
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: GameChat ${{ github.ref_name }}
+          releaseBody: |
+            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          releaseDraft: ${{ github.event.inputs.draft == 'true' || github.event_name == 'workflow_dispatch' }}
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  update-manifest:
+    name: Assemble latest.json
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble update manifest
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tag = context.ref.replace('refs/tags/', '') || context.payload.inputs?.tag || 'latest';
+            const { data: release } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag,
+            });
+
+            const sigAssets = release.assets.filter(a => a.name.endsWith('.sig'));
+            const platforms = {};
+
+            for (const sig of sigAssets) {
+              const sigContent = await fetch(sig.browser_download_url).then(r => r.text());
+              const installerName = sig.name.replace(/\.sig$/, '');
+              const installer = release.assets.find(a => a.name === installerName);
+              if (!installer) continue;
+
+              // Detect platform from filename
+              let key = null;
+              if (installerName.includes('aarch64-apple')) key = 'darwin-aarch64';
+              else if (installerName.includes('x86_64-apple') || installerName.endsWith('.dmg')) key = 'darwin-x86_64';
+              else if (installerName.endsWith('.msi') || installerName.endsWith('.msi.zip')) key = 'windows-x86_64';
+              else if (installerName.endsWith('.AppImage') || installerName.endsWith('.AppImage.tar.gz')) key = 'linux-x86_64';
+              if (!key) continue;
+
+              platforms[key] = {
+                url: installer.browser_download_url,
+                signature: sigContent.trim(),
+              };
+            }
+
+            const manifest = {
+              version: tag,
+              notes: `GameChat ${tag}`,
+              pub_date: new Date().toISOString(),
+              platforms,
+            };
+
+            const content = JSON.stringify(manifest, null, 2);
+            const encoded = Buffer.from(content).toString('base64');
+
+            // Upload manifest as a release asset
+            // First remove existing one if present
+            const existing = release.assets.find(a => a.name === 'latest.json');
+            if (existing) {
+              await github.rest.repos.deleteReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                asset_id: existing.id,
+              });
+            }
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.id,
+              name: 'latest.json',
+              data: content,
+            });
+            console.log('Uploaded latest.json:\n' + content);
