@@ -72,7 +72,7 @@ sudo apt-get install \
 ### Clone and run
 
 ```bash
-git clone https://github.com/YOUR_ORG/gamechat
+git clone https://github.com/wolf123450/gamechat
 cd gamechat
 npm install
 
