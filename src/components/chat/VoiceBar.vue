@@ -59,8 +59,9 @@
           <AppIcon :path="mdiHeadset" :size="18" />
         </button>
 
-        <!-- Screen share -->
+        <!-- Screen share (desktop only — no getDisplayMedia on mobile) -->
         <button
+          v-if="!isMobile"
           class="ctrl-btn"
           :class="{ active: !!voiceStore.screenStream }"
           :title="voiceStore.screenStream ? 'Stop share' : 'Share screen'"
@@ -93,9 +94,11 @@ import {
 import VoicePeerTile from '@/components/chat/VoicePeerTile.vue'
 import { useVoiceStore }    from '@/stores/voiceStore'
 import { useChannelsStore } from '@/stores/channelsStore'
+import { useBreakpoint } from '@/utils/useBreakpoint'
 
 const voiceStore    = useVoiceStore()
 const channelsStore = useChannelsStore()
+const { isMobile } = useBreakpoint()
 
 const peerList = computed(() => Object.values(voiceStore.peers))
 

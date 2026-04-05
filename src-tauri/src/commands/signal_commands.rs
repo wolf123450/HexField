@@ -1,12 +1,14 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::AppState;
+#[cfg(not(mobile))]
 use crate::lan;
+#[cfg(not(mobile))]
+use std::sync::atomic::Ordering;
 
 /// Connect to a WebSocket signaling server.
 /// Spawns a tokio task that reads incoming messages and emits them as Tauri events.
@@ -135,15 +137,18 @@ pub async fn signal_send(
     state: State<'_, AppState>,
     payload: serde_json::Value,
 ) -> Result<(), String> {
-    // Try LAN path first.
-    let to_user_id = payload.get("to").and_then(|v| v.as_str()).map(|s| s.to_string());
-    if let Some(ref to_id) = to_user_id {
-        let lan_sender = {
-            let peers = state.lan_peers.lock().await;
-            peers.get(to_id).map(|(_, s)| s.clone())
-        };
-        if let Some(sender) = lan_sender {
-            return sender.send(payload).map_err(|e| e.to_string());
+    // Try LAN path first (desktop only — mobile uses relay exclusively).
+    #[cfg(not(mobile))]
+    {
+        let to_user_id = payload.get("to").and_then(|v| v.as_str()).map(|s| s.to_string());
+        if let Some(ref to_id) = to_user_id {
+            let lan_sender = {
+                let peers = state.lan_peers.lock().await;
+                peers.get(to_id).map(|(_, s)| s.clone())
+            };
+            if let Some(sender) = lan_sender {
+                return sender.send(payload).map_err(|e| e.to_string());
+            }
         }
     }
 
@@ -158,11 +163,12 @@ pub async fn signal_send(
     }
 }
 
-// ── LAN commands ──────────────────────────────────────────────────────────
+// ── LAN commands (desktop only — mobile uses relay/rendezvous) ───────────
 
 /// Return the user IDs of all currently connected LAN peers.
 /// Used after a webview refresh to reconnect WebRTC without waiting for
 /// mDNS re-discovery (the Rust WS connections stay alive across refreshes).
+#[cfg(not(mobile))]
 #[tauri::command]
 pub async fn lan_get_connected_peers(
     state: State<'_, AppState>,
@@ -174,6 +180,7 @@ pub async fn lan_get_connected_peers(
 /// Start the local LAN signal server and register mDNS.
 /// Idempotent — safe to call multiple times (skips restart if already running).
 /// Returns the local signal port.
+#[cfg(not(mobile))]
 #[tauri::command]
 pub async fn lan_start(
     user_id: String,
@@ -206,6 +213,7 @@ pub async fn lan_start(
 /// Connect directly to another peer's LAN signal server.
 /// After this call, `signal_send` will route to this peer via the direct
 /// WS connection instead of going through the rendezvous server.
+#[cfg(not(mobile))]
 #[tauri::command]
 pub async fn lan_connect_peer(
     user_id: String,
@@ -236,6 +244,7 @@ pub async fn lan_connect_peer(
 
 /// Return the local IP address and LAN signal port for embedding in invite links.
 /// Returns an empty array if LAN is not started yet.
+#[cfg(not(mobile))]
 #[tauri::command]
 pub fn lan_get_local_addrs(state: State<AppState>) -> Result<Vec<serde_json::Value>, String> {
     let port = state.lan_signal_port.load(Ordering::Relaxed);

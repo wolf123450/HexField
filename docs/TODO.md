@@ -344,12 +344,12 @@
 - [ ] Set `plugins.updater.endpoints` to `["https://github.com/YOUR_ORG/GameChat/releases/latest/download/latest.json"]`
 
 ### 7b — GitHub Actions release workflow
-- [ ] Copy `.github/workflows/release.yml` from GlyphAstra — update app name, identifier, repo URL
-- [ ] Matrix: `windows-latest`, `macos-latest` (x86_64 + aarch64), `ubuntu-22.04`
-- [ ] `update-manifest` job: use `actions/github-script` to assemble `latest.json` from `.sig` sidecars and upload as release asset
-- [ ] Copy `.github/workflows/ci.yml` from GlyphAstra — runs `npm run build` + `cargo check` on every PR
-- [ ] Tag-based trigger: `git tag v0.1.0 && git push --tags` → release builds for all platforms
-- [ ] Manual trigger (`workflow_dispatch`) → draft pre-release for testing
+- [x] Copy `.github/workflows/release.yml` from GlyphAstra — update app name, identifier, repo URL
+- [x] Matrix: `windows-latest`, `macos-latest` (x86_64 + aarch64), `ubuntu-22.04`
+- [x] `update-manifest` job: use `actions/github-script` to assemble `latest.json` from `.sig` sidecars and upload as release asset
+- [x] Copy `.github/workflows/ci.yml` from GlyphAstra — runs `npm run build` + `cargo check` on every PR
+- [x] Tag-based trigger: `git tag v0.1.0 && git push --tags` → release builds for all platforms
+- [x] Manual trigger (`workflow_dispatch`) → draft pre-release for testing
 
 ### 7c — Wire `autoCheckForUpdate()` into `App.vue`
 - [x] Import `autoCheckForUpdate` from `@/utils/updateService` in `App.vue`
@@ -378,15 +378,15 @@
 - [ ] `npm run tauri android init` — commit generated `src-tauri/gen/android/` to the repo
 - [ ] `npm run tauri ios init` — commit generated `src-tauri/gen/apple/` to the repo
 - [ ] Add `android` and `ios` bundle identifier / version fields to `tauri.conf.json`
-- [ ] Disable LAN mDNS discovery on mobile (`#[cfg(not(mobile))]` gate in `lan.rs`) — use relay/rendezvous instead
-- [ ] Hide screen share UI when running on mobile (no `getDisplayMedia` equivalent)
+- [x] Disable LAN mDNS discovery on mobile (`#[cfg(not(mobile))]` gate in `lan.rs`) — use relay/rendezvous instead
+- [x] Hide screen share UI when running on mobile (no `getDisplayMedia` equivalent)
 
 ### 8b — Responsive layout
 - [x] Add `useBreakpoint` composable in `src/utils/` — `mobile` (< 640 px), `tablet` (640–1024 px), `desktop` (> 1024 px) via `window.matchMedia`
 - [x] `MainLayout.vue`: on mobile replace 4-column CSS grid with a single-column view + bottom tab-bar; ServerRail and ChannelSidebar become swipe-in drawers; MemberList becomes a bottom sheet
 - [x] `ChannelSidebar.vue`: full-screen when open on mobile; back button closes it
 - [x] `MessageInput.vue`: bind to `visualViewport` resize so the input floats above the keyboard on iOS/Android
-- [ ] `MessageHistory.vue`: verify TanStack Virtual works with touch scroll; add pull-to-refresh for older history
+- [x] `MessageHistory.vue`: verify TanStack Virtual works with touch scroll; add pull-to-refresh for older history
 - [x] `TitleBar.vue`: hidden on mobile (OS provides chrome)
 - [x] All modals: `position: fixed; inset: 0` full-screen on mobile
 - [x] Touch targets: all interactive elements ≥ 44 × 44 px; hover-only actions (message action bar) also reachable via long-press

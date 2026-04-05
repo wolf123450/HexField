@@ -1,5 +1,24 @@
 <template>
-  <div ref="scrollContainer" class="message-history" @scroll="onScroll">
+  <div
+    ref="scrollContainer"
+    class="message-history"
+    @scroll="onScroll"
+    @touchstart.passive="onTouchStart"
+    @touchmove="onTouchMove"
+    @touchend.passive="onTouchEnd"
+  >
+    <!-- Pull-to-refresh indicator (mobile) -->
+    <div
+      v-if="hasCursor"
+      class="ptr-wrap"
+      :style="{ height: `${pullY}px` }"
+      aria-hidden="true"
+    >
+      <div class="ptr-inner" :class="{ triggered: pullTriggered }">
+        <AppIcon :path="pullTriggered ? mdiRefresh : mdiArrowDown" :size="20" />
+      </div>
+    </div>
+
     <!-- Top sentinel: triggers loading older messages -->
     <div ref="topSentinel" class="top-sentinel" />
 
@@ -33,6 +52,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { mdiArrowDown, mdiRefresh } from '@mdi/js'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useMessagesStore } from '@/stores/messagesStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -51,6 +71,47 @@ const bottomSentinel  = ref<HTMLElement | null>(null)
 const atBottom        = ref(true)
 const highlightedId   = ref<string | null>(null)
 let highlightTimer: ReturnType<typeof setTimeout> | null = null
+
+// ── Pull-to-refresh (mobile) ──────────────────────────────────────────────────
+
+const PULL_THRESHOLD = 70  // px needed to trigger a load
+const pullY         = ref(0)
+const pulling       = ref(false)
+const pullTriggered = ref(false)
+let touchStartY = 0
+
+const hasCursor = computed(() => !!messagesStore.cursors[props.channelId])
+
+function onTouchStart(e: TouchEvent) {
+  const el = scrollContainer.value
+  if (!el || el.scrollTop > 2 || !hasCursor.value) return
+  touchStartY = e.touches[0].clientY
+  pulling.value = true
+  pullTriggered.value = false
+}
+
+function onTouchMove(e: TouchEvent) {
+  if (!pulling.value) return
+  const el = scrollContainer.value
+  if (!el || el.scrollTop > 2) { pulling.value = false; pullY.value = 0; return }
+  const delta = e.touches[0].clientY - touchStartY
+  if (delta <= 0) { pulling.value = false; pullY.value = 0; return }
+  // Rubber-band: slow down with sqrt damping
+  pullY.value = Math.min(Math.sqrt(delta) * 7, PULL_THRESHOLD + 20)
+  pullTriggered.value = pullY.value >= PULL_THRESHOLD
+  // Prevent default to avoid browser-native overscroll competing with our indicator
+  if (delta > 8) e.preventDefault()
+}
+
+function onTouchEnd() {
+  if (pulling.value && pullTriggered.value) {
+    const cursor = messagesStore.cursors[props.channelId]
+    if (cursor) messagesStore.loadMessages(props.channelId, cursor)
+  }
+  pulling.value = false
+  pullY.value = 0
+  pullTriggered.value = false
+}
 
 const allMessages = computed(() => {
   const confirmed = messagesStore.getMessagesWithMutations(props.channelId)
@@ -151,6 +212,28 @@ onMounted(() => {
 
 .top-sentinel {
   height: 1px;
+}
+
+/* ── Pull-to-refresh indicator ────────────────────────────────────────────── */
+.ptr-wrap {
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 4px;
+  min-height: 0;
+}
+
+.ptr-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  transition: color 0.15s;
+}
+
+.ptr-inner.triggered {
+  color: var(--accent-color);
 }
 
 .bottom-sentinel {

@@ -1,10 +1,13 @@
+#[cfg(not(mobile))]
 use std::collections::HashMap;
+#[cfg(not(mobile))]
 use std::sync::atomic::AtomicU16;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 mod db;
 mod commands;
+#[cfg(not(mobile))]
 mod lan;
 
 use commands::archive_commands::*;
@@ -18,11 +21,14 @@ pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
     /// Sender to the rendezvous-server WS actor.
     pub signal_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<serde_json::Value>>>>,
-    /// Direct LAN WS senders: `userId → UnboundedSender`.
+    /// Direct LAN WS senders: `userId → UnboundedSender`. Desktop only.
+    #[cfg(not(mobile))]
     pub lan_peers: Arc<lan::LanPeers>,
-    /// Port our local LAN signal server is listening on (0 = not started).
+    /// Port our local LAN signal server is listening on (0 = not started). Desktop only.
+    #[cfg(not(mobile))]
     pub lan_signal_port: Arc<AtomicU16>,
-    /// Local userId, set when `lan_start` is called.
+    /// Local userId, set when `lan_start` is called. Desktop only.
+    #[cfg(not(mobile))]
     pub local_user_id: Arc<Mutex<String>>,
 }
 
@@ -53,8 +59,11 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(conn),
                 signal_tx: Arc::new(Mutex::new(None)),
+                #[cfg(not(mobile))]
                 lan_peers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                #[cfg(not(mobile))]
                 lan_signal_port: Arc::new(AtomicU16::new(0)),
+                #[cfg(not(mobile))]
                 local_user_id: Arc::new(Mutex::new(String::new())),
             });
             Ok(())
@@ -142,10 +151,14 @@ pub fn run() {
             signal_connect,
             signal_disconnect,
             signal_send,
-            // LAN discovery & direct signaling
+            // LAN discovery & direct signaling (desktop only)
+            #[cfg(not(mobile))]
             lan_start,
+            #[cfg(not(mobile))]
             lan_connect_peer,
+            #[cfg(not(mobile))]
             lan_get_local_addrs,
+            #[cfg(not(mobile))]
             lan_get_connected_peers,
             // Sync (negentropy set reconciliation)
             sync_initiate,
