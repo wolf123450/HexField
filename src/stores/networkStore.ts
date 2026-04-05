@@ -317,13 +317,13 @@ export const useNetworkStore = defineStore('network', () => {
 
     switch (payload.type) {
       case 'signal_offer':
-        webrtcService.handleOffer(from, payload.sdp as string)
+        webrtcService.handleOffer(from, payload.sdp as string).catch(e => console.warn('[webrtc] signal_offer unhandled:', e))
         break
       case 'signal_answer':
-        webrtcService.handleAnswer(from, payload.sdp as string)
+        webrtcService.handleAnswer(from, payload.sdp as string).catch(e => console.warn('[webrtc] signal_answer unhandled:', e))
         break
       case 'signal_ice':
-        webrtcService.handleIceCandidate(from, payload.candidate as RTCIceCandidateInit)
+        webrtcService.handleIceCandidate(from, payload.candidate as RTCIceCandidateInit).catch(e => console.warn('[webrtc] signal_ice unhandled:', e))
         break
       default:
         // Other signaling messages (presence, relay, etc.) can be dispatched here
