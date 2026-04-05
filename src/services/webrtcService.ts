@@ -132,17 +132,21 @@ class WebRTCService {
       await state.pc.setLocalDescription({ type: 'rollback' })
     }
 
-    await state.pc.setRemoteDescription({ type: 'offer', sdp })
-    const answer = await state.pc.createAnswer()
-    await state.pc.setLocalDescription(answer)
+    try {
+      await state.pc.setRemoteDescription({ type: 'offer', sdp })
+      const answer = await state.pc.createAnswer()
+      await state.pc.setLocalDescription(answer)
 
-    console.debug(`[webrtc] sending answer to ${userId.slice(0,8)}`)
-    await signalingService.send({
-      type: 'signal_answer',
-      to: userId,
-      from: this.localUserId,
-      sdp: state.pc.localDescription!.sdp,
-    })
+      console.debug(`[webrtc] sending answer to ${userId.slice(0,8)}`)
+      await signalingService.send({
+        type: 'signal_answer',
+        to: userId,
+        from: this.localUserId,
+        sdp: state.pc.localDescription!.sdp,
+      })
+    } catch (e) {
+      console.warn('[webrtc] handleOffer failed:', e)
+    }
   }
 
   /**
@@ -151,7 +155,11 @@ class WebRTCService {
   async handleAnswer(userId: string, sdp: string): Promise<void> {
     const state = this.peers.get(userId)
     if (!state) return
-    await state.pc.setRemoteDescription({ type: 'answer', sdp })
+    try {
+      await state.pc.setRemoteDescription({ type: 'answer', sdp })
+    } catch (e) {
+      console.warn('[webrtc] handleAnswer failed:', e)
+    }
   }
 
   /**
