@@ -131,4 +131,29 @@ describe('cryptoService', () => {
     expect(cryptoService.getDevicePublicSignKey()).toBe(signPub)
     expect(cryptoService.getDevicePublicDHKey()).toBe(dhPub)
   })
+
+  // ── Passphrase wrap / unwrap ──────────────────────────────────────────────
+
+  it('wrapKeysWithPassphrase + unwrapKeysWithPassphrase: correct passphrase recovers keypair', async () => {
+    const signPubBefore = cryptoService.getPublicSignKey()
+    const dhPubBefore   = cryptoService.getPublicDHKey()
+
+    const wrapped = cryptoService.wrapKeysWithPassphrase('correct-horse-battery-staple')
+    expect(wrapped.version).toBe(2)
+    expect(typeof wrapped.salt).toBe('string')
+    expect(typeof wrapped.nonce).toBe('string')
+    expect(typeof wrapped.ciphertext).toBe('string')
+
+    // Unwrap: should silently succeed and reproduce the same public keys
+    await cryptoService.unwrapKeysWithPassphrase(wrapped, 'correct-horse-battery-staple')
+    expect(cryptoService.getPublicSignKey()).toBe(signPubBefore)
+    expect(cryptoService.getPublicDHKey()).toBe(dhPubBefore)
+  })
+
+  it('unwrapKeysWithPassphrase: wrong passphrase throws', async () => {
+    const wrapped = cryptoService.wrapKeysWithPassphrase('correct-passphrase')
+    await expect(
+      cryptoService.unwrapKeysWithPassphrase(wrapped, 'wrong-passphrase'),
+    ).rejects.toThrow()
+  })
 })

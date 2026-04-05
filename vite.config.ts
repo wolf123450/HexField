@@ -14,6 +14,8 @@ export default defineConfig(async () => ({
       // libsodium-wrappers ESM build references a non-existent libsodium.mjs;
       // use the CJS build instead which Vite will commonjs-transform correctly.
       "libsodium-wrappers": path.resolve("node_modules/libsodium-wrappers/dist/modules/libsodium-wrappers.js"),
+      // Same fix for the sumo build (includes Argon2id / crypto_pwhash).
+      "libsodium-wrappers-sumo": path.resolve("node_modules/libsodium-wrappers-sumo/dist/modules-sumo/libsodium-wrappers.js"),
     },
   },
 
@@ -22,6 +24,8 @@ export default defineConfig(async () => ({
     globals: true,
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
+      "libsodium-wrappers": path.resolve("node_modules/libsodium-wrappers/dist/modules/libsodium-wrappers.js"),
+      "libsodium-wrappers-sumo": path.resolve("node_modules/libsodium-wrappers-sumo/dist/modules-sumo/libsodium-wrappers.js"),
     },
   },
 

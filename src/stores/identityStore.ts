@@ -5,15 +5,17 @@ import { v7 as uuidv7 } from 'uuid'
 import { cryptoService } from '@/services/cryptoService'
 
 export const useIdentityStore = defineStore('identity', () => {
-  const userId        = ref<string | null>(null)
-  const displayName   = ref<string>('')
-  const publicSignKey = ref<string | null>(null)
-  const publicDHKey   = ref<string | null>(null)
-  const avatarDataUrl = ref<string | null>(null)
-  const bio           = ref<string | null>(null)
-  const bannerColor   = ref<string | null>(null)
-  const bannerDataUrl = ref<string | null>(null)
-  const isRegistered  = ref<boolean>(false)
+  const userId            = ref<string | null>(null)
+  const displayName       = ref<string>('')
+  const publicSignKey     = ref<string | null>(null)
+  const publicDHKey       = ref<string | null>(null)
+  const avatarDataUrl     = ref<string | null>(null)
+  const bio               = ref<string | null>(null)
+  const bannerColor       = ref<string | null>(null)
+  const bannerDataUrl     = ref<string | null>(null)
+  const isRegistered      = ref<boolean>(false)
+  /** True when the identity keys are stored passphrase-wrapped (Phase 2 crypto tier). */
+  const passphraseProtected = ref<boolean>(false)
 
   async function initializeIdentity() {
     await cryptoService.init()
@@ -26,12 +28,30 @@ export const useIdentityStore = defineStore('identity', () => {
     const existingAvatar   = await invoke<string | null>('db_load_key', { keyId: 'local_avatar_data' })
 
     if (existingSignKey && existingDHKey && existingUserId) {
-      // Load existing identity
-      await cryptoService.loadKeys(existingSignKey, existingDHKey)
+      // Detect whether keys are passphrase-wrapped (version 2).
+      // A wrapped bundle is stored as a JSON string with { version: 2, ... }.
+      let isWrapped = false
+      try {
+        const maybeJson = JSON.parse(existingSignKey)
+        if (maybeJson && maybeJson.version === 2) isWrapped = true
+      } catch { /* raw base64 key — not wrapped */ }
+
+      if (isWrapped) {
+        // Keys are wrapped — leave keys null in memory; caller must call
+        // unlockWithPassphrase() before the identity is fully usable.
+        passphraseProtected.value = true
+      } else {
+        // Load existing raw keys
+        await cryptoService.loadKeys(existingSignKey, existingDHKey)
+        passphraseProtected.value = false
+      }
+
       userId.value        = existingUserId
       displayName.value   = existingName ?? 'Anonymous'
-      publicSignKey.value = cryptoService.getPublicSignKey()
-      publicDHKey.value   = cryptoService.getPublicDHKey()
+      if (!isWrapped) {
+        publicSignKey.value = cryptoService.getPublicSignKey()
+        publicDHKey.value   = cryptoService.getPublicDHKey()
+      }
       if (existingAvatar) avatarDataUrl.value = existingAvatar
       bio.value         = await invoke<string | null>('db_load_key', { keyId: 'local_bio' })
       bannerColor.value = await invoke<string | null>('db_load_key', { keyId: 'local_banner_color' })
@@ -137,6 +157,50 @@ export const useIdentityStore = defineStore('identity', () => {
     publicDHKey.value   = cryptoService.getPublicDHKey()
   }
 
+  /**
+   * Decrypt passphrase-wrapped keys and load them into memory.
+   * Returns true on success, false if the passphrase is wrong.
+   */
+  async function unlockWithPassphrase(passphrase: string): Promise<boolean> {
+    const wrappedSign = await invoke<string | null>('db_load_key', { keyId: 'local_sign_secret' })
+    if (!wrappedSign) return false
+    try {
+      const bundle = JSON.parse(wrappedSign)
+      await cryptoService.unwrapKeysWithPassphrase(bundle, passphrase)
+      publicSignKey.value = cryptoService.getPublicSignKey()
+      publicDHKey.value   = cryptoService.getPublicDHKey()
+      passphraseProtected.value = true
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Enable passphrase protection: wrap current in-memory keys and persist
+   * the ciphertext bundle, replacing the raw secrets in key_store.
+   */
+  async function setPassphrase(passphrase: string): Promise<void> {
+    const wrapped = cryptoService.wrapKeysWithPassphrase(passphrase)
+    const wrappedJson = JSON.stringify(wrapped)
+    await invoke('db_save_key', { keyId: 'local_sign_secret', keyType: 'sign_secret', keyData: wrappedJson })
+    // Store a sentinel so we don't need to load the sign secret to detect wrapping
+    await invoke('db_save_key', { keyId: 'local_dh_secret', keyType: 'dh_secret', keyData: '__wrapped__' })
+    passphraseProtected.value = true
+  }
+
+  /**
+   * Disable passphrase protection: re-write the raw secrets back to key_store.
+   * Caller must have already unlocked (keys must be in memory).
+   */
+  async function removePassphrase(): Promise<void> {
+    const raw = cryptoService.getRawIdentitySecrets()
+    if (!raw) throw new Error('Keys not in memory — unlock first')
+    await invoke('db_save_key', { keyId: 'local_sign_secret', keyType: 'sign_secret', keyData: raw.signSecret })
+    await invoke('db_save_key', { keyId: 'local_dh_secret',   keyType: 'dh_secret',   keyData: raw.dhSecret })
+    passphraseProtected.value = false
+  }
+
   return {
     userId,
     displayName,
@@ -147,6 +211,7 @@ export const useIdentityStore = defineStore('identity', () => {
     bannerColor,
     bannerDataUrl,
     isRegistered,
+    passphraseProtected,
     initializeIdentity,
     updateDisplayName,
     updateAvatar,
@@ -154,5 +219,8 @@ export const useIdentityStore = defineStore('identity', () => {
     updateBanner,
     exportIdentity,
     importIdentity,
+    unlockWithPassphrase,
+    setPassphrase,
+    removePassphrase,
   }
 })

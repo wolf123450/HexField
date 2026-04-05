@@ -57,6 +57,36 @@
       <p class="form-hint">Maximum local storage for message attachments. Oldest files are removed first when the limit is reached.</p>
     </div>
 
+    <!-- ── Passphrase Protection ─────────────────────────────────── -->
+    <div class="form-row">
+      <label class="form-label">Key Protection</label>
+      <p class="form-hint" style="margin-bottom: var(--spacing-sm)">
+        Wrap your cryptographic identity with a passphrase using Argon2id + XSalsa20-Poly1305.
+        Without the passphrase, keys on disk cannot be decrypted — even by someone with access to your device storage.
+      </p>
+
+      <div v-if="!identityStore.passphraseProtected" class="passphrase-box">
+        <p class="passphrase-status passphrase-off">Keys stored without passphrase</p>
+        <div class="passphrase-inputs">
+          <input v-model="newPassphrase"     type="password" placeholder="New passphrase"     class="form-input passphrase-field" autocomplete="new-password" />
+          <input v-model="confirmPassphrase" type="password" placeholder="Confirm passphrase" class="form-input passphrase-field" autocomplete="new-password" />
+        </div>
+        <p v-if="passphraseError" class="passphrase-error">{{ passphraseError }}</p>
+        <button class="btn-set-passphrase" :disabled="settingPassphrase" @click="doSetPassphrase">
+          {{ settingPassphrase ? 'Encrypting…' : 'Enable Passphrase Protection' }}
+        </button>
+      </div>
+
+      <div v-else class="passphrase-box">
+        <p class="passphrase-status passphrase-on">Keys protected with passphrase</p>
+        <input v-model="currentPassphrase" type="password" placeholder="Current passphrase to disable" class="form-input passphrase-field" autocomplete="current-password" />
+        <p v-if="passphraseError" class="passphrase-error">{{ passphraseError }}</p>
+        <button class="btn-remove-passphrase" :disabled="removingPassphrase" @click="doRemovePassphrase">
+          {{ removingPassphrase ? 'Removing…' : 'Disable Passphrase Protection' }}
+        </button>
+      </div>
+    </div>
+
     <!-- ── Identity Export / Import ─────────────────────────────────── -->
     <div class="form-row">
       <label class="form-label">Identity Backup</label>
@@ -227,6 +257,48 @@ async function doImport(e: Event) {
     alert(err instanceof Error ? err.message : 'Import failed — invalid identity file.')
   }
 }
+
+// ── Passphrase protection ─────────────────────────────────────────────────
+const newPassphrase     = ref('')
+const confirmPassphrase = ref('')
+const currentPassphrase = ref('')
+const passphraseError   = ref('')
+const settingPassphrase  = ref(false)
+const removingPassphrase = ref(false)
+
+async function doSetPassphrase() {
+  passphraseError.value = ''
+  if (!newPassphrase.value) { passphraseError.value = 'Passphrase cannot be empty.'; return }
+  if (newPassphrase.value !== confirmPassphrase.value) { passphraseError.value = 'Passphrases do not match.'; return }
+  settingPassphrase.value = true
+  try {
+    await identityStore.setPassphrase(newPassphrase.value)
+    newPassphrase.value = ''
+    confirmPassphrase.value = ''
+    uiStore.showNotification('Passphrase protection enabled.', 'success')
+  } catch (e: unknown) {
+    passphraseError.value = e instanceof Error ? e.message : 'Failed to set passphrase.'
+  } finally {
+    settingPassphrase.value = false
+  }
+}
+
+async function doRemovePassphrase() {
+  passphraseError.value = ''
+  if (!currentPassphrase.value) { passphraseError.value = 'Enter current passphrase to disable.'; return }
+  removingPassphrase.value = true
+  try {
+    const ok = await identityStore.unlockWithPassphrase(currentPassphrase.value)
+    if (!ok) { passphraseError.value = 'Wrong passphrase.'; return }
+    await identityStore.removePassphrase()
+    currentPassphrase.value = ''
+    uiStore.showNotification('Passphrase protection disabled.', 'info')
+  } catch (e: unknown) {
+    passphraseError.value = e instanceof Error ? e.message : 'Failed to remove passphrase.'
+  } finally {
+    removingPassphrase.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -304,4 +376,19 @@ async function doImport(e: Event) {
   align-items: center;
 }
 .btn-export:hover, .btn-import:hover { color: var(--text-primary); background: var(--bg-primary); }
+
+/* Passphrase protection */
+.passphrase-box { background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: var(--spacing-md); }
+.passphrase-status { font-size: 13px; font-weight: 600; margin-bottom: var(--spacing-sm); }
+.passphrase-on  { color: var(--success-color); }
+.passphrase-off { color: var(--text-secondary); }
+.passphrase-inputs { display: flex; flex-direction: column; gap: var(--spacing-xs); margin-bottom: var(--spacing-sm); }
+.passphrase-field { margin-bottom: var(--spacing-xs); }
+.passphrase-error { font-size: 12px; color: var(--error-color); margin-bottom: var(--spacing-xs); }
+.btn-set-passphrase, .btn-remove-passphrase { padding: 6px var(--spacing-md); border: none; border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; font-weight: 600; transform: none; }
+.btn-set-passphrase    { background: var(--accent-color); color: #fff; }
+.btn-set-passphrase:hover    { background: var(--accent-hover); }
+.btn-remove-passphrase { background: var(--bg-secondary); color: var(--text-primary); }
+.btn-remove-passphrase:hover { background: var(--bg-tertiary); }
+.btn-set-passphrase:disabled, .btn-remove-passphrase:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
