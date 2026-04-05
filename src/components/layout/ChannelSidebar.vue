@@ -2,9 +2,24 @@
   <aside class="channel-sidebar">
     <div class="server-header">
       <span class="server-name">{{ activeServer?.name ?? 'No server selected' }}</span>
-      <button class="icon-btn" title="Server settings" @contextmenu.prevent="openServerSettings">
-        <AppIcon :path="mdiCog" :size="16" />
-      </button>
+      <div class="server-header-actions">
+        <button
+          v-if="activeServer"
+          class="icon-btn"
+          title="Invite People"
+          @click="openServerInvite"
+        >
+          <AppIcon :path="mdiAccountPlus" :size="16" />
+        </button>
+        <button
+          v-if="activeServer"
+          class="icon-btn"
+          title="Server Settings"
+          @click="openServerSettingsDirect"
+        >
+          <AppIcon :path="mdiCog" :size="16" />
+        </button>
+      </div>
     </div>
 
     <div class="channel-list">
@@ -190,7 +205,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watchEffect, onMounted, onUnmounted, nextTick } from 'vue'
-import { mdiCog, mdiMicrophone, mdiMicrophoneOff } from '@mdi/js'
+import { mdiCog, mdiMicrophone, mdiMicrophoneOff, mdiAccountPlus } from '@mdi/js'
 import { useServersStore } from '@/stores/serversStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useMessagesStore } from '@/stores/messagesStore'
@@ -481,21 +496,16 @@ async function deleteChannel(channelId: string) {
 
 // ── Server settings ───────────────────────────────────────────────────────────
 
-function openServerSettings(e: MouseEvent) {
+function openServerSettingsDirect() {
   const sid = serversStore.activeServerId
   if (!sid) return
-  uiStore.showContextMenu(e.clientX, e.clientY, [
-    {
-      type: 'action',
-      label: 'Server Settings',
-      callback: () => uiStore.openServerSettings(sid),
-    },
-    {
-      type: 'action',
-      label: 'Invite People',
-      callback: () => uiStore.openInviteModal(sid),
-    },
-  ])
+  uiStore.openServerSettings(sid)
+}
+
+function openServerInvite() {
+  const sid = serversStore.activeServerId
+  if (!sid) return
+  uiStore.openInviteModal(sid)
 }
 
 // ── Own status ────────────────────────────────────────────────────────────────
@@ -600,6 +610,14 @@ function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline') {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+}
+
+.server-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
 }
 
 .channel-list {

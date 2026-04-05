@@ -64,7 +64,7 @@
           </div>
 
           <!-- Bio -->
-          <div v-if="isEditable || member?.bio" class="profile-section">
+          <div v-if="isEditable || !isSelf" class="profile-section">
             <label class="section-label">Bio</label>
             <textarea
               v-if="isEditable"
@@ -72,10 +72,12 @@
               class="bio-textarea"
               maxlength="200"
               rows="3"
-              placeholder="Tell others a bit about yourself…"
+              placeholder="Tell others a bit about yourself\u2026"
               @blur="saveBio"
             />
-            <p v-else class="bio-text">{{ member?.bio }}</p>
+            <p v-else class="bio-text" :class="{ 'bio-empty': !member?.bio }">
+              {{ member?.bio || 'No bio set.' }}
+            </p>
           </div>
 
           <!-- Per-peer volume (only for remote users while in voice) -->
@@ -95,6 +97,14 @@
               <span class="volume-val">{{ peerVolume }}%</span>
             </div>
           </div>
+
+          <!-- Get Join Link — own profile only -->
+          <div v-if="isSelf" class="profile-section profile-section--actions">
+            <button class="profile-action-btn" @click="openJoinCapsule">
+              <AppIcon :path="mdiLinkVariant" :size="16" />
+              Get Join Link
+            </button>
+          </div>
         </div>
 
         <button class="close-btn" @click="uiStore.closeUserProfile()">
@@ -107,7 +117,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { mdiContentCopy, mdiCheck, mdiVolumeHigh, mdiClose, mdiCamera } from '@mdi/js'
+import { mdiContentCopy, mdiCheck, mdiVolumeHigh, mdiClose, mdiCamera, mdiLinkVariant } from '@mdi/js'
 import { useUIStore }       from '@/stores/uiStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import { useServersStore }  from '@/stores/serversStore'
@@ -167,13 +177,17 @@ const bannerStyle = computed(() => {
   return { background: deriveUserGradient(userId.value || 'a') }
 })
 
-// Sync editName + editBio when modal opens
+// Sync editName + editBio when modal opens; request remote profile if viewing another user
 watch(() => uiStore.showUserProfile, open => {
   if (open && isEditable.value) {
     editName.value = identityStore.displayName
     editBio.value  = identityStore.bio ?? ''
   }
-  if (open && !isSelf.value) peerVolume.value = 100
+  if (open && !isSelf.value) {
+    peerVolume.value = 100
+    // Request up-to-date profile (bio, avatar, banner) from the peer
+    networkStore.requestProfile(userId.value).catch(() => {})
+  }
 })
 
 async function saveName() {
@@ -194,6 +208,13 @@ async function copyUserId() {
   await navigator.clipboard.writeText(userId.value)
   copied.value = true
   setTimeout(() => { copied.value = false }, 1500)
+}
+
+function openJoinCapsule() {
+  const sid = uiStore.userProfileServerId ?? serversStore.activeServerId
+  if (!sid) return
+  uiStore.closeUserProfile()
+  uiStore.openJoinCapsuleModal(sid)
 }
 
 function setVolume(e: Event) {
@@ -531,4 +552,30 @@ function readFileAsDataUrl(file: File): Promise<string> {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.bio-text.bio-empty {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.profile-section--actions {
+  padding-top: 0;
+}
+
+.profile-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px var(--spacing-md);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s;
+  transform: none;
+}
+
+.profile-action-btn:hover { background: var(--bg-tertiary); }
 </style>

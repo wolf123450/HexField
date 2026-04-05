@@ -5,17 +5,20 @@
         v-for="serverId in serversStore.joinedServerIds"
         :key="serverId"
         class="server-icon"
-        :class="{ active: serverId === serversStore.activeServerId }"
+        :class="{ active: serverId === serversStore.activeServerId, 'has-avatar': !!serversStore.servers[serverId]?.avatarDataUrl }"
+        :style="serverIconStyle(serverId)"
         :title="serversStore.servers[serverId]?.name"
         @click="selectServer(serverId)"
         @contextmenu.prevent="(e) => openServerMenu(e, serverId)"
       >
-        <AvatarImage
-          :src="serversStore.servers[serverId]?.avatarDataUrl ?? null"
-          :name="serversStore.servers[serverId]?.name"
-          :size="48"
-          :animate="serverId === serversStore.activeServerId"
+        <img
+          v-if="serversStore.servers[serverId]?.avatarDataUrl"
+          :src="serversStore.servers[serverId]!.avatarDataUrl!"
+          :alt="serversStore.servers[serverId]?.name"
+          class="server-avatar-img"
+          draggable="false"
         />
+        <span v-else class="server-initials">{{ serverInitials(serverId) }}</span>
         <span
           v-if="unreadForServer(serverId) > 0"
           class="unread-badge"
@@ -44,7 +47,6 @@ import { useUIStore } from '@/stores/uiStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useMessagesStore } from '@/stores/messagesStore'
 import type { MenuItem } from '@/stores/uiStore'
-
 import { useIdentityStore } from '@/stores/identityStore'
 
 const serversStore  = useServersStore()
@@ -52,6 +54,23 @@ const channelsStore = useChannelsStore()
 const messagesStore = useMessagesStore()
 const uiStore       = useUIStore()
 const identityStore = useIdentityStore()
+
+function serverInitials(serverId: string): string {
+  const name = serversStore.servers[serverId]?.name?.trim() || '?'
+  return name.split(/\s+/).map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()
+}
+
+const DEFAULT_BG_COLORS = ['#5865F2', '#3BA55D', '#ED4245', '#FAA61A', '#EB459E', '#9B59B6', '#607D8B']
+
+function serverIconStyle(serverId: string): Record<string, string> {
+  const server = serversStore.servers[serverId]
+  if (!server) return {}
+  // When an avatar is set, no background colour needed — image covers it
+  if (server.avatarDataUrl) return { background: 'transparent' }
+  // User-configured background colour or derived from server id
+  const color = server.iconBgColor ?? DEFAULT_BG_COLORS[server.id.charCodeAt(0) % DEFAULT_BG_COLORS.length]
+  return { background: color }
+}
 
 async function selectServer(serverId: string) {
   serversStore.setActiveServer(serverId)
@@ -93,11 +112,6 @@ function openServerMenu(e: MouseEvent, serverId: string) {
       type: 'action',
       label: 'Invite People',
       callback: () => uiStore.openInviteModal(serverId),
-    },
-    {
-      type: 'action',
-      label: 'Get Join Link (Reverse Invite)',
-      callback: () => uiStore.openJoinCapsuleModal(serverId),
     },
   ])
 }
@@ -149,27 +163,40 @@ const addServerMenu: MenuItem[] = [
   position: relative;
   width: 48px;
   height: 48px;
-  border-radius: 50%;
+  border-radius: 16px;
   background: var(--bg-secondary);
   border: none;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: border-radius 0.15s ease, background 0.15s ease;
-  color: var(--text-primary);
-  font-weight: 600;
-  font-size: 14px;
+  transition: border-radius 0.15s ease, filter 0.15s ease;
+  color: white;
+  font-weight: 700;
+  font-size: 16px;
   overflow: hidden;
   padding: 0;
   transform: none;
 }
 
-.server-icon:hover,
+.server-icon:hover {
+  border-radius: 12px;
+}
+
 .server-icon.active {
-  border-radius: 30%;
-  background: var(--accent-color);
-  color: white;
+  border-radius: 12px;
+}
+
+/* Avatar icons — no background change on hover/active */
+.server-icon.has-avatar:hover,
+.server-icon.has-avatar.active {
+  filter: brightness(1.08);
+}
+
+/* Default (initials) icons — subtle brightness on hover */
+.server-icon:not(.has-avatar):not(.add-server):hover,
+.server-icon:not(.has-avatar):not(.add-server).active {
+  filter: brightness(1.15);
 }
 
 .server-icon.add-server {
@@ -180,6 +207,22 @@ const addServerMenu: MenuItem[] = [
 .server-icon.add-server:hover {
   background: var(--accent-color);
   color: white;
+}
+
+.server-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.server-initials {
+  line-height: 1;
+  font-size: 16px;
+  font-weight: 700;
+  color: white;
+  pointer-events: none;
+  user-select: none;
 }
 
 .unread-badge {
