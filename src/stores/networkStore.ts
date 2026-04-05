@@ -122,11 +122,11 @@ export const useNetworkStore = defineStore('network', () => {
         // Gossip identity first — member keys must be queued on the data channel
         // before startSync sends sync_neg_init, so the remote decrypts our messages
         // in the right order (SCTP preserves send order).
-        gossipOwnDevice(userId)
-        gossipOwnMembership(userId)
-        gossipOwnPresence(userId)
-        gossipOwnProfile(userId)
-        gossipServerAvatars(userId)
+        gossipOwnDevice(userId).catch(e => console.warn('[network] gossipOwnDevice error:', e))
+        gossipOwnMembership(userId).catch(e => console.warn('[network] gossipOwnMembership error:', e))
+        gossipOwnPresence(userId).catch(e => console.warn('[network] gossipOwnPresence error:', e))
+        gossipOwnProfile(userId).catch(e => console.warn('[network] gossipOwnProfile error:', e))
+        gossipServerAvatars(userId).catch(e => console.warn('[network] gossipServerAvatars error:', e))
         // Record heartbeat baseline so the watchdog doesn't immediately time this peer out.
         lastHeartbeatFrom.set(userId, Date.now())
         // Start history reconciliation with newly connected peer

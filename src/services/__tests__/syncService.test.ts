@@ -26,34 +26,31 @@ vi.mock('@/stores/messagesStore', () => ({
 function makeMessageRow(id: string) {
   return {
     id,
-    channel_id: 'chan-1',
-    server_id:  'srv-1',
-    sender_id:  'user-a',
-    content:    'hello',
-    created_at: '2025-01-01T00:00:00Z',
-    logical_ts: '1000000-000001',
-    nonce:      '',
-    encrypted_key: '',
-    signature:  '',
-    attachment_hash: null,
-    attachment_name: null,
-    attachment_mime: null,
-    attachment_size: null,
+    channel_id:      'chan-1',
+    server_id:       'srv-1',
+    author_id:       'user-a',
+    content:         'hello',
+    content_type:    'text',
+    reply_to_id:     null,
+    created_at:      '2025-01-01T00:00:00Z',
+    logical_ts:      '1000000-000001',
+    verified:        true,
+    raw_attachments: null,
   }
 }
 
 function makeMutationRow(id: string) {
   return {
     id,
-    channel_id:    'chan-1',
-    server_id:     'srv-1',
-    sender_id:     'user-a',
-    message_id:    'msg-1',
-    type:          'reaction_add',
-    payload:       JSON.stringify({ emoji: '👍' }),
-    created_at:    '2025-01-01T00:00:00Z',
-    logical_ts:    '1000000-000002',
-    signature:     '',
+    type:         'reaction_add',
+    target_id:    'msg-1',
+    channel_id:   'chan-1',
+    author_id:    'user-a',
+    new_content:  null,
+    emoji_id:     '👍',
+    created_at:   '2025-01-01T00:00:00Z',
+    logical_ts:   '1000000-000002',
+    verified:     true,
   }
 }
 
