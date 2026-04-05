@@ -283,7 +283,7 @@
 - [x] Unread badges on `ServerIcon` and `ChannelItem`
 - [x] Mention highlights (`@username` parsing in messages)
 - [x] Message search — SQLite FTS5 (only indexes non-null content)
-- [ ] Passphrase-wrapped key storage (Phase 2 crypto tier: Argon2id → requires `libsodium-wrappers-sumo`)
+- [x] Passphrase-wrapped key storage (Phase 2 crypto tier: Argon2id → requires `libsodium-wrappers-sumo`)
 - [ ] OS keychain integration (Phase 3 crypto tier: `keyring` crate)
 - [x] Storage limit enforcement (5 GB default, 10 GB max, user-configurable)
   - [x] Background pruning: attachment files (oldest first), then message content
@@ -311,8 +311,8 @@
 - [ ] **Tests**
   - [x] FTS5 message search: exact match, partial match, no results
   - [x] FTS5 search excludes `content = NULL` (deleted) rows
-  - [ ] Passphrase key wrap: wrapped key cannot be decrypted with wrong passphrase
-  - [ ] Passphrase key wrap: correct passphrase recovers original keypair
+  - [x] Passphrase key wrap: wrapped key cannot be decrypted with wrong passphrase
+  - [x] Passphrase key wrap: correct passphrase recovers original keypair
   - [x] Storage pruning: oldest attachments deleted first; messages pruned only after attachments
   - [x] Storage usage calculation matches sum of attachment file sizes
   - [ ] Archive export produces a valid signed bundle; import restores server state

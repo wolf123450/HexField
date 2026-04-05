@@ -5,7 +5,7 @@
  * They are NEVER stored in Pinia stores or passed to the UI layer.
  */
 
-import _sodium from 'libsodium-wrappers'
+import _sodium from 'libsodium-wrappers-sumo'
 import type { EncryptedEnvelope } from '@/types/core'
 
 type SodiumType = typeof _sodium
@@ -224,6 +224,101 @@ class CryptoService {
     } catch {
       return false
     }
+  }
+
+  /**
+   * Export the raw (unencrypted) identity secret keys as base64.
+   * Used by removePassphrase() to re-write raw keys after decrypting.
+   * Returns null if keys are not loaded.
+   */
+  getRawIdentitySecrets(): { signSecret: string; dhSecret: string } | null {
+    const s = this.sodium!
+    if (!this.signKeyPair || !this.dhKeyPair) return null
+    return {
+      signSecret: s.to_base64(this.signKeyPair.privateKey),
+      dhSecret:   s.to_base64(this.dhKeyPair.privateKey),
+    }
+  }
+
+  // ── Phase 2: Passphrase-wrapped key storage ─────────────────────────────
+
+  /**
+   * Encrypt the raw identity secrets with a user-supplied passphrase.
+   *
+   * Uses Argon2id (crypto_pwhash) to derive a 32-byte symmetric key from the
+   * passphrase + random salt, then wraps the concatenated secrets with
+   * XSalsa20-Poly1305 (crypto_secretbox_easy).
+   *
+   * Returns a JSON-serialisable object that can be stored as-is in key_store.
+   */
+  wrapKeysWithPassphrase(passphrase: string): {
+    version:    2
+    salt:       string   // base64 16-byte Argon2id salt
+    nonce:      string   // base64 24-byte secretbox nonce
+    ciphertext: string   // base64 wrapped keys
+  } {
+    const s = this.sodium!
+    if (!this.signKeyPair || !this.dhKeyPair) throw new Error('Keys not loaded')
+
+    // Concatenate secret bytes: [signSecret(64)] + [dhSecret(32)]
+    const plaintext = new Uint8Array([
+      ...this.signKeyPair.privateKey,
+      ...this.dhKeyPair.privateKey,
+    ])
+
+    const salt  = s.randombytes_buf(s.crypto_pwhash_SALTBYTES)
+    const nonce = s.randombytes_buf(s.crypto_secretbox_NONCEBYTES)
+
+    // Argon2id — interactive parameters (fast enough for a user login prompt)
+    const derivedKey = s.crypto_pwhash(
+      s.crypto_secretbox_KEYBYTES,
+      passphrase,
+      salt,
+      s.crypto_pwhash_OPSLIMIT_INTERACTIVE,
+      s.crypto_pwhash_MEMLIMIT_INTERACTIVE,
+      s.crypto_pwhash_ALG_ARGON2ID13,
+    )
+
+    const ciphertext = s.crypto_secretbox_easy(plaintext, nonce, derivedKey)
+
+    return {
+      version:    2,
+      salt:       s.to_base64(salt),
+      nonce:      s.to_base64(nonce),
+      ciphertext: s.to_base64(ciphertext),
+    }
+  }
+
+  /**
+   * Decrypt a passphrase-wrapped key bundle and load the keys into memory.
+   * Throws if the passphrase is wrong or the ciphertext is corrupted.
+   */
+  async unwrapKeysWithPassphrase(
+    wrapped: { version: 2; salt: string; nonce: string; ciphertext: string },
+    passphrase: string,
+  ): Promise<void> {
+    const s = this.sodium!
+    const salt       = s.from_base64(wrapped.salt)
+    const nonce      = s.from_base64(wrapped.nonce)
+    const ciphertext = s.from_base64(wrapped.ciphertext)
+
+    const derivedKey = s.crypto_pwhash(
+      s.crypto_secretbox_KEYBYTES,
+      passphrase,
+      salt,
+      s.crypto_pwhash_OPSLIMIT_INTERACTIVE,
+      s.crypto_pwhash_MEMLIMIT_INTERACTIVE,
+      s.crypto_pwhash_ALG_ARGON2ID13,
+    )
+
+    // This throws if MAC verification fails (wrong passphrase or tampered data)
+    const plaintext = s.crypto_secretbox_open_easy(ciphertext, nonce, derivedKey)
+
+    // Reconstruct keypairs from the decrypted secret bytes:
+    // first 64 bytes = Ed25519 sign secret, next 32 = X25519 DH secret
+    const signSecret = plaintext.slice(0, 64)
+    const dhSecret   = plaintext.slice(64, 96)
+    await this.loadKeys(s.to_base64(signSecret), s.to_base64(dhSecret))
   }
 }
 
