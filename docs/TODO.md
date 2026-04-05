@@ -1,4 +1,4 @@
-# GameChat — Implementation TODO
+# HexField — Implementation TODO
 
 > Detailed specs for each area live in [`docs/specs/`](specs/).
 > Architecture overview and key decisions: [`docs/architecture-plan.md`](architecture-plan.md).
@@ -10,7 +10,7 @@
 
 **Goal**: Runnable skeleton with identity, layout shell, and SQLite wired up.
 
-- [x] Copy `tauri-app-skeleton` → `GameChat/`, rename all references
+- [x] Copy `tauri-app-skeleton` → `HexField/`, rename all references
 - [x] Install new npm dependencies (`@tanstack/virtual-core`, `libsodium-wrappers`, `date-fns`, `uuid`, `qrcode`)
 - [x] Add new Cargo dependencies (`rusqlite`, `rusqlite_migration`, `tokio`, `tokio-tungstenite`, `negentropy`, `blake3`, `mdns-sd`, `tauri-plugin-deep-link`, etc.)
 - [x] Update CSP in `tauri.conf.json` (add `wss:`, `wasm-unsafe-eval`, `media-src blob:`)
@@ -38,7 +38,7 @@
 - [x] `MemberList.vue` — right panel, collapsible, online status
 - [x] Server manifest generation + signing on server create
 - [x] QR code generation for invites (`qrcode` npm package → SVG display)
-- [x] `tauri-plugin-deep-link` — register `gamechat://` handler, route to join flow
+- [x] `tauri-plugin-deep-link` — register `hexfield://` handler, route to join flow
 
 ---
 
@@ -231,7 +231,7 @@
 
 **Goal**: Large file transfers without a server, using content-addressed gossip.
 
-- [x] BLAKE3 content-addressed storage: `$APPDATA/gamechat/attachments/{hash[0:2]}/{hash}.bin`
+- [x] BLAKE3 content-addressed storage: `$APPDATA/hexfield/attachments/{hash[0:2]}/{hash}.bin`
 - [x] Chunked download over WebRTC data channels (chunk size 256KB)
 - [x] `attachment_want` / `attachment_have` gossip protocol
 - [x] Partial download tracking (`.part` bitfield file + `.bits` sidecar)
@@ -292,7 +292,7 @@
   - [x] Storage usage display in Settings > Privacy
 - [x] Server admin archive / re-baseline
   - [x] Archive bundle export (signed, compressed snapshot)
-  - [x] `server_rebaseline` mutation with `historyStartsAt` + `gamechat://archive/...` deep link
+  - [x] `server_rebaseline` mutation with `historyStartsAt` + `hexfield://archive/...` deep link
   - [x] Archive import flow (import prompt on deep-link click)
 - [ ] macOS Rust-side screen capture fallback (`CGDisplayStream`) for macOS < 12.3
 - [ ] Linux Wayland screen share via XDG Desktop Portal
@@ -334,14 +334,14 @@
 > **Note**: `src/utils/updateService.ts` and `src/components/settings/SettingsHelpTab.vue` are already fully implemented. `autoCheckForUpdate()` just needs to be called from `App.vue` on startup, the pubkey placeholder in `tauri.conf.json` needs the real key, and the GitHub release pipeline needs creating.
 
 ### 7a — One-time key & repo setup (do once, offline)
-- [ ] Create the GitHub repository (`GameChat` or chosen name) — public or private
+- [ ] Create the GitHub repository (`HexField` or chosen name) — public or private
 - [ ] Generate Ed25519 update signing key pair: `npm run tauri -- signer generate -w tauri-update-key.key`
   - Outputs `.key` (private) and `.key.pub` (public) — **never commit the private key**
   - Add `.key` to `.gitignore` immediately
 - [ ] Store private key as GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY` (base64-encoded)
 - [ ] Store passphrase (if set) as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 - [ ] Add public key to `tauri.conf.json` under `plugins.updater.pubkey` (replace `REPLACE_WITH_YOUR_TAURI_SIGNING_PUBLIC_KEY`)
-- [ ] Set `plugins.updater.endpoints` to `["https://github.com/YOUR_ORG/GameChat/releases/latest/download/latest.json"]`
+- [ ] Set `plugins.updater.endpoints` to `["https://github.com/YOUR_ORG/HexField/releases/latest/download/latest.json"]`
 
 ### 7b — GitHub Actions release workflow
 - [x] Copy `.github/workflows/release.yml` from GlyphAstra — update app name, identifier, repo URL
@@ -370,7 +370,7 @@
 
 ## Phase 8 — Mobile (Android & iOS)
 
-**Goal**: Distribute GameChat on Android and iOS using Tauri Mobile — same Rust backend, same Vue frontend. All mobile builds happen in GitHub Actions (no local mobile toolchain required for development). The primary implementation work is responsive CSS/layout so the app looks and functions well at phone-sized viewports.
+**Goal**: Distribute HexField on Android and iOS using Tauri Mobile — same Rust backend, same Vue frontend. All mobile builds happen in GitHub Actions (no local mobile toolchain required for development). The primary implementation work is responsive CSS/layout so the app looks and functions well at phone-sized viewports.
 
 > Local mobile toolchain (Android Studio, Xcode) is only needed for hands-on emulator debugging. Day-to-day development uses the desktop app; mobile builds are validated via CI.
 

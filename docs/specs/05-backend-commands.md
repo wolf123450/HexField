@@ -74,7 +74,7 @@ db_upsert_member(member: MemberRow) -> ()
 // ── Emoji ─────────────────────────────────────────────────────────────────────
 db_load_emoji(server_id: String) -> Vec<EmojiRow>
 db_save_emoji(emoji: EmojiRow, image_bytes: Vec<u8>) -> ()
-// Writes image to $APPDATA/gamechat/emoji/{serverId}/{emojiId}.webp, saves metadata row
+// Writes image to $APPDATA/hexfield/emoji/{serverId}/{emojiId}.webp, saves metadata row
 
 get_emoji_image(emoji_id: String, server_id: String) -> Vec<u8>
 // Reads file from disk; frontend converts to data: URI for <img> src

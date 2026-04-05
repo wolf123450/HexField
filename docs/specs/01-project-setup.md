@@ -7,16 +7,16 @@
 ## 1. Skeleton Copy & Rename
 
 ```bash
-xcopy /E /I d:\Projects\tauri-app-skeleton d:\Projects\GameChat
+xcopy /E /I d:\Projects\tauri-app-skeleton d:\Projects\HexField
 ```
 
 | File | Change |
 |------|--------|
-| `src/appConfig.ts` | `APP_NAME = 'GameChat'`, `STORAGE_PREFIX = 'gamechat_'` |
-| `src-tauri/Cargo.toml` | `name = "gamechat"`, update description |
-| `src-tauri/tauri.conf.json` | `productName = "GameChat"`, `identifier = "com.gamechat.app"`, window 1280×800 |
-| `index.html` | `<title>GameChat</title>` |
-| `package.json` | `name = "gamechat"` |
+| `src/appConfig.ts` | `APP_NAME = 'HexField'`, `STORAGE_PREFIX = 'hexfield_'` |
+| `src-tauri/Cargo.toml` | `name = "hexfield"`, update description |
+| `src-tauri/tauri.conf.json` | `productName = "HexField"`, `identifier = "com.hexfield.app"`, window 1280×800 |
+| `index.html` | `<title>HexField</title>` |
+| `package.json` | `name = "hexfield"` |
 
 Files to delete from skeleton:
 - `src/stores/notesStore.ts`
@@ -87,7 +87,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
-tauri-plugin-deep-link = "2"   # gamechat:// protocol handler
+tauri-plugin-deep-link = "2"   # hexfield:// protocol handler
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows            = { version = "0.58", features = ["Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
@@ -116,11 +116,11 @@ Add to `tauri.conf.json` under `bundle > macOS > info_plist` (or a custom `Info.
 
 ```xml
 <key>NSCameraUsageDescription</key>
-<string>GameChat uses your camera for video calls.</string>
+<string>HexField uses your camera for video calls.</string>
 <key>NSMicrophoneUsageDescription</key>
-<string>GameChat uses your microphone for voice chat.</string>
+<string>HexField uses your microphone for voice chat.</string>
 <key>NSScreenCaptureUsageDescription</key>
-<string>GameChat uses screen capture for screen sharing.</string>
+<string>HexField uses screen capture for screen sharing.</string>
 ```
 
 Without these, `getUserMedia()` and `getDisplayMedia()` will silently fail on macOS.
@@ -129,13 +129,13 @@ Without these, `getUserMedia()` and `getDisplayMedia()` will silently fail on ma
 
 ## 6. Deep Link Registration
 
-Register `gamechat://` protocol in `tauri.conf.json`:
+Register `hexfield://` protocol in `tauri.conf.json`:
 
 ```json
 "plugins": {
   "deep-link": {
     "mobile": [],
-    "desktop": { "schemes": ["gamechat"] }
+    "desktop": { "schemes": ["hexfield"] }
   }
 }
 ```
@@ -143,10 +143,10 @@ Register `gamechat://` protocol in `tauri.conf.json`:
 Listen in `main.ts`:
 ```typescript
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link'
-onOpenUrl((urls) => router.push(parseGameChatUrl(urls[0])))
+onOpenUrl((urls) => router.push(parseHexFieldUrl(urls[0])))
 ```
 
 Supported URL patterns:
-- `gamechat://join/{inviteCode}` — join a server
-- `gamechat://pair/{linkToken}` — device pairing
-- `gamechat://archive/{archiveId}` — import server archive
+- `hexfield://join/{inviteCode}` — join a server
+- `hexfield://pair/{linkToken}` — device pairing
+- `hexfield://archive/{archiveId}` — import server archive

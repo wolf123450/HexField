@@ -251,7 +251,7 @@ CREATE TABLE IF NOT EXISTS custom_emoji (
   id           TEXT PRIMARY KEY,
   server_id    TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
   name         TEXT NOT NULL,
-  file_path    TEXT NOT NULL,              -- relative to $APPDATA/gamechat/emoji/{serverId}/{id}.webp
+  file_path    TEXT NOT NULL,              -- relative to $APPDATA/hexfield/emoji/{serverId}/{id}.webp
   uploaded_by  TEXT NOT NULL,
   created_at   TEXT NOT NULL
   -- image bytes stored on disk, NOT in SQLite
@@ -292,8 +292,8 @@ CREATE TABLE IF NOT EXISTS channel_permission_overrides (
 ## 3. File System Layout
 
 ```
-$APPDATA/gamechat/
-  gamechat.db                    ← SQLite database
+$APPDATA/hexfield/
+  hexfield.db                    ← SQLite database
   emoji/
     {serverId}/
       {emojiId}.webp             ← 128×128 WebP, 5–15KB each

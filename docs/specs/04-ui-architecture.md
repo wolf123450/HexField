@@ -163,9 +163,9 @@ The tombstone shows no author, no timestamp, no "by whom". Defaults to **off**.
 
 > **How message deletion works**
 >
-> When you delete a message, GameChat immediately erases the message content on your device and sends a delete notice to all currently online members. Each member's app erases the content from their device when they receive the notice. Members who are offline will have the content erased the next time they connect.
+> When you delete a message, HexField immediately erases the message content on your device and sends a delete notice to all currently online members. Each member's app erases the content from their device when they receive the notice. Members who are offline will have the content erased the next time they connect.
 >
-> Because GameChat is peer-to-peer, deleted content cannot be recovered from any GameChat server — there isn't one. However, peers who received your message before the delete notice arrived may retain a copy if they are running a modified version of the app. GameChat makes a good-faith effort to delete content on all connected devices but cannot guarantee deletion on non-standard clients.
+> Because HexField is peer-to-peer, deleted content cannot be recovered from any HexField server — there isn't one. However, peers who received your message before the delete notice arrived may retain a copy if they are running a modified version of the app. HexField makes a good-faith effort to delete content on all connected devices but cannot guarantee deletion on non-standard clients.
 
 Settings in this tab:
 - `[ ]` Show "message deleted" placeholder *(default: off)*

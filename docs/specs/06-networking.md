@@ -17,7 +17,7 @@
 
 ## 2. QR Code / Invite Link
 
-A QR code or `gamechat://` link encodes:
+A QR code or `hexfield://` link encodes:
 
 ```json
 {
@@ -37,7 +37,7 @@ A QR code or `gamechat://` link encodes:
 }
 ```
 
-Generated with the `qrcode` npm package (SVG output, displayed in-app). The recipient scans with their phone camera or another GameChat instance.
+Generated with the `qrcode` npm package (SVG output, displayed in-app). The recipient scans with their phone camera or another HexField instance.
 
 **Server invite via QR**: New member connects directly to the owner (or any online member who can relay), presents the token, and receives the signed server manifest + member list.
 
@@ -46,8 +46,8 @@ Generated with the `qrcode` npm package (SVG output, displayed in-app). The reci
 ## 3. LAN Discovery (mDNS / DNS-SD)
 
 On startup the Rust backend:
-1. Registers `_gamechat._udp.local` service with `userId` and listen port
-2. Browses for other `_gamechat._udp.local` services
+1. Registers `_hexfield._udp.local` service with `userId` and listen port
+2. Browses for other `_hexfield._udp.local` services
 3. On discovery: attempt direct connection automatically
 
 Crate: `mdns-sd = "0.18"`. No internet, no server, zero configuration.
@@ -71,7 +71,7 @@ After DTLS handshake, traffic is direct. Bob only forwards SDP blobs.
 
 ---
 
-## 5. Optional Rendezvous Server (`gamechat-server` — separate repo)
+## 5. Optional Rendezvous Server (`hexfield-server` — separate repo)
 
 When configured, provides: smooth signaling, persistent presence, invite link resolution. **Never stores message content.**
 

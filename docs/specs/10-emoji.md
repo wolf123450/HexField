@@ -10,7 +10,7 @@ Custom emoji images are stored as files, not base64 in SQLite. A server with 100
 
 **Layout**:
 ```
-$APPDATA/gamechat/emoji/
+$APPDATA/hexfield/emoji/
   {serverId}/
     {emojiId}.webp      ← 128×128 WebP, 5–15KB each
 ```
@@ -130,14 +130,14 @@ Located in `ReactionBar.vue`, rendered below message content:
 
 ```rust
 db_save_emoji(emoji: EmojiRow, image_bytes: Vec<u8>) -> ()
-// 1. Write image to $APPDATA/gamechat/emoji/{serverId}/{emojiId}.webp
+// 1. Write image to $APPDATA/hexfield/emoji/{serverId}/{emojiId}.webp
 // 2. INSERT INTO custom_emoji (metadata only, no image_data column)
 
 db_load_emoji(server_id: String) -> Vec<EmojiRow>
 // Returns metadata only; image bytes loaded on demand
 
 get_emoji_image(emoji_id: String, server_id: String) -> Vec<u8>
-// fs::read($APPDATA/gamechat/emoji/{serverId}/{emojiId}.webp)
+// fs::read($APPDATA/hexfield/emoji/{serverId}/{emojiId}.webp)
 
 store_emoji_image(emoji_id: String, server_id: String, image_bytes: Vec<u8>) -> ()
 // Write received peer image to disk (no DB row — metadata arrives via emoji_sync first)
