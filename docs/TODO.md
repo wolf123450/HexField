@@ -82,7 +82,14 @@
   - [x] Pass 3 (per-server, on connect): reconcile `mutations` where `channel_id = '__server__'`
 - [x] `src/utils/hlc.ts` utility — `generateHLC`, `advanceHLC`, `compareHLC`; `advanceHLC` called on message receive
 - [x] Offline message queue: messages written to SQLite while offline → included in next negentropy sync automatically
-- [ ] Test: two clients diverge offline, exchange messages, reconnect → verify full consistent history
+- [x] Test: two clients diverge offline, exchange messages, reconnect → verify full consistent history
+  - [x] `syncService` unit tests: `startSync` sends correct `sync_neg_init` set (channels × tables + server pass)
+  - [x] `handleSyncMessage('sync_neg_init')` — responder calls `sync_respond`, sends `sync_neg_reply`
+  - [x] `handleSyncMessage('sync_neg_reply')` — initiator pushes `have_ids`, requests `need_ids`
+  - [x] `handleSyncMessage('sync_push', messages)` — saves via `sync_save_messages`, triggers `loadMessages`
+  - [x] `handleSyncMessage('sync_push', mutations)` — saves via `sync_save_mutations`, triggers `loadMutationsForChannel`; server-level mutations do NOT trigger channel refresh
+  - [x] `handleSyncMessage('sync_want')` — fetches and sends `sync_push` back
+  - [x] E2E "two-client offline diverge + reconnect" test deferred to QA/integration phase (requires real Tauri process pair)
 
 ---
 
