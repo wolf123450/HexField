@@ -180,9 +180,9 @@ Pruning never deletes message rows or mutation rows.
 
 **Server archive / re-baseline** (Phase 6, server admin only):
 1. Admin exports signed compressed archive bundle of all messages up to timestamp T
-2. Admin issues `server_update` mutation: `{ historyStartsAt: T, archiveUrl: "gamechat://archive/..." }`
+2. Admin issues `server_update` mutation: `{ historyStartsAt: T, archiveUrl: "hexfield://archive/..." }`
 3. Peers receiving this stop requesting history before T from other peers
-4. Archive importable via `gamechat://archive/` deep link → shows import prompt
+4. Archive importable via `hexfield://archive/` deep link → shows import prompt
 
 ---
 

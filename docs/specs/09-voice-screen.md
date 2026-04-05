@@ -151,11 +151,11 @@ Add to `tauri.conf.json` under `bundle > macOS > info_plist`:
 
 ```xml
 <key>NSCameraUsageDescription</key>
-<string>GameChat uses your camera for video calls.</string>
+<string>HexField uses your camera for video calls.</string>
 <key>NSMicrophoneUsageDescription</key>
-<string>GameChat uses your microphone for voice chat.</string>
+<string>HexField uses your microphone for voice chat.</string>
 <key>NSScreenCaptureUsageDescription</key>
-<string>GameChat uses screen capture for screen sharing.</string>
+<string>HexField uses screen capture for screen sharing.</string>
 ```
 
 ---
@@ -458,7 +458,7 @@ type UserStatus = 'online' | 'idle' | 'dnd' | 'offline';
 ```
 
 ### Own status
-- Persisted in `localStorage` under key `gamechat_own_status` (default `'online'`).
+- Persisted in `localStorage` under key `hexfield_own_status` (default `'online'`).
 - **Already partially implemented** in `ChannelSidebar` — `ownStatus` ref, status dot, and context-menu picker were added in the Phase 5 UI polish pass.
 - `setOwnStatus(s)` updates `ownStatus.value`, saves to localStorage, calls `serversStore.updateMemberStatus(serverId, userId, s)` for every joined server, and broadcasts a `presence_update` P2P message.
 

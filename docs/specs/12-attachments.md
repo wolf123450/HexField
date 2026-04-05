@@ -49,7 +49,7 @@ Every attachment identified by BLAKE3 hash. Message carries only metadata:
 ### Storage on Disk
 
 ```
-$APPDATA/gamechat/attachments/
+$APPDATA/hexfield/attachments/
   {hash[0:2]}/{hash}.bin      ← complete file
   {hash[0:2]}/{hash}.part     ← incomplete download (chunks as bitfield)
 ```
@@ -76,7 +76,7 @@ Once downloaded, clients automatically serve chunks to requesting peers for the 
 
 ```rust
 get_attachment_path(content_hash: String) -> Option<String>
-// Returns $APPDATA/gamechat/attachments/{hash[0:2]}/{hash}.bin if it exists
+// Returns $APPDATA/hexfield/attachments/{hash[0:2]}/{hash}.bin if it exists
 
 save_attachment_chunk(content_hash: String, chunk_index: u32, data: Vec<u8>) -> ()
 // Write chunk to .part file; update bitfield; if all chunks received: rename to .bin

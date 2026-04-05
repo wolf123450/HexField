@@ -9,7 +9,7 @@
 
 ## 1. Problem Statement
 
-GameChat servers currently have no moderation tooling beyond role assignment.  
+HexField servers currently have no moderation tooling beyond role assignment.  
 Specifically missing:
 
 1. **Server kick** — forcibly remove a member from the server session
@@ -105,8 +105,8 @@ CREATE TABLE IF NOT EXISTS invite_codes (
 These are purely client-side decisions; they are never broadcast to peers.
 
 ```
-localStorage key: gamechat_personal_blocks_${myUserId}  → JSON array of blocked userIds
-localStorage key: gamechat_personal_mutes_${myUserId}   → JSON array of voice-muted userIds
+localStorage key: hexfield_personal_blocks_${myUserId}  → JSON array of blocked userIds
+localStorage key: hexfield_personal_mutes_${myUserId}   → JSON array of voice-muted userIds
 ```
 
 ### 2.7 Server flags (extend `Server` interface)
@@ -352,13 +352,13 @@ Distinct from admin moderation actions — these are the user's private decision
 - Hides all messages from the blocked user in every channel and every server
 - The blocked user is unaware; you still appear in their member list
 - Messages are stored in SQLite normally (needed for sync correctness) — filtered at render time only
-- Stored in `localStorage` under `gamechat_personal_blocks_${myUserId}` (JSON array of userIds)
+- Stored in `localStorage` under `hexfield_personal_blocks_${myUserId}` (JSON array of userIds)
 
 ### 7.2 Personal voice mute
 
 - Sets `audioTrack.enabled = false` on the remote track received from that peer
 - The muted user is unaware — shown as unmuted on their own client
-- Stored in `localStorage` under `gamechat_personal_mutes_${myUserId}`
+- Stored in `localStorage` under `hexfield_personal_mutes_${myUserId}`
 - Shown in the voice tile with a "personally muted" icon (distinct from admin mute icon)
 
 ### 7.3 State management (new store)
@@ -457,7 +457,7 @@ The alternative to "admin must approve pull requests" is "the joiner sends a lin
 
 ### 9.4 When `inviteMode = 'reverse_invite_only'`
 
-No invite codes are issued. The "Invite People" button generates a sharable capsule (QR + deep-link URL `gamechat://approve?userId=...&key=...`). The admin's client handles the deep link, generating a signed `member_join` mutation and broadcasting it.
+No invite codes are issued. The "Invite People" button generates a sharable capsule (QR + deep-link URL `hexfield://approve?userId=...&key=...`). The admin's client handles the deep link, generating a signed `member_join` mutation and broadcasting it.
 
 ---
 

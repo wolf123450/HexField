@@ -35,7 +35,7 @@ export interface NetworkProvider {
 
 ## MatrixProvider Mapping
 
-| GameChat concept | Matrix concept |
+| HexField concept | Matrix concept |
 |------------------|----------------|
 | Server | Space |
 | Channel | Room (inside a Space) |
@@ -67,8 +67,8 @@ export interface NetworkProvider {
 | Message history | Local SQLite + P2P sync | Homeserver persistent |
 | E2E crypto | libsodium custom | Megolm (proven) |
 | Voice | WebRTC mesh | Element Call / Janus |
-| Interop | GameChat only | All Matrix clients |
-| Self-hosting | `gamechat-server` (minimal) | Synapse / Dendrite (complex) |
+| Interop | HexField only | All Matrix clients |
+| Self-hosting | `hexfield-server` (minimal) | Synapse / Dendrite (complex) |
 
 ---
 

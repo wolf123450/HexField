@@ -1,4 +1,4 @@
-# GameChat — Architecture Plan
+# HexField — Architecture Plan
 
 > **Stack**: Tauri v2 · Vue 3.5 · TypeScript strict · Pinia 3 · Vite 6
 > **Source skeleton**: `d:/Projects/tauri-app-skeleton`
@@ -8,7 +8,7 @@
 
 ## Vision & Architecture Philosophy
 
-GameChat is a privacy-first, server-optional chat application combining the feature richness of Discord with a decentralized P2P architecture. The primary design goal is that **the app works completely without any central server**. A rendezvous server is a convenience enhancement, not a requirement.
+HexField is a privacy-first, server-optional chat application combining the feature richness of Discord with a decentralized P2P architecture. The primary design goal is that **the app works completely without any central server**. A rendezvous server is a convenience enhancement, not a requirement.
 
 ### Core principles
 
@@ -20,7 +20,7 @@ GameChat is a privacy-first, server-optional chat application combining the feat
 ### Connection modes (in priority order)
 
 1. **LAN / mDNS** — peers on the same local network discover each other automatically via DNS-SD
-2. **Direct QR code** — a QR code or `gamechat://` link encodes a peer's identity and connection hints; share via any side channel
+2. **Direct QR code** — a QR code or `hexfield://` link encodes a peer's identity and connection hints; share via any side channel
 3. **Peer-relay signaling** — a mutual peer relays WebRTC offer/answer to bridge new connections; no central server involved
 4. **Optional rendezvous server** — if configured, provides smooth signaling, presence, and invite link resolution
 
@@ -95,7 +95,7 @@ See [TODO.md](TODO.md) for full task lists with checkboxes.
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Architecture | **Server-optional P2P** | QR code + mDNS + peer-relay as primary; rendezvous server is optional convenience |
-| Rendezvous server | **Optional, separate repo** (`gamechat-server`) | Self-hostable; graceful degradation when unavailable |
+| Rendezvous server | **Optional, separate repo** (`hexfield-server`) | Self-hostable; graceful degradation when unavailable |
 | Screen capture (macOS) | **Native `getDisplayMedia()`** | WKWebView doesn't support chromeMediaSourceId; macOS 12.3+ shows its own picker |
 | Screen capture (Windows) | **`getDisplayMedia()` everywhere** | Win32 source enumeration (EnumWindows + PrintWindow + BitBlt) investigated and dropped — complex for marginal UX gain; system-native picker (Windows 10/11) is adequate |
 | Screen capture (macOS < 12.3) | **Rust-side `CGDisplayStream` fallback (Phase 6)** | Only implement if `getDisplayMedia()` proves insufficient in testing |
@@ -123,5 +123,5 @@ See [TODO.md](TODO.md) for full task lists with checkboxes.
 | Edit conflicts | **Last-write-wins by HLC `logical_ts`** | Simple, deterministic, consistent across all peers |
 | NAT traversal | **STUN → peer relay → TURN (peer or rendezvous)** | Progressive fallback; no forced dependency on any single relay |
 | TURN crate | **`turn` (webrtc-rs project)** | Active; `turn-rs` is a separate unmaintained crate — do not confuse them |
-| Protocol handler | **`tauri-plugin-deep-link`** for `gamechat://` | Clickable invite links, device pairing, archive imports |
+| Protocol handler | **`tauri-plugin-deep-link`** for `hexfield://` | Clickable invite links, device pairing, archive imports |
 | Storage limit | **5 GB default, 10 GB max, user configurable** | Auto-pruning (attachments first, then content); server admin can archive + re-baseline |
