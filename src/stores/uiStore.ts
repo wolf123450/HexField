@@ -104,6 +104,13 @@ export const useUIStore = defineStore("ui", () => {
   const emojiPickerAnchor = ref<HTMLElement | null>(null)
   const emojiPickerTarget = ref<string | null>(null)   // channelId or messageId
 
+  // Mobile panel navigation: which panel is currently in view on small screens.
+  // 'servers' → ServerRail drawer, 'channels' → ChannelSidebar, 'chat' → MainPane (default), 'members' → MemberList sheet
+  const mobilePanelView = ref<'servers' | 'channels' | 'chat' | 'members'>('chat')
+  function setMobilePanelView(panel: 'servers' | 'channels' | 'chat' | 'members') {
+    mobilePanelView.value = panel
+  }
+
   // ─── Modals ───────────────────────────────────────────────────────────
   const showServerCreateModal = ref(false)
   const showJoinModal         = ref(false)
@@ -183,6 +190,8 @@ export const useUIStore = defineStore("ui", () => {
     memberListOpen,
     emojiPickerAnchor,
     emojiPickerTarget,
+    mobilePanelView,
+    setMobilePanelView,
     // Modals
     showServerCreateModal,
     showJoinModal,
