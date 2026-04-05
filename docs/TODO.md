@@ -384,12 +384,12 @@
 ### 8b — Responsive layout
 - [x] Add `useBreakpoint` composable in `src/utils/` — `mobile` (< 640 px), `tablet` (640–1024 px), `desktop` (> 1024 px) via `window.matchMedia`
 - [x] `MainLayout.vue`: on mobile replace 4-column CSS grid with a single-column view + bottom tab-bar; ServerRail and ChannelSidebar become swipe-in drawers; MemberList becomes a bottom sheet
-- [ ] `ChannelSidebar.vue`: full-screen when open on mobile; back button closes it
-- [ ] `MessageInput.vue`: bind to `visualViewport` resize so the input floats above the keyboard on iOS/Android
+- [x] `ChannelSidebar.vue`: full-screen when open on mobile; back button closes it
+- [x] `MessageInput.vue`: bind to `visualViewport` resize so the input floats above the keyboard on iOS/Android
 - [ ] `MessageHistory.vue`: verify TanStack Virtual works with touch scroll; add pull-to-refresh for older history
-- [ ] `TitleBar.vue`: hidden on mobile (OS provides chrome)
-- [ ] All modals: `position: fixed; inset: 0` full-screen on mobile
-- [ ] Touch targets: all interactive elements ≥ 44 × 44 px; hover-only actions (message action bar) also reachable via long-press
+- [x] `TitleBar.vue`: hidden on mobile (OS provides chrome)
+- [x] All modals: `position: fixed; inset: 0` full-screen on mobile
+- [x] Touch targets: all interactive elements ≥ 44 × 44 px; hover-only actions (message action bar) also reachable via long-press
 
 ### 8c — GitHub Actions CI/CD for mobile
 - [ ] Add `android` job to `release.yml`: `ubuntu-22.04`, install NDK via `android-actions/setup-android`, run `tauri android build --apk`
@@ -401,7 +401,7 @@
 - [ ] **Tests**
   - [x] `useBreakpoint` identifies `mobile` / `tablet` / `desktop` at breakpoint boundaries (mock `matchMedia`)
   - [x] `MainLayout.vue` renders tab-bar/drawer mode below 640 px and grid mode above 1024 px
-  - [ ] `MessageInput.vue` stays within viewport when `visualViewport.height` shrinks (mock resize)
+  - [x] `MessageInput.vue` stays within viewport when `visualViewport.height` shrinks (mock resize)
 
 ---
 

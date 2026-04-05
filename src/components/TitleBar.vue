@@ -1,5 +1,5 @@
 <template>
-  <div v-if="visible" class="title-bar">
+  <div v-if="visible && isDesktop" class="title-bar">
     <div class="title-bar-drag" data-tauri-drag-region>
       <span class="title-bar-name" data-tauri-drag-region>{{ APP_NAME }}</span>
     </div>
@@ -26,6 +26,9 @@ import {
   mdiWindowClose,
 } from '@mdi/js'
 import { APP_NAME } from '@/appConfig'
+import { useBreakpoint } from '@/utils/useBreakpoint'
+
+const { isDesktop } = useBreakpoint()
 
 const visible = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 const isMaximized = ref(false)
