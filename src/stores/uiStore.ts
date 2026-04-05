@@ -98,7 +98,7 @@ export const useUIStore = defineStore("ui", () => {
     contextMenuVisible.value = false
   }
 
-  // ─── GameChat layout state ────────────────────────────────────────────
+  // ─── HexField layout state ────────────────────────────────────────────
   const voicePanelOpen    = ref<boolean>(false)
   const memberListOpen    = ref<boolean>(true)
   const emojiPickerAnchor = ref<HTMLElement | null>(null)

@@ -11,7 +11,7 @@
           </button>
         </div>
         <div class="modal-body">
-          <p class="hint">Scan this QR code from your other device running GameChat.</p>
+          <p class="hint">Scan this QR code from your other device running HexField.</p>
           <p class="hint expire-hint">Expires in {{ expiryCountdown }}</p>
           <div v-if="qrSvg" class="qr-wrap" v-html="qrSvg" />
           <div v-else class="qr-loading">Generating…</div>

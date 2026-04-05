@@ -135,7 +135,7 @@ const inviteLink = computed((): string => {
   }
   const encoded = btoa(JSON.stringify(invite))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
-  return `gamechat://join/${encoded}`
+  return `hexfield://join/${encoded}`
 })
 
 watch(() => uiStore.showInviteModal, async (open) => {

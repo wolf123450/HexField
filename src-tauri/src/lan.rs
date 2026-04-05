@@ -8,9 +8,9 @@
 ///
 /// Architecture
 /// ─────────────
-/// Each GameChat instance:
+/// Each HexField instance:
 ///   • Binds a TCP listener on a random port (the "LAN signal port").
-///   • Registers `_gamechat._tcp.local.` in mDNS with the userId as the
+///   • Registers `_hexfield._tcp.local.` in mDNS with the userId as the
 ///     instance name, advertising that port.
 ///   • When a LAN peer is discovered via mDNS, calls `connect_to_lan_peer`
 ///     which establishes an outgoing WS connection to that peer's signal port
@@ -282,7 +282,7 @@ pub fn start_mdns(
 
     // Instance name = full userId (UUIDs are valid mDNS instance names).
     let service = ServiceInfo::new(
-        "_gamechat._tcp.local.",
+        "_hexfield._tcp.local.",
         &user_id,
         &host_name,
         local_ip,
@@ -298,7 +298,7 @@ pub fn start_mdns(
     log::info!("[mDNS] Registered as {} on port {}", user_id, port);
 
     let receiver = daemon
-        .browse("_gamechat._tcp.local.")
+        .browse("_hexfield._tcp.local.")
         .map_err(|e| format!("[mDNS] browse: {}", e))?;
 
     let my_user_id = user_id.clone();
@@ -352,7 +352,7 @@ pub fn start_mdns(
                 ServiceEvent::ServiceRemoved(_, full_name) => {
                     log::debug!("[mDNS] Service removed: {}", full_name);
                     // Extract instance name (userId) from full name.
-                    if let Some(uid) = full_name.split("._gamechat.").next() {
+                    if let Some(uid) = full_name.split("._hexfield.").next() {
                         if uid != my_user_id {
                             let _ = app.emit("lan_peer_lost", json!({ "userId": uid }));
                         }

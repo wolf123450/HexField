@@ -7,8 +7,8 @@ export const usePersonalBlocksStore = defineStore('personalBlocks', () => {
 
   // ── Persistence ─────────────────────────────────────────────────────────────
 
-  function blocksKey(userId: string)  { return `gamechat_personal_blocks_${userId}` }
-  function mutesKey(userId: string)   { return `gamechat_personal_mutes_${userId}` }
+  function blocksKey(userId: string)  { return `hexfield_personal_blocks_${userId}` }
+  function mutesKey(userId: string)   { return `hexfield_personal_mutes_${userId}` }
 
   function load(myUserId: string) {
     try {

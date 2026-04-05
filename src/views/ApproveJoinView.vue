@@ -73,7 +73,7 @@ const approved  = ref(false)
 
 function decodeCapsule(raw: string): JoinCapsule {
   let encoded = raw.trim()
-  const prefix = 'gamechat://approve/'
+  const prefix = 'hexfield://approve/'
   if (encoded.startsWith(prefix)) encoded = encoded.slice(prefix.length)
   const pad = (4 - (encoded.length % 4)) % 4
   const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat(pad)

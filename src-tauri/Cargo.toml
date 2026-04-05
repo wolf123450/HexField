@@ -1,12 +1,12 @@
 [package]
-name = "gamechat"
+name = "hexfield"
 version = "0.1.0"
-description = "GameChat — privacy-first P2P chat"
+description = "HexField — privacy-first P2P chat"
 authors = []
 edition = "2021"
 
 [lib]
-name = "gamechat_lib"
+name = "hexfield_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

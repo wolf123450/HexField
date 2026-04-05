@@ -1,8 +1,8 @@
-# GameChat
+# HexField
 
 **Privacy-first chat — no server required.**
 
-GameChat looks like Discord but works like BitTorrent. Your messages never touch a central server — peers connect directly, encrypt everything with libsodium, and sync history through a set-reconciliation protocol. Use it on a LAN with no configuration, scan a QR code to add someone across the internet, or optionally point it at a self-hosted rendezvous server for smoother NAT traversal.
+HexField looks like Discord but works like BitTorrent. Your messages never touch a central server — peers connect directly, encrypt everything with libsodium, and sync history through a set-reconciliation protocol. Use it on a LAN with no configuration, scan a QR code to add someone across the internet, or optionally point it at a self-hosted rendezvous server for smoother NAT traversal.
 
 ---
 
@@ -24,10 +24,10 @@ GameChat looks like Discord but works like BitTorrent. Your messages never touch
 
 ## How networking works
 
-GameChat tries connection methods in this order, from fastest to most flexible:
+HexField tries connection methods in this order, from fastest to most flexible:
 
 1. **LAN / mDNS** — peers on the same Wi-Fi or Ethernet discover each other automatically; no setup needed.
-2. **QR code / deep link** — share a `gamechat://` link or scan a QR code to exchange identity and connection hints over any side channel (text, email, etc.).
+2. **QR code / deep link** — share a `hexfield://` link or scan a QR code to exchange identity and connection hints over any side channel (text, email, etc.).
 3. **Peer-relay** — a mutual peer relays WebRTC handshake messages to bridge two new peers; no server involved.
 4. **Rendezvous server** — configure a server in Settings → Network for smoother NAT traversal and shareable invite links.
 
@@ -39,10 +39,10 @@ Pre-built installers are published on the [Releases](../../releases) page:
 
 | Platform | File |
 |----------|------|
-| Windows | `GameChat_x.y.z_x64-setup.exe` (NSIS) or `.msi` |
-| macOS (Apple Silicon) | `GameChat_x.y.z_aarch64.dmg` |
-| macOS (Intel) | `GameChat_x.y.z_x64.dmg` |
-| Linux | `GameChat_x.y.z_amd64.AppImage` |
+| Windows | `HexField_x.y.z_x64-setup.exe` (NSIS) or `.msi` |
+| macOS (Apple Silicon) | `HexField_x.y.z_aarch64.dmg` |
+| macOS (Intel) | `HexField_x.y.z_x64.dmg` |
+| Linux | `HexField_x.y.z_amd64.AppImage` |
 
 The app auto-updates in the background when a new version is published.
 
@@ -72,8 +72,8 @@ sudo apt-get install \
 ### Clone and run
 
 ```bash
-git clone https://github.com/wolf123450/gamechat
-cd gamechat
+git clone https://github.com/wolf123450/hexfield
+cd hexfield
 npm install
 
 # Development (hot-reload frontend + Tauri window)
@@ -113,7 +113,7 @@ npm run dev:tauri -- alice
 ## Architecture overview
 
 ```
-GameChat
+HexField
 ├── src/                     Vue 3 + TypeScript frontend
 │   ├── stores/              Pinia stores (identity, servers, channels, messages, …)
 │   ├── components/          UI components (layout, chat, modals, settings)
@@ -140,7 +140,7 @@ GameChat
 ## Privacy model
 
 - **No accounts, no phone numbers** — identity is an Ed25519/X25519 keypair generated locally on first launch
-- **No telemetry** — GameChat makes no outbound connections except to peers you explicitly join and an optional rendezvous server you configure
+- **No telemetry** — HexField makes no outbound connections except to peers you explicitly join and an optional rendezvous server you configure
 - **No message storage on servers** — even with a rendezvous server configured, message content is never sent to it; it relays only WebRTC handshake signals
 - **Private keys never leave the app** — all signing and encryption happens in the JavaScript runtime; the Rust backend never sees plaintext messages or private keys
 

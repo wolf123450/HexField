@@ -8,9 +8,9 @@
  *
  * Each named instance gets its own isolated SQLite database and identity,
  * stored in a namespace-specific directory:
- *   Windows:  %LOCALAPPDATA%\GameChat-dev\<namespace>
- *   macOS:    ~/.gamechat-dev/<namespace>
- *   Linux:    ~/.gamechat-dev/<namespace>
+ *   Windows:  %LOCALAPPDATA%\HexField-dev\<namespace>
+ *   macOS:    ~/.hexfield-dev/<namespace>
+ *   Linux:    ~/.hexfield-dev/<namespace>
  *
  * Re-using the same namespace picks up the existing identity  it does NOT
  * create a fresh user. To start clean, delete the namespace directory.
@@ -52,13 +52,13 @@ const env = { ...process.env }
 
 if (namespace) {
   const base = process.platform === 'win32'
-    ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'GameChat-dev')
-    : join(homedir(), '.gamechat-dev')
+    ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'HexField-dev')
+    : join(homedir(), '.hexfield-dev')
 
   const dataDir = join(base, namespace)
   mkdirSync(dataDir, { recursive: true })
 
-  env.GAMECHAT_DATA_DIR = dataDir
+  env.HEXFIELD_DATA_DIR = dataDir
 
   console.log(`[dev:tauri] Namespace : ${namespace}`)
   console.log(`[dev:tauri] Data dir  : ${dataDir}`)
@@ -80,7 +80,7 @@ if (namespace) {
 //        (so the WebView does not land on chrome-error://)
 //     3. Launch the compiled debug binary directly
 // ---------------------------------------------------------------------------
-const binaryName = process.platform === 'win32' ? 'gamechat.exe' : 'gamechat'
+const binaryName = process.platform === 'win32' ? 'hexfield.exe' : 'hexfield'
 const binaryPath = join(ROOT, 'src-tauri', 'target', 'debug', binaryName)
 
 let child

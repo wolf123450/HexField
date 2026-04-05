@@ -18,7 +18,7 @@
           ref="inputRef"
           v-model="code"
           class="text-input"
-          placeholder="gamechat://join/â€¦"
+          placeholder="hexfield://join/…"
           :disabled="joining"
           @keydown.enter="join"
         />
@@ -71,7 +71,7 @@ watch(() => uiStore.showJoinModal, async (open) => {
 
 function decodeInvite(raw: string): PeerInvite {
   let encoded = raw.trim()
-  const prefix = 'gamechat://join/'
+  const prefix = 'hexfield://join/'
   if (encoded.startsWith(prefix)) encoded = encoded.slice(prefix.length)
   const pad = (4 - (encoded.length % 4)) % 4
   const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat(pad)

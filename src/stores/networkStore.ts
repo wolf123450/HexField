@@ -54,7 +54,7 @@ export const useNetworkStore = defineStore('network', () => {
       const { useIdentityStore } = await import('./identityStore')
       const identityStore = useIdentityStore()
       if (identityStore.userId) {
-        const statusKey = `gamechat_own_status_${identityStore.userId}`
+        const statusKey = `hexfield_own_status_${identityStore.userId}`
         const ownStatus = localStorage.getItem(statusKey) ?? 'online'
         if (ownStatus !== 'offline') {
           broadcast({
@@ -777,7 +777,7 @@ export const useNetworkStore = defineStore('network', () => {
     const { useIdentityStore } = await import('./identityStore')
     const identityStore = useIdentityStore()
     if (!identityStore.userId) return
-    const statusKey = `gamechat_own_status_${identityStore.userId}`
+    const statusKey = `hexfield_own_status_${identityStore.userId}`
     const status = (localStorage.getItem(statusKey) as string | null) ?? 'online'
     const isRelayCapable = natType.value === 'open' || natType.value === 'restricted'
     webrtcService.sendToPeer(peerId, {

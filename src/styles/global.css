@@ -42,7 +42,7 @@
   /* Title bar height */
   --titlebar-height: 32px;
 
-  /* GameChat 4-column layout */
+  /* HexField 4-column layout */
   --server-rail-width:     72px;
   --channel-sidebar-width: 240px;
   --member-list-width:     240px;

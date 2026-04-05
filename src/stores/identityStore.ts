@@ -33,8 +33,8 @@ export const useIdentityStore = defineStore('identity', () => {
       // Detect the active key storage tier.
       // Tier 3 — OS keychain: sentinel value '__keychain__'
       if (existingSignKey === '__keychain__') {
-        const signSecret = await invoke<string | null>('keychain_load', { service: 'gamechat', account: 'identity_sign_secret' })
-        const dhSecret   = await invoke<string | null>('keychain_load', { service: 'gamechat', account: 'identity_dh_secret' })
+        const signSecret = await invoke<string | null>('keychain_load', { service: 'hexfield', account: 'identity_sign_secret' })
+        const dhSecret   = await invoke<string | null>('keychain_load', { service: 'hexfield', account: 'identity_dh_secret' })
         if (signSecret && dhSecret) {
           await cryptoService.loadKeys(signSecret, dhSecret)
           keychainProtected.value = true
@@ -212,8 +212,8 @@ export const useIdentityStore = defineStore('identity', () => {
   async function saveToKeychain(): Promise<void> {
     const raw = cryptoService.getRawIdentitySecrets()
     if (!raw) throw new Error('Keys not in memory — cannot save to keychain')
-    await invoke('keychain_save', { service: 'gamechat', account: 'identity_sign_secret', secret: raw.signSecret })
-    await invoke('keychain_save', { service: 'gamechat', account: 'identity_dh_secret',   secret: raw.dhSecret })
+    await invoke('keychain_save', { service: 'hexfield', account: 'identity_sign_secret', secret: raw.signSecret })
+    await invoke('keychain_save', { service: 'hexfield', account: 'identity_dh_secret',   secret: raw.dhSecret })
     // Write sentinel to SQLite so we know to load from keychain on next launch
     await invoke('db_save_key', { keyId: 'local_sign_secret', keyType: 'sign_secret', keyData: '__keychain__' })
     await invoke('db_save_key', { keyId: 'local_dh_secret',   keyType: 'dh_secret',   keyData: '__keychain__' })
@@ -226,13 +226,13 @@ export const useIdentityStore = defineStore('identity', () => {
    * Keys must already be loaded in memory.
    */
   async function removeFromKeychain(): Promise<void> {
-    const signSecret = await invoke<string | null>('keychain_load', { service: 'gamechat', account: 'identity_sign_secret' })
-    const dhSecret   = await invoke<string | null>('keychain_load', { service: 'gamechat', account: 'identity_dh_secret' })
+    const signSecret = await invoke<string | null>('keychain_load', { service: 'hexfield', account: 'identity_sign_secret' })
+    const dhSecret   = await invoke<string | null>('keychain_load', { service: 'hexfield', account: 'identity_dh_secret' })
     if (!signSecret || !dhSecret) throw new Error('Keychain entry not found — cannot remove')
     await invoke('db_save_key', { keyId: 'local_sign_secret', keyType: 'sign_secret', keyData: signSecret })
     await invoke('db_save_key', { keyId: 'local_dh_secret',   keyType: 'dh_secret',   keyData: dhSecret })
-    await invoke('keychain_delete', { service: 'gamechat', account: 'identity_sign_secret' })
-    await invoke('keychain_delete', { service: 'gamechat', account: 'identity_dh_secret' })
+    await invoke('keychain_delete', { service: 'hexfield', account: 'identity_sign_secret' })
+    await invoke('keychain_delete', { service: 'hexfield', account: 'identity_dh_secret' })
     keychainProtected.value = false
   }
 

@@ -7,7 +7,7 @@ vi.mock('@/stores/uiStore', () => ({
   useUIStore: () => ({ showNotification: mockShowNotification }),
 }))
 
-vi.mock('@/appConfig', () => ({ APP_NAME: 'GameChat' }))
+vi.mock('@/appConfig', () => ({ APP_NAME: 'HexField' }))
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ describe('updateService.autoCheckForUpdate — update available', () => {
 
     const showNotification = vi.fn()
     vi.doMock('@/stores/uiStore', () => ({ useUIStore: () => ({ showNotification }) }))
-    vi.doMock('@/appConfig', () => ({ APP_NAME: 'GameChat' }))
+    vi.doMock('@/appConfig', () => ({ APP_NAME: 'HexField' }))
     vi.doMock('@tauri-apps/plugin-updater', () => ({
       check: vi.fn().mockResolvedValue({
         version: '2.0.0',

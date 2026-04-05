@@ -164,16 +164,16 @@ onMounted(async () => {
     invoke('enforce_storage_limit', { limitGb: settingsStore.settings.storageLimitGB }).catch(() => {})
   }
 
-  // Deep-link handler (gamechat:// scheme)
+  // Deep-link handler (hexfield:// scheme)
   if (isTauri) {
     const { onOpenUrl } = await import('@tauri-apps/plugin-deep-link')
     onOpenUrl((urls: string[]) => {
       for (const url of urls) {
-        if (url.startsWith('gamechat://approve/')) {
-          const capsule = url.slice('gamechat://approve/'.length)
+        if (url.startsWith('hexfield://approve/')) {
+          const capsule = url.slice('hexfield://approve/'.length)
           router.push({ name: 'approve-join', params: { capsule } })
-        } else if (url.startsWith('gamechat://join/')) {
-          const code = url.slice('gamechat://join/'.length)
+        } else if (url.startsWith('hexfield://join/')) {
+          const code = url.slice('hexfield://join/'.length)
           router.push({ name: 'join', params: { inviteCode: code } })
         }
       }

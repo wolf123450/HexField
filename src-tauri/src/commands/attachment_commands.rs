@@ -417,7 +417,7 @@ mod tests {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!("gamechat_test_{}", ts));
+            let path = std::env::temp_dir().join(format!("hexfield_test_{}", ts));
             std::fs::create_dir_all(&path).unwrap();
             TempDir(path)
         }
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn blake3_hash_is_deterministic() {
-        let data = b"Hello, GameChat attachments!".to_vec();
+        let data = b"Hello, HexField attachments!".to_vec();
         let h1 = blake3_hash(data.clone());
         let h2 = blake3_hash(data.clone());
         assert_eq!(h1, h2, "same data must produce same hash");

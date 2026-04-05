@@ -121,7 +121,7 @@ export const useServersStore = defineStore('servers', () => {
     const { useIdentityStore } = await import('./identityStore')
     const identityStore = useIdentityStore()
     const uid = identityStore.userId
-    const statusKey = uid ? `gamechat_own_status_${uid}` : 'gamechat_own_status'
+    const statusKey = uid ? `hexfield_own_status_${uid}` : 'hexfield_own_status'
     const ownStatus = (localStorage.getItem(statusKey) as 'online' | 'idle' | 'dnd' | 'offline' | null) ?? 'online'
     const map: Record<string, ServerMember> = {}
     for (const r of rows) {
