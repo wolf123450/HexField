@@ -7,6 +7,7 @@ mod db;
 mod commands;
 mod lan;
 
+use commands::archive_commands::*;
 use commands::attachment_commands::*;
 use commands::db_commands::*;
 use commands::keychain_commands::*;
@@ -124,6 +125,10 @@ pub fn run() {
             keychain_save,
             keychain_load,
             keychain_delete,
+            // Archive
+            db_export_archive,
+            db_import_archive,
+            db_save_rebaseline,
             // System
             get_app_data_path,
             get_screen_sources,

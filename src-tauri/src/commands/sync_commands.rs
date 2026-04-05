@@ -67,23 +67,59 @@ fn build_storage(items: Vec<(u64, Id)>) -> Result<NegentropyStorageVector, Strin
 }
 
 /// Load (timestamp, id) pairs for the given channel + table from SQLite.
+/// Messages before the server's `history_starts_at` are excluded so re-baselined
+/// servers don't gossip pre-baseline history to new peers.
 fn load_items(
     conn: &rusqlite::Connection,
     channel_id: &str,
     table: &SyncTable,
 ) -> Result<Vec<(u64, Id)>, String> {
-    let sql = match table {
-        SyncTable::Messages =>
-            "SELECT id FROM messages WHERE channel_id = ?1 ORDER BY logical_ts ASC",
-        SyncTable::Mutations =>
-            "SELECT id FROM mutations WHERE channel_id = ?1 ORDER BY logical_ts ASC",
+    // Look up history_starts_at for this channel's server (may be NULL)
+    let history_starts_at: Option<String> = conn
+        .query_row(
+            "SELECT s.history_starts_at FROM servers s
+             JOIN channels c ON c.server_id = s.id
+             WHERE c.id = ?1",
+            [channel_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(None);
+
+    let ids: Vec<String> = match (&table, &history_starts_at) {
+        (SyncTable::Messages, Some(hist)) => {
+            let sql = "SELECT id FROM messages WHERE channel_id = ?1 AND logical_ts >= ?2 ORDER BY logical_ts ASC";
+            let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(rusqlite::params![channel_id, hist], |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        }
+        (SyncTable::Mutations, Some(hist)) => {
+            let sql = "SELECT id FROM mutations WHERE channel_id = ?1 AND logical_ts >= ?2 ORDER BY logical_ts ASC";
+            let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(rusqlite::params![channel_id, hist], |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        }
+        _ => {
+            let sql = match table {
+                SyncTable::Messages  => "SELECT id FROM messages WHERE channel_id = ?1 ORDER BY logical_ts ASC",
+                SyncTable::Mutations => "SELECT id FROM mutations WHERE channel_id = ?1 ORDER BY logical_ts ASC",
+            };
+            let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([channel_id], |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        }
     };
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let ids: Vec<String> = stmt
-        .query_map([channel_id], |row| row.get(0))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
 
     ids.iter()
         .map(|s| uuid_to_neg_id(s))

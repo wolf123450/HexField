@@ -294,6 +294,32 @@ pub fn db_save_mutation(state: State<AppState>, mutation: MutationRow) -> Result
                 [&mutation.target_id],
             ).map_err(|e| e.to_string())?;
         }
+        "server_rebaseline" => {
+            // new_content holds the historyStartsAt HLC string
+            if let Some(hist_ts) = &mutation.new_content {
+                conn.execute(
+                    "UPDATE servers SET history_starts_at = ?1 WHERE id = ?2",
+                    [hist_ts, &mutation.target_id],
+                ).map_err(|e| e.to_string())?;
+                // Patch raw_json so historyStartsAt survives a reload
+                let raw: Option<String> = conn.query_row(
+                    "SELECT raw_json FROM servers WHERE id = ?1",
+                    [&mutation.target_id],
+                    |r| r.get(0),
+                ).ok();
+                if let Some(raw) = raw {
+                    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                        val["historyStartsAt"] = serde_json::Value::String(hist_ts.clone());
+                        if let Ok(updated) = serde_json::to_string(&val) {
+                            let _ = conn.execute(
+                                "UPDATE servers SET raw_json = ?1 WHERE id = ?2",
+                                [&updated, &mutation.target_id],
+                            );
+                        }
+                    }
+                }
+            }
+        }
         _ => {}
     }
 

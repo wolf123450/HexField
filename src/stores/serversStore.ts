@@ -253,6 +253,9 @@ export const useServersStore = defineStore('servers', () => {
         if (accessMode !== undefined) server.accessMode = accessMode
         if (inviteMode !== undefined) server.inviteMode = inviteMode as Server['inviteMode']
       }
+    } else if (mutation.type === 'server_rebaseline' && mutation.newContent) {
+      const server = servers.value[mutation.targetId]
+      if (server) server.historyStartsAt = mutation.newContent
     }
   }
 
@@ -992,6 +995,109 @@ export const useServersStore = defineStore('servers', () => {
     })
   }
 
+  // ── Archive / Re-baseline ────────────────────────────────────────────────
+
+  /**
+   * Export a signed archive bundle for the server and trigger a file download.
+   * The Ed25519 signature is computed in JS (keys never leave cryptoService).
+   */
+  async function exportArchive(serverId: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identity = useIdentityStore()
+    const server = servers.value[serverId]
+    if (!server) throw new Error('Server not found')
+
+    const authorId = identity.userId!
+    const { cryptoService } = await import('@/services/cryptoService')
+    const sigPayload = new TextEncoder().encode(`archive:${serverId}:${authorId}`)
+    const signature = cryptoService.sign(sigPayload)
+
+    const bundleJson = await invoke<string>('db_export_archive', { serverId, authorId, signature })
+
+    const blob = new Blob([bundleJson], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${server.name.replace(/\s+/g, '-')}-archive-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  /**
+   * Import an archive bundle: upsert all rows into local DB and load the server.
+   * Returns the imported Server object.
+   */
+  async function importArchive(bundleJson: string): Promise<Server> {
+    const importedServerId = await invoke<string>('db_import_archive', { archiveJson: bundleJson })
+    await loadServers()
+    const { useChannelsStore } = await import('./channelsStore')
+    await useChannelsStore().loadChannels(importedServerId)
+    await fetchMembers(importedServerId)
+    if (!joinedServerIds.value.includes(importedServerId)) {
+      joinedServerIds.value.push(importedServerId)
+    }
+    return servers.value[importedServerId]
+  }
+
+  /**
+   * Re-baseline a server: set historyStartsAt to now, persist, broadcast to peers.
+   * New joiners will only receive messages from this point forward.
+   */
+  async function applyRebaseline(serverId: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const myId = useIdentityStore().userId!
+    const historyStartsAt = new Date().toISOString()
+
+    const server = servers.value[serverId]
+    if (server) {
+      server.historyStartsAt = historyStartsAt
+      await invoke('db_save_server', {
+        server: {
+          id:          server.id,
+          name:        server.name,
+          description: server.description ?? null,
+          icon_url:    server.iconUrl ?? null,
+          owner_id:    server.ownerId,
+          invite_code: server.inviteCode ?? null,
+          created_at:  server.createdAt,
+          raw_json:    JSON.stringify(server),
+        },
+      })
+    }
+
+    await invoke('db_save_rebaseline', { serverId, historyStartsAt })
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'server_rebaseline',
+      targetId:   serverId,
+      channelId:  '__server__',
+      authorId:   myId,
+      newContent: historyStartsAt,
+      logicalTs:  historyStartsAt,
+      createdAt:  historyStartsAt,
+      verified:   true,
+    }
+
+    await invoke('db_save_mutation', {
+      mutation: {
+        id:          mutation.id,
+        type:        mutation.type,
+        target_id:   mutation.targetId,
+        channel_id:  mutation.channelId,
+        author_id:   mutation.authorId,
+        new_content: mutation.newContent,
+        emoji_id:    null,
+        logical_ts:  mutation.logicalTs,
+        created_at:  mutation.createdAt,
+        verified:    mutation.verified,
+      },
+    })
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+  }
+
   return {
     servers,
     members,
@@ -1032,5 +1138,8 @@ export const useServersStore = defineStore('servers', () => {
     pendingRequestCount,
     generateJoinCapsule,
     approveCapsule,
+    exportArchive,
+    importArchive,
+    applyRebaseline,
   }
 })
