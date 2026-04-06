@@ -9,6 +9,7 @@ mod db;
 mod commands;
 #[cfg(not(mobile))]
 mod lan;
+mod webrtc_manager;
 
 use commands::archive_commands::*;
 use commands::attachment_commands::*;
@@ -16,6 +17,7 @@ use commands::db_commands::*;
 use commands::keychain_commands::*;
 use commands::signal_commands::*;
 use commands::sync_commands::*;
+use commands::webrtc_commands::*;
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
@@ -30,6 +32,8 @@ pub struct AppState {
     /// Local userId, set when `lan_start` is called. Desktop only.
     #[cfg(not(mobile))]
     pub local_user_id: Arc<Mutex<String>>,
+    /// Rust-native WebRTC peer connections (data channels; Phase 1).
+    pub webrtc_manager: Arc<webrtc_manager::WebRTCManager>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -65,6 +69,7 @@ pub fn run() {
                 lan_signal_port: Arc::new(AtomicU16::new(0)),
                 #[cfg(not(mobile))]
                 local_user_id: Arc::new(Mutex::new(String::new())),
+                webrtc_manager: Arc::new(webrtc_manager::WebRTCManager::new()),
             });
             Ok(())
         })
@@ -170,6 +175,16 @@ pub fn run() {
             sync_save_messages,
             sync_save_mutations,
             sync_list_channels,
+            // WebRTC (Rust-native data channels)
+            webrtc_init,
+            webrtc_create_offer,
+            webrtc_handle_offer,
+            webrtc_handle_answer,
+            webrtc_add_ice,
+            webrtc_send,
+            webrtc_close_peer,
+            webrtc_destroy_all,
+            webrtc_get_connected_peers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running HexField");
