@@ -50,6 +50,21 @@ if (namespace && !/^[a-zA-Z0-9_-]+$/.test(namespace)) {
 // ---------------------------------------------------------------------------
 const env = { ...process.env }
 
+// When VS Code is installed as a snap it leaks GIO_MODULE_DIR (and several
+// GTK_* variables) into child processes.  The cached GIO modules it points to
+// have RPATH baked-in to /snap/core20/current/lib/…, which causes
+// WebKitNetworkProcess to load an ancient libpthread that is missing
+// GLIBC_PRIVATE symbols and crashes with "symbol lookup error".
+// Strip the snap-injected vars here so WebKit uses the system GIO modules.
+if (process.platform === 'linux') {
+  delete env.GIO_MODULE_DIR
+  delete env.GTK_PATH
+  delete env.GTK_EXE_PREFIX
+  delete env.GTK_IM_MODULE_FILE
+  delete env.GSETTINGS_SCHEMA_DIR
+  delete env.LOCPATH
+}
+
 if (namespace) {
   const base = process.platform === 'win32'
     ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'HexField-dev')
