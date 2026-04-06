@@ -1,6 +1,6 @@
 [package]
 name = "hexfield"
-version = "0.1.0"
+version = "0.2.0"
 description = "HexField — privacy-first P2P chat"
 authors = []
 edition = "2021"
@@ -8,6 +8,9 @@ edition = "2021"
 [lib]
 name = "hexfield_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+e2e-testing = ["tauri-plugin-playwright"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -23,6 +26,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-deep-link = "2"
+tauri-plugin-playwright = { version = "0.2", optional = true }
 
 # Serde
 serde              = { version = "1", features = ["derive"] }
@@ -61,3 +65,8 @@ keyring            = "3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows            = { version = "0.58", features = ["Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
+
+# tauri-pilot: AI-agent / developer testing CLI (Linux + debug builds only).
+# Not available on Windows/macOS (uses Unix sockets; cross-platform support planned upstream).
+[target.'cfg(target_os = "linux")'.dependencies]
+tauri-plugin-pilot = { git = "https://github.com/mpiton/tauri-pilot" }
