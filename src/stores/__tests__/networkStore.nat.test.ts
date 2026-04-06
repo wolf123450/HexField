@@ -20,6 +20,9 @@ vi.mock('@/services/signalingService', () => ({
 vi.mock('@/services/webrtcService', () => {
   let _builder: ((userId: string) => RTCIceServer[]) | null = null
   return {
+    WebRTCService: {
+      isAvailable: vi.fn().mockReturnValue(true),
+    },
     webrtcService: {
       init:                vi.fn(),
       destroyAll:          vi.fn(),

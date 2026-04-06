@@ -29,4 +29,6 @@ dist-ssr
 
 # Claude Code local settings
 .claude/
-.agents/.worktrees/
+.agents/
+.worktrees/
+src-tauri/hexfield_crash.txt

@@ -159,6 +159,21 @@ export const useUIStore = defineStore("ui", () => {
     showUserProfile.value = false
   }
 
+  // ─── Alert modal (requires explicit acknowledgement) ──────────────────
+  const alertTitle   = ref<string>('')
+  const alertMessage = ref<string>('')
+  const alertVisible = ref(false)
+
+  function showAlert(title: string, message: string) {
+    alertTitle.value   = title
+    alertMessage.value = message
+    alertVisible.value = true
+  }
+
+  function dismissAlert() {
+    alertVisible.value = false
+  }
+
   return {
     // State
     sidebarOpen,
@@ -213,5 +228,11 @@ export const useUIStore = defineStore("ui", () => {
     userProfileReadOnly,
     openUserProfile,
     closeUserProfile,
+    // Alert modal
+    alertTitle,
+    alertMessage,
+    alertVisible,
+    showAlert,
+    dismissAlert,
   };
 });
