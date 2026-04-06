@@ -11,6 +11,17 @@ import type { ServerManifest } from '@/types/core'
 import * as attachmentService from '@/services/attachmentService'
 import { detectNATType } from '@/utils/natDetection'
 import type { NATType } from '@/utils/natDetection'
+import { cryptoService } from '@/services/cryptoService'
+import {
+  isValidChatMessage,
+  isValidMemberAnnounce,
+  isValidPresenceUpdate,
+  isValidMutation,
+  isValidTypingStart,
+  isValidProfileUpdate,
+  isValidVoiceJoin,
+  isValidEmojiSync,
+} from '@/utils/peerValidator'
 
 export type SignalingState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -37,6 +48,27 @@ export const useNetworkStore = defineStore('network', () => {
   let initialized = false
   /** Snapshot of custom TURN servers from settingsStore — refreshed on init. */
   let _cachedCustomTURN: RTCIceServer[] = []
+
+  // ── Rate limiter ───────────────────────────────────────────────────────────
+  // Limit inbound data-channel messages per peer to prevent flooding.
+  const RATE_LIMIT = 15           // max messages per window
+  const RATE_WINDOW_MS = 1000     // 1-second sliding window
+  const peerMessageCounts = new Map<string, { count: number; windowStart: number }>()
+
+  function isRateLimited(userId: string): boolean {
+    const now = Date.now()
+    const entry = peerMessageCounts.get(userId)
+    if (!entry || now - entry.windowStart >= RATE_WINDOW_MS) {
+      peerMessageCounts.set(userId, { count: 1, windowStart: now })
+      return false
+    }
+    entry.count++
+    if (entry.count > RATE_LIMIT) {
+      console.warn(`[network] rate limit exceeded for peer ${userId}`)
+      return true
+    }
+    return false
+  }
 
   // ── Heartbeat ─────────────────────────────────────────────────────────────
   // Keep peers' online status accurate without relying solely on WebRTC teardown.
@@ -157,6 +189,13 @@ export const useNetworkStore = defineStore('network', () => {
         webrtcService.destroyPeer(userId)
         connectedPeers.value = connectedPeers.value.filter(id => id !== userId)
         lastHeartbeatFrom.delete(userId)
+        peerMessageCounts.delete(userId)
+        // Clear any pending typing indicator for this peer
+        if (typingUsers.value[userId]) {
+          clearTimeout(typingUsers.value[userId].timeout)
+          const { [userId]: _removed, ...rest } = typingUsers.value
+          typingUsers.value = rest
+        }
         // Mark peer as offline across all server member maps
         handlePresenceUpdate(userId, { status: 'offline' })
         // Clean up voice state if the peer disconnects
@@ -295,7 +334,8 @@ export const useNetworkStore = defineStore('network', () => {
    * Send a signaling payload (routes through WS to rendezvous server).
    */
   async function sendSignal(payload: SignalPayload) {
-    await signalingService.send(payload)
+    const signed = cryptoService.signJson(payload as Record<string, unknown>)
+    await signalingService.send(signed as unknown as SignalPayload)
   }
 
   /**
@@ -356,6 +396,16 @@ export const useNetworkStore = defineStore('network', () => {
     const from = payload.from as string | undefined
     if (!from) return
 
+    // Verify Ed25519 signature if present (soft check — backward compat with unsigned peers)
+    const asObj = payload as unknown as Record<string, unknown>
+    if (asObj['__sig']) {
+      const senderKey = cryptoService.verifyJsonSignature(asObj)
+      if (!senderKey) {
+        console.warn('[network] signal from', from, 'has invalid signature — dropped')
+        return
+      }
+    }
+
     switch (payload.type) {
       case 'signal_offer':
         webrtcService.handleOffer(from, payload.sdp as string).catch(e => console.warn('[webrtc] signal_offer unhandled:', e))
@@ -377,20 +427,26 @@ export const useNetworkStore = defineStore('network', () => {
     const msg = data as Record<string, unknown>
     if (!msg || typeof msg !== 'object' || !msg.type) return
 
+    if (isRateLimited(userId)) return
+
     switch (msg.type) {
       case 'chat_message':
+        if (!isValidChatMessage(msg)) { console.warn('[network] invalid chat_message from', userId); return }
         handleChatMessage(userId, msg)
         break
       case 'typing_start':
+        if (!isValidTypingStart(msg)) { console.warn('[network] invalid typing_start from', userId); return }
         handleTypingStart(userId, msg.channelId as string)
         break
       case 'typing_stop':
         handleTypingStopEvent(userId)
         break
       case 'mutation':
+        if (!isValidMutation(msg)) { console.warn('[network] invalid mutation from', userId); return }
         handleMutationMessage(msg)
         break
       case 'emoji_sync':
+        if (!isValidEmojiSync(msg)) { console.warn('[network] invalid emoji_sync from', userId); return }
         handleEmojiSync(msg)
         break
       case 'emoji_image_request':
@@ -409,14 +465,17 @@ export const useNetworkStore = defineStore('network', () => {
         handleDeviceAttest(msg)
         break
       case 'member_announce':
+        if (!isValidMemberAnnounce(msg)) { console.warn('[network] invalid member_announce from', userId); return }
         handleMemberAnnounce(userId, msg).catch(e =>
           console.warn('[network] member_announce error:', e)
         )
         break
       case 'presence_update':
+        if (!isValidPresenceUpdate(msg)) { console.warn('[network] invalid presence_update from', userId); return }
         handlePresenceUpdate(userId, msg)
         break
       case 'profile_update':
+        if (!isValidProfileUpdate(msg)) { console.warn('[network] invalid profile_update from', userId); return }
         handleProfileUpdate(userId, msg)
         break
       case 'profile_request':
@@ -428,6 +487,7 @@ export const useNetworkStore = defineStore('network', () => {
         )
         break
       case 'voice_join':
+        if (!isValidVoiceJoin(msg)) { console.warn('[network] invalid voice_join from', userId); return }
         handleVoiceJoin(userId, msg)
         break
       case 'voice_leave':

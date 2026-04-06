@@ -51,7 +51,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { mdiArrowDown, mdiRefresh } from '@mdi/js'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useMessagesStore } from '@/stores/messagesStore'
@@ -71,6 +71,8 @@ const bottomSentinel  = ref<HTMLElement | null>(null)
 const atBottom        = ref(true)
 const highlightedId   = ref<string | null>(null)
 let highlightTimer: ReturnType<typeof setTimeout> | null = null
+let topObserver: IntersectionObserver | null = null
+let bottomObserver: IntersectionObserver | null = null
 
 // ── Pull-to-refresh (mobile) ──────────────────────────────────────────────────
 
@@ -175,23 +177,23 @@ function shouldShowHeader(index: number): boolean {
 onMounted(() => {
   // Top sentinel: load older messages on scroll-up
   if (topSentinel.value) {
-    const observer = new IntersectionObserver(([entry]) => {
+    topObserver = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) {
         const cursor = messagesStore.cursors[props.channelId]
         if (cursor) messagesStore.loadMessages(props.channelId, cursor)
       }
     }, { threshold: 0.1 })
-    observer.observe(topSentinel.value)
+    topObserver.observe(topSentinel.value)
   }
 
   // Bottom sentinel: load newer messages when in a historical view
   if (bottomSentinel.value) {
-    const observer = new IntersectionObserver(([entry]) => {
+    bottomObserver = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting && messagesStore.hasNewerMessages[props.channelId]) {
         messagesStore.loadNewerMessages(props.channelId)
       }
     }, { threshold: 0.1 })
-    observer.observe(bottomSentinel.value)
+    bottomObserver.observe(bottomSentinel.value)
   }
 
   if (props.scrollToId) {
@@ -199,6 +201,12 @@ onMounted(() => {
   } else {
     nextTick(scrollToBottom)
   }
+})
+
+onUnmounted(() => {
+  topObserver?.disconnect()
+  bottomObserver?.disconnect()
+  if (highlightTimer) clearTimeout(highlightTimer)
 })
 </script>
 

@@ -238,7 +238,7 @@ pub fn db_save_mutation(state: State<AppState>, mutation: MutationRow) -> Result
                             roles.push(role.to_string());
                             conn.execute(
                                 "UPDATE members SET roles = ?1 WHERE user_id = ?2 AND server_id = ?3",
-                                [&serde_json::to_string(&roles).unwrap(), &mutation.target_id, server_id],
+                                [&serde_json::to_string(&roles).map_err(|e| e.to_string())?, &mutation.target_id, server_id],
                             ).map_err(|e| e.to_string())?;
                         }
                     }
@@ -261,7 +261,7 @@ pub fn db_save_mutation(state: State<AppState>, mutation: MutationRow) -> Result
                         roles.retain(|r| r != role);
                         conn.execute(
                             "UPDATE members SET roles = ?1 WHERE user_id = ?2 AND server_id = ?3",
-                            [&serde_json::to_string(&roles).unwrap(), &mutation.target_id, server_id],
+                            [&serde_json::to_string(&roles).map_err(|e| e.to_string())?, &mutation.target_id, server_id],
                         ).map_err(|e| e.to_string())?;
                     }
                 }

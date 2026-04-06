@@ -227,6 +227,45 @@ class CryptoService {
   }
 
   /**
+   * Sign a JSON-serialisable object with the local Ed25519 key.
+   * Attaches `__sig` (base64 signature) and `__pub` (base64 public key) fields.
+   * The signature covers the canonical sorted JSON of all fields except __sig and __pub.
+   */
+  signJson<T extends Record<string, unknown>>(payload: T): T & { __sig: string; __pub: string } {
+    const s = this.sodium!
+    const canonical = JSON.stringify(
+      Object.fromEntries(Object.entries(payload).filter(([k]) => k !== '__sig' && k !== '__pub').sort())
+    )
+    const sig    = s.crypto_sign_detached(s.from_string(canonical), this.signKeyPair!.privateKey)
+    const pubKey = s.to_base64(this.signKeyPair!.publicKey)
+    return { ...payload, __sig: s.to_base64(sig), __pub: pubKey }
+  }
+
+  /**
+   * Verify a `signJson`-signed object.
+   * Returns the sender's public key (base64) on success, or null on failure.
+   */
+  verifyJsonSignature(msg: Record<string, unknown>): string | null {
+    const s = this.sodium!
+    const sig    = msg['__sig'] as string | undefined
+    const pubKey = msg['__pub'] as string | undefined
+    if (!sig || !pubKey) return null
+    try {
+      const canonical = JSON.stringify(
+        Object.fromEntries(Object.entries(msg).filter(([k]) => k !== '__sig' && k !== '__pub').sort())
+      )
+      const ok = s.crypto_sign_verify_detached(
+        s.from_base64(sig),
+        s.from_string(canonical),
+        s.from_base64(pubKey),
+      )
+      return ok ? pubKey : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * Export the raw (unencrypted) identity secret keys as base64.
    * Used by removePassphrase() to re-write raw keys after decrypting.
    * Returns null if keys are not loaded.
@@ -269,7 +308,8 @@ class CryptoService {
     const salt  = s.randombytes_buf(s.crypto_pwhash_SALTBYTES)
     const nonce = s.randombytes_buf(s.crypto_secretbox_NONCEBYTES)
 
-    // Argon2id — interactive parameters (fast enough for a user login prompt)
+    // Argon2id — interactive parameters (fast enough for a user login prompt; SENSITIVE
+    // would require 1 GB of WASM memory which is impractical)
     const derivedKey = s.crypto_pwhash(
       s.crypto_secretbox_KEYBYTES,
       passphrase,
