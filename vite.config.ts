@@ -22,6 +22,7 @@ export default defineConfig(async () => ({
   test: {
     environment: "jsdom",
     globals: true,
+    exclude: ["**/node_modules/**", "**/dist/**", "e2e/**"],
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
       "libsodium-wrappers": path.resolve("node_modules/libsodium-wrappers/dist/modules/libsodium-wrappers.js"),
