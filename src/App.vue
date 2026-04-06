@@ -19,7 +19,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, watch } from 'vue'
 import { RouterView, useRouter } from 'vue-router'
 import TitleBar from '@/components/TitleBar.vue'
 import Settings from '@/components/Settings.vue'
@@ -63,14 +63,12 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 const contextMenuResolver = createContextMenuResolver({ sidebarResetWidth: () => {} })
 
+// Keep messagesStore in sync with identityStore.userId reactively
+watch(() => identityStore.userId, uid => { if (uid) messagesStore.setMyUserId(uid) }, { immediate: true })
+
 onMounted(async () => {
   // Initialize identity (loads or generates keypair + WASM init)
   await identityStore.initializeIdentity()
-
-  // Give messagesStore the local userId for synchronous reaction computation
-  if (identityStore.userId) {
-    messagesStore.setMyUserId(identityStore.userId)
-  }
 
   // Initialize P2P networking layer
   if (identityStore.userId) {

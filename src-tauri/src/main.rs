@@ -8,7 +8,7 @@ fn main() {
         let path = std::env::var("APPDATA")
             .map(|d| std::path::PathBuf::from(d).join("com.hexfield.app").join("crash.txt"))
             .unwrap_or_else(|_| std::path::PathBuf::from("hexfield_crash.txt"));
-        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
         let _ = std::fs::write(&path, &msg);
         eprintln!("PANIC: {msg}");
     }));

@@ -310,14 +310,13 @@ import { mdiClose, mdiCamera, mdiAccountPlus, mdiTrashCan, mdiArchiveArrowDown, 
 import { v7 as uuidv7 } from 'uuid'
 import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
-import { useIdentityStore } from '@/stores/identityStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useIsAdmin } from '@/utils/useIsAdmin'
 import type { NotificationLevel } from '@/types/core'
 
 const uiStore       = useUIStore()
 const serversStore  = useServersStore()
-const identityStore = useIdentityStore()
 const networkStore  = useNetworkStore()
 const settingsStore = useSettingsStore()
 
@@ -341,12 +340,7 @@ async function pickIconBgColor(color: string) {
   await serversStore.updateServerIconBgColor(sid, color)
 }
 
-const isAdmin = computed(() => {
-  const sid = uiStore.settingsServerId
-  const uid = identityStore.userId
-  if (!sid || !uid) return false
-  return serversStore.members[sid]?.[uid]?.roles.some(r => r === 'admin' || r === 'owner') ?? false
-})
+const isAdmin = useIsAdmin(computed(() => uiStore.settingsServerId))
 
 function close() {
   uiStore.showServerSettingsModal = false

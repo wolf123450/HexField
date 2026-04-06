@@ -156,4 +156,41 @@ describe('cryptoService', () => {
       cryptoService.unwrapKeysWithPassphrase(wrapped, 'wrong-passphrase'),
     ).rejects.toThrow()
   })
+
+  // ── signJson / verifyJsonSignature ─────────────────────────────────────────
+
+  it('signJson attaches __sig and __pub fields', () => {
+    const currentPub = cryptoService.getPublicSignKey()
+    const signed = cryptoService.signJson({ type: 'hello', data: 42 })
+    expect(typeof signed.__sig).toBe('string')
+    expect(typeof signed.__pub).toBe('string')
+    expect(signed.__pub).toBe(currentPub)
+  })
+
+  it('verifyJsonSignature returns senderPubKey for a valid signed object', () => {
+    const currentPub = cryptoService.getPublicSignKey()
+    const signed = cryptoService.signJson({ type: 'test', value: 'abc' })
+    const result = cryptoService.verifyJsonSignature(signed)
+    expect(result).toBe(currentPub)
+  })
+
+  it('verifyJsonSignature returns null when __sig is missing', () => {
+    const plain = { type: 'test', value: 'abc' }
+    expect(cryptoService.verifyJsonSignature(plain)).toBeNull()
+  })
+
+  it('verifyJsonSignature returns null when payload is tampered', () => {
+    const signed = cryptoService.signJson({ type: 'test', value: 'abc' })
+    const tampered = { ...signed, value: 'xyz' }
+    expect(cryptoService.verifyJsonSignature(tampered)).toBeNull()
+  })
+
+  it('verifyJsonSignature is stable across field insertion order (canonical)', () => {
+    const a = cryptoService.signJson({ b: 2, a: 1 })
+    const b = cryptoService.signJson({ a: 1, b: 2 })
+    // Both should produce the same canonical JSON → same signature
+    const currentPub = cryptoService.getPublicSignKey()
+    expect(cryptoService.verifyJsonSignature(a)).toBe(currentPub)
+    expect(a.__sig).toBe(b.__sig)
+  })
 })

@@ -131,6 +131,7 @@ import { useMessagesStore } from '@/stores/messagesStore'
 import { useEmojiStore } from '@/stores/emojiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { codepointToChar } from '@/utils/twemoji'
+import { useIsAdmin } from '@/utils/useIsAdmin'
 import MessageContent from './MessageContent.vue'
 import ReactionBar from './ReactionBar.vue'
 import EmojiPicker from './EmojiPicker.vue'
@@ -225,11 +226,7 @@ const isEditing    = ref(false)
 const editContent  = ref('')
 const editTextarea = ref<HTMLTextAreaElement | null>(null)
 
-const isAdmin = computed(() => {
-  const uid = identityStore.userId
-  if (!uid) return false
-  return serversStore.members[props.message.serverId]?.[uid]?.roles.some(r => r === 'admin' || r === 'owner') ?? false
-})
+const isAdmin = useIsAdmin(computed(() => props.message.serverId))
 
 const canEdit   = computed(() => props.message.authorId === identityStore.userId)
 const canDelete = computed(() => props.message.authorId === identityStore.userId || isAdmin.value)
