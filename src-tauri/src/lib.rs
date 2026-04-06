@@ -38,7 +38,9 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // `mut` is required when building on Linux (tauri-pilot plugin), unused on other platforms.
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
                 .targets([
@@ -56,7 +58,22 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_deep_link::init());
+
+    // tauri-pilot: interactive testing CLI for AI agents (Linux + debug builds only).
+    // Not compiled on macOS/Windows (uses Unix sockets; cross-platform support planned upstream).
+    #[cfg(all(debug_assertions, target_os = "linux"))]
+    {
+        builder = builder.plugin(tauri_plugin_pilot::init());
+    }
+
+    // tauri-plugin-playwright: E2E test bridge. Enable with `--features e2e-testing`.
+    #[cfg(feature = "e2e-testing")]
+    {
+        builder = builder.plugin(tauri_plugin_playwright::init());
+    }
+
+    builder
         .setup(|app| {
             let app_dir = app.path().app_data_dir().expect("Failed to get app data dir");
             let conn = db::open(app_dir);
