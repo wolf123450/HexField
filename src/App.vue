@@ -15,6 +15,7 @@
     :server-id="uiStore.joinCapsuleServerId ?? ''"
     @close="uiStore.showJoinCapsuleModal = false"
   />
+  <AlertModal />
 </template>
 
 <script setup lang="ts">
@@ -31,6 +32,7 @@ import DeviceLinkModal from '@/components/modals/DeviceLinkModal.vue'
 import UserProfileModal from '@/components/modals/UserProfileModal.vue'
 import ServerSettingsModal from '@/components/modals/ServerSettingsModal.vue'
 import JoinCapsuleModal from '@/components/modals/JoinCapsuleModal.vue'
+import AlertModal from '@/components/modals/AlertModal.vue'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useIdentityStore } from '@/stores/identityStore'
