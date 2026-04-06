@@ -175,13 +175,15 @@ export const useNetworkStore = defineStore('network', () => {
     // the onPeerDisconnected callback above; no extra action needed.
 
     // Relay Rust-native WebRTC signaling events out through the signaling transport.
+    // NOTE: 'from' must be included so remote peers know who sent the signal;
+    // the old browser-RTCPeerConnection implementation always set this explicitly.
     listen<{ to: string; sdp: string }>('webrtc_offer', ({ payload }) => {
-      sendSignal({ type: 'signal_offer', to: payload.to, sdp: payload.sdp })
+      sendSignal({ type: 'signal_offer', to: payload.to, from: localUserId, sdp: payload.sdp })
         .catch(e => console.warn('[webrtc] relay webrtc_offer error:', e))
     }).catch(e => console.warn('[webrtc] webrtc_offer listen failed:', e))
 
     listen<{ to: string; sdp: string }>('webrtc_answer', ({ payload }) => {
-      sendSignal({ type: 'signal_answer', to: payload.to, sdp: payload.sdp })
+      sendSignal({ type: 'signal_answer', to: payload.to, from: localUserId, sdp: payload.sdp })
         .catch(e => console.warn('[webrtc] relay webrtc_answer error:', e))
     }).catch(e => console.warn('[webrtc] webrtc_answer listen failed:', e))
 
@@ -190,6 +192,7 @@ export const useNetworkStore = defineStore('network', () => {
         sendSignal({
           type: 'signal_ice',
           to: payload.to,
+          from: localUserId,
           candidate: { candidate: payload.candidate, sdpMid: payload.sdpMid, sdpMLineIndex: payload.sdpMlineIndex },
         }).catch(e => console.warn('[webrtc] relay webrtc_ice error:', e))
       },
