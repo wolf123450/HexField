@@ -218,6 +218,7 @@ import { useUIStore } from '@/stores/uiStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import { usePersonalBlocksStore } from '@/stores/personalBlocksStore'
 import { useBreakpoint } from '@/utils/useBreakpoint'
+import { useIsAdmin } from '@/utils/useIsAdmin'
 import VoiceBar from '@/components/chat/VoiceBar.vue'
 import ChannelNotifPopover from '@/components/layout/ChannelNotifPopover.vue'
 import ModerationActionModal from '@/components/modals/ModerationActionModal.vue'
@@ -284,12 +285,7 @@ const voiceChannels = computed(() =>
   )
 )
 
-const isAdmin = computed(() => {
-  const sid = serversStore.activeServerId
-  const uid = identityStore.userId
-  if (!sid || !uid) return false
-  return serversStore.members[sid]?.[uid]?.roles.some(r => r === 'admin' || r === 'owner') ?? false
-})
+const isAdmin = useIsAdmin(computed(() => serversStore.activeServerId))
 
 // ── Voice-kick modal state ────────────────────────────────────────────────────
 

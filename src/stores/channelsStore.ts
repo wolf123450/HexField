@@ -126,6 +126,11 @@ export const useChannelsStore = defineStore('channels', () => {
 
   function setActiveChannel(channelId: string | null) {
     activeChannelId.value = channelId
+    if (channelId) {
+      import('./messagesStore').then(({ useMessagesStore }) => {
+        useMessagesStore().markChannelRead(channelId)
+      }).catch(e => console.warn('[channels] markChannelRead error:', e))
+    }
   }
 
   async function applyChannelMutation(mutation: Mutation) {
