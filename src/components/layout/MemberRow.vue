@@ -40,6 +40,7 @@ import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import { usePersonalBlocksStore } from '@/stores/personalBlocksStore'
+import { useIsAdmin } from '@/utils/useIsAdmin'
 import ModerationActionModal from '@/components/modals/ModerationActionModal.vue'
 
 const props = defineProps<{ member: ServerMember; serverId: string }>()
@@ -63,11 +64,7 @@ const banDurationLabel = computed(() => {
   return labels[banDuration.value] ?? 'Permanent'
 })
 
-const isAdmin = computed(() => {
-  const uid = identityStore.userId
-  if (!uid) return false
-  return serversStore.members[props.serverId]?.[uid]?.roles.some(r => r === 'admin' || r === 'owner') ?? false
-})
+const isAdmin = useIsAdmin(computed(() => props.serverId))
 
 const isSelf = computed(() => identityStore.userId === props.member.userId)
 

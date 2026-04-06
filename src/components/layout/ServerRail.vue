@@ -47,13 +47,12 @@ import { useUIStore } from '@/stores/uiStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useMessagesStore } from '@/stores/messagesStore'
 import type { MenuItem } from '@/stores/uiStore'
-import { useIdentityStore } from '@/stores/identityStore'
+import { isAdminOfServer } from '@/utils/useIsAdmin'
 
 const serversStore  = useServersStore()
 const channelsStore = useChannelsStore()
 const messagesStore = useMessagesStore()
 const uiStore       = useUIStore()
-const identityStore = useIdentityStore()
 
 function serverInitials(serverId: string): string {
   const name = serversStore.servers[serverId]?.name?.trim() || '?'
@@ -86,12 +85,6 @@ async function selectServer(serverId: string) {
 function unreadForServer(serverId: string): number {
   const channels = channelsStore.channels[serverId] ?? []
   return channels.reduce((sum, ch) => sum + (messagesStore.unreadCounts[ch.id] ?? 0), 0)
-}
-
-function isAdminOfServer(serverId: string): boolean {
-  const uid = identityStore.userId
-  if (!uid) return false
-  return serversStore.members[serverId]?.[uid]?.roles.some(r => r === 'admin' || r === 'owner') ?? false
 }
 
 function pendingJoinCount(serverId: string): number {
