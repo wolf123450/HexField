@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { signalingService } from '@/services/signalingService'
 import type { SignalPayload } from '@/services/signalingService'
-import { webrtcService } from '@/services/webrtcService'
+import { WebRTCService, webrtcService } from '@/services/webrtcService'
 import { startSync, handleSyncMessage, setSendFn } from '@/services/syncService'
 import type { SyncWireMessage } from '@/services/syncService'
 import type { ServerManifest } from '@/types/core'
@@ -110,6 +110,23 @@ export const useNetworkStore = defineStore('network', () => {
 
     // Give syncService a way to send to peers
     setSendFn((peerId, data) => webrtcService.sendToPeer(peerId, data))
+
+    // Warn when the system WebView doesn't have WebRTC compiled in (e.g. Ubuntu
+    // 24.04 ships libwebkit2gtk without WebRTC; the setting exists but is a no-op).
+    // Peer-to-peer connections will silently fail, so surface a clear message.
+    if (!WebRTCService.isAvailable()) {
+      const { useUIStore } = await import('./uiStore')
+      useUIStore().showAlert(
+        'Peer-to-peer connections unavailable',
+        'Your system WebView does not include WebRTC.\n\n' +
+        'LAN discovery, peer connections, and voice will not work on this device.\n\n' +
+        'To fix this on Ubuntu 24.04:\n' +
+        '  1. sudo add-apt-repository ppa:escalion/ppa-webkit2gtk-experimental\n' +
+        '  2. sudo apt update && sudo apt upgrade\n' +
+        '  3. sudo apt-get install -y gstreamer1.0-plugins-bad gstreamer1.0-nice libnice10\n\n' +
+        'Alternatively, use Arch/Fedora/openSUSE, or distribute as a Flatpak.',
+      )
+    }
 
     // Initialize webrtcService
     webrtcService.init(

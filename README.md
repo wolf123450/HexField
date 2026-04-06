@@ -66,7 +66,7 @@ sudo apt-get install \
   libjavascriptcoregtk-4.1-dev \
   libsoup-3.0-dev \
   libayatana-appindicator3-dev \
-  librsvg2-dev pkg-config libssl-dev
+  librsvg2-dev pkg-config libssl-dev patchelf
 ```
 
 ### Clone and run
