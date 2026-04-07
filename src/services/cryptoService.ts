@@ -10,6 +10,31 @@ import type { EncryptedEnvelope } from '@/types/core'
 
 type SodiumType = typeof _sodium
 
+/**
+ * Produce a canonical JSON string for signing/verification.
+ * Recursively sorts all object keys (not just top-level) so the result is
+ * deterministic regardless of key insertion order — which can change when
+ * the payload transits through serde_json (BTreeMap reorders keys).
+ * Excludes __sig and __pub at the top level.
+ */
+function deepSortObj(val: unknown): unknown {
+  if (val === null || typeof val !== 'object') return val
+  if (Array.isArray(val)) return val.map(deepSortObj)
+  const obj = val as Record<string, unknown>
+  const sorted: Record<string, unknown> = {}
+  for (const k of Object.keys(obj).sort()) {
+    sorted[k] = deepSortObj(obj[k])
+  }
+  return sorted
+}
+
+function canonicalJson(msg: Record<string, unknown>): string {
+  const filtered = Object.fromEntries(
+    Object.entries(msg).filter(([k]) => k !== '__sig' && k !== '__pub')
+  )
+  return JSON.stringify(deepSortObj(filtered))
+}
+
 class CryptoService {
   private sodium: SodiumType | null = null
 
@@ -229,13 +254,11 @@ class CryptoService {
   /**
    * Sign a JSON-serialisable object with the local Ed25519 key.
    * Attaches `__sig` (base64 signature) and `__pub` (base64 public key) fields.
-   * The signature covers the canonical sorted JSON of all fields except __sig and __pub.
+   * The signature covers the canonical deep-sorted JSON of all fields except __sig and __pub.
    */
   signJson<T extends Record<string, unknown>>(payload: T): T & { __sig: string; __pub: string } {
     const s = this.sodium!
-    const canonical = JSON.stringify(
-      Object.fromEntries(Object.entries(payload).filter(([k]) => k !== '__sig' && k !== '__pub').sort())
-    )
+    const canonical = canonicalJson(payload)
     const sig    = s.crypto_sign_detached(s.from_string(canonical), this.signKeyPair!.privateKey)
     const pubKey = s.to_base64(this.signKeyPair!.publicKey)
     return { ...payload, __sig: s.to_base64(sig), __pub: pubKey }
@@ -251,9 +274,7 @@ class CryptoService {
     const pubKey = msg['__pub'] as string | undefined
     if (!sig || !pubKey) return null
     try {
-      const canonical = JSON.stringify(
-        Object.fromEntries(Object.entries(msg).filter(([k]) => k !== '__sig' && k !== '__pub').sort())
-      )
+      const canonical = canonicalJson(msg)
       const ok = s.crypto_sign_verify_detached(
         s.from_base64(sig),
         s.from_string(canonical),
@@ -362,4 +383,5 @@ class CryptoService {
   }
 }
 
+export { CryptoService }
 export const cryptoService = new CryptoService()
