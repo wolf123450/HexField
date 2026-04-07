@@ -53,7 +53,7 @@ const networkStore   = useNetworkStore()
 
 const code         = ref('')
 const joining      = ref(false)
-const joiningLabel = ref('Joiningâ€¦')
+const joiningLabel = ref('Joining…')
 const statusMsg    = ref('')
 const isError      = ref(false)
 const inputRef     = ref<HTMLInputElement | null>(null)
@@ -89,7 +89,7 @@ async function join() {
   isError.value   = false
 
   try {
-    // â”€â”€ 1. Decode invite â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- 1. Decode invite
     let invite: PeerInvite
     try {
       invite = decodeInvite(code.value)
@@ -97,10 +97,10 @@ async function join() {
       throw new Error(e instanceof Error ? e.message : 'Invalid invite link.')
     }
 
-    // â”€â”€ 2. Connect to the inviter's signal server (LAN endpoints) â”€â”€
+    // -- 2. Connect to the inviter's signal server (LAN endpoints)
     let connected = false
     for (const ep of invite.endpoints) {
-      joiningLabel.value = `Connecting via ${ep.type === 'lan' ? 'local network' : 'internet'}â€¦`
+        joiningLabel.value = `Connecting via ${ep.type === 'lan' ? 'local network' : 'internet'}…`
       try {
         await invoke('lan_connect_peer', { userId: invite.userId, addr: ep.addr, port: ep.port })
         connected = true
@@ -117,24 +117,24 @@ async function join() {
       throw new Error('Invite has no endpoints. Ask the server owner to regenerate the invite while their app is open.')
     }
 
-    // â”€â”€ 3. WebRTC offer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    joiningLabel.value = 'Establishing secure connectionâ€¦'
+    // -- 3. WebRTC offer
+    joiningLabel.value = 'Establishing secure connection…'
     await networkStore.connectToPeer(invite.userId)
     await networkStore.waitForPeer(invite.userId, 15000)
 
-    // â”€â”€ 4. Request the full server manifest over the data channel â”€â”€
-    joiningLabel.value = 'Requesting server dataâ€¦'
+    // -- 4. Request the full server manifest over the data channel
+    joiningLabel.value = 'Requesting server data…'
     const manifest = await networkStore.requestServerManifest(
       invite.userId,
       invite.serverId,
       invite.inviteToken,
     )
 
-    // â”€â”€ 5. Bootstrap server locally from the received manifest â”€â”€â”€â”€â”€
-    joiningLabel.value = 'Saving serverâ€¦'
+    // -- 5. Bootstrap server locally from the received manifest
+    joiningLabel.value = 'Saving server…'
     const server = await serversStore.joinFromManifest(manifest)
 
-    // â”€â”€ 6. Navigate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- 6. Navigate
     serversStore.setActiveServer(server.id)
     await channelsStore.loadChannels(server.id)
     const first = channelsStore.channels[server.id]?.find(c => c.type === 'text')
@@ -156,7 +156,7 @@ async function join() {
     isError.value   = true
   } finally {
     joining.value      = false
-    joiningLabel.value = 'Joiningâ€¦'
+    joiningLabel.value = 'Joining…'
   }
 }
 
@@ -271,3 +271,4 @@ function close() {
 .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
+
