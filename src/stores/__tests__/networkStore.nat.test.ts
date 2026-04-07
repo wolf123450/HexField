@@ -64,7 +64,7 @@ vi.mock('@/utils/natDetection', () => ({
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-async function setupStore(natTypeOverride: 'open' | 'restricted' | 'symmetric' | 'unknown' = 'open') {
+async function setupStore(natTypeOverride: 'open' | 'restricted' | 'symmetric' | 'unknown' | 'pending' = 'open') {
   const { detectNATType } = await import('@/utils/natDetection')
   vi.mocked(detectNATType).mockResolvedValue(natTypeOverride)
 
