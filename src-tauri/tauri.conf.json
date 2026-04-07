@@ -41,7 +41,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY0Njc2NjNFQUNFQ0I5OUIKUldTYnVleXNQbVpuOUYzdDhWQzZZanRjcEx5RnRBYzFKYjNNTE5qN054bzhjOXZBYmRmaHo1cEoK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZCMEJDN0ZEMkE0QjY4NTkKUldSWmFFc3EvY2NMK3lrdDcxa21BMHlLZjNzcmptZm1iQjlvL1JJYTYzWDV4WjBMUlVHaWhlc0gK",
       "endpoints": [
         "https://github.com/wolf123450/HexField/releases/latest/download/latest.json"
       ]
