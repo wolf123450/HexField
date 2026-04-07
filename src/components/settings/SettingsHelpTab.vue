@@ -60,7 +60,7 @@ async function manualCheckForUpdate() {
 
 function openRepo() {
   // TODO: replace with your repo URL
-  const repoUrl = 'https://github.com/YOUR_ORG/YOUR_REPO'
+  const repoUrl = 'https://github.com/wolf123450/HexField'
   if (isTauri) {
     import('@tauri-apps/plugin-opener').then(m => m.openUrl(repoUrl)).catch(() => {})
   } else {
