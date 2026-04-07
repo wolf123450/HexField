@@ -113,14 +113,16 @@ const natLabel = computed(() => ({
   open:       'Open',
   restricted: 'Restricted',
   symmetric:  'Symmetric (relay needed)',
-  unknown:    'Detecting…',
+  unknown:    'Unknown',
+  pending:    'Detecting…',
 }[networkStore.natType] ?? 'Unknown'))
 
 const natDescription = computed(() => ({
   open:       'Direct peer connections work reliably.',
   restricted: 'Most peer connections succeed; relay used as fallback.',
   symmetric:  'Behind strict NAT — relay peers or TURN servers are required.',
-  unknown:    'NAT detection is still in progress.',
+  unknown:    'Could not determine NAT type — STUN probes failed or WebRTC is unavailable.',
+  pending:    'NAT detection is still in progress.',
 }[networkStore.natType] ?? ''))
 const noiseSuppression = ref(settingsStore.settings.noiseSuppression)
 const videoQuality  = ref(settingsStore.settings.videoQuality)

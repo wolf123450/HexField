@@ -8,7 +8,7 @@
  * - Either probe fails                → 'unknown'
  */
 
-export type NATType = 'open' | 'restricted' | 'symmetric' | 'unknown'
+export type NATType = 'open' | 'restricted' | 'symmetric' | 'unknown' | 'pending'
 
 export interface STUNResult {
   ip:   string
