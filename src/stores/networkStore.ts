@@ -29,7 +29,7 @@ export const useNetworkStore = defineStore('network', () => {
   const signalingState   = ref<SignalingState>('disconnected')
   const serverUrl        = ref<string>('')
   const reconnectAttempt = ref<number>(0)
-  const natType          = ref<NATType>('unknown')
+  const natType          = ref<NATType>('pending')
   /** Own external IP:port discovered by STUN (null until NAT detection completes). */
   const ownPublicAddr    = ref<{ ip: string; port: number } | null>(null)
   /** Peers that are relay-capable: userId → relayAddr string (e.g. '203.0.113.1:3479'). */
@@ -285,7 +285,7 @@ export const useNetworkStore = defineStore('network', () => {
 
     // Only add TURN candidates when we're behind symmetric NAT (or unknown) —
     // for open/restricted NAT, plain STUN is sufficient.
-    const needRelay = natType.value === 'symmetric' || natType.value === 'unknown'
+    const needRelay = natType.value === 'symmetric' || natType.value === 'unknown' || natType.value === 'pending'
 
     if (needRelay) {
       for (const [peerId, relayAddr] of Object.entries(relayCapablePeers.value)) {
