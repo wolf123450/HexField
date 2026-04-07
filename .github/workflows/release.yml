@@ -103,28 +103,63 @@ jobs:
               tag,
             });
 
+            const allAssets = release.assets.map(a => a.name);
+            console.log(`Release assets (${allAssets.length}):\n` + allAssets.join('\n'));
+
             const sigAssets = release.assets.filter(a => a.name.endsWith('.sig'));
+            console.log(`\nFound ${sigAssets.length} .sig asset(s): ${sigAssets.map(a => a.name).join(', ') || '(none)'}`);
+
+            if (sigAssets.length === 0) {
+              core.setFailed(
+                'No .sig files found in release assets. ' +
+                'This means TAURI_SIGNING_PRIVATE_KEY was missing or invalid during the build. ' +
+                'Check that the secret is set and contains no trailing whitespace.'
+              );
+              return;
+            }
+
             const platforms = {};
+            const skipped = [];
 
             for (const sig of sigAssets) {
               const sigContent = await fetch(sig.browser_download_url).then(r => r.text());
               const installerName = sig.name.replace(/\.sig$/, '');
               const installer = release.assets.find(a => a.name === installerName);
-              if (!installer) continue;
+              if (!installer) {
+                skipped.push(`${sig.name} → no matching installer asset '${installerName}'`);
+                continue;
+              }
 
               // Detect platform from filename
               let key = null;
               if (installerName.includes('aarch64-apple')) key = 'darwin-aarch64';
-              else if (installerName.includes('x86_64-apple') || installerName.endsWith('.dmg')) key = 'darwin-x86_64';
+              else if (installerName.includes('x86_64-apple') || (installerName.endsWith('.dmg') && !installerName.includes('aarch64'))) key = 'darwin-x86_64';
               else if (installerName.endsWith('.exe') || installerName.endsWith('.nsis.zip')) key = 'windows-x86_64-nsis';
               else if (installerName.endsWith('.msi') || installerName.endsWith('.msi.zip')) key = 'windows-x86_64';
               else if (installerName.endsWith('.AppImage') || installerName.endsWith('.AppImage.tar.gz')) key = 'linux-x86_64';
-              if (!key) continue;
+
+              if (!key) {
+                skipped.push(`${sig.name} → no platform key matched for '${installerName}'`);
+                continue;
+              }
 
               platforms[key] = {
                 url: installer.browser_download_url,
                 signature: sigContent.trim(),
               };
+              console.log(`  ${key} ← ${installerName}`);
+            }
+
+            if (skipped.length > 0) {
+              console.log('\nSkipped .sig assets:\n' + skipped.map(s => '  ' + s).join('\n'));
+            }
+
+            const platformKeys = Object.keys(platforms);
+            console.log(`\nPlatforms in manifest (${platformKeys.length}): ${platformKeys.join(', ') || '(none)'}`);
+
+            if (platformKeys.length === 0) {
+              core.setFailed('platforms object is empty — no installers were matched. See skipped entries above.');
+              return;
             }
 
             const manifest = {
