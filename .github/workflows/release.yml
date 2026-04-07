@@ -116,6 +116,7 @@ jobs:
               let key = null;
               if (installerName.includes('aarch64-apple')) key = 'darwin-aarch64';
               else if (installerName.includes('x86_64-apple') || installerName.endsWith('.dmg')) key = 'darwin-x86_64';
+              else if (installerName.endsWith('.exe') || installerName.endsWith('.nsis.zip')) key = 'windows-x86_64-nsis';
               else if (installerName.endsWith('.msi') || installerName.endsWith('.msi.zip')) key = 'windows-x86_64';
               else if (installerName.endsWith('.AppImage') || installerName.endsWith('.AppImage.tar.gz')) key = 'linux-x86_64';
               if (!key) continue;
