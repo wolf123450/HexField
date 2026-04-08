@@ -1,6 +1,7 @@
 ﻿use std::path::PathBuf;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use tauri::Manager;
+use crate::AppState;
 
 pub(crate) const CHUNK_SIZE: usize = 256 * 1024; // 256 KB
 
@@ -450,6 +451,97 @@ pub fn save_image(app_handle: tauri::AppHandle, data: Vec<u8>) -> Result<String,
 pub fn load_image_data_url(app_handle: tauri::AppHandle, content_hash: String) -> Result<String, String> {
     let dir = attachments_dir(&app_handle)?;
     load_image_data_url_from(&dir, &content_hash)
+}
+
+/// Decode a `data:<mime>;base64,<content>` URL into raw bytes.
+fn decode_data_url(data_url: &str) -> Option<Vec<u8>> {
+    let parts: Vec<&str> = data_url.splitn(2, ',').collect();
+    if parts.len() != 2 { return None; }
+    B64.decode(parts[1]).ok()
+}
+
+#[tauri::command]
+pub fn migrate_data_urls_to_files(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<u32, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let dir = attachments_dir(&app_handle)?;
+    let mut migrated: u32 = 0;
+
+    // Migrate member avatars
+    {
+        let mut stmt = conn.prepare(
+            "SELECT user_id, server_id, avatar_data_url FROM members WHERE avatar_data_url IS NOT NULL AND avatar_hash IS NULL"
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String, String)> = stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        }).map_err(|e| e.to_string())?
+          .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+
+        for (user_id, server_id, data_url) in &rows {
+            if let Some(bytes) = decode_data_url(data_url) {
+                if let Ok(hash) = save_image_to(&dir, &bytes) {
+                    let _ = conn.execute(
+                        "UPDATE members SET avatar_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
+                        rusqlite::params![hash, user_id, server_id],
+                    );
+                    migrated += 1;
+                }
+            }
+        }
+    }
+
+    // Migrate member banners
+    {
+        let mut stmt = conn.prepare(
+            "SELECT user_id, server_id, banner_data_url FROM members WHERE banner_data_url IS NOT NULL AND banner_hash IS NULL"
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String, String)> = stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        }).map_err(|e| e.to_string())?
+          .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+
+        for (user_id, server_id, data_url) in &rows {
+            if let Some(bytes) = decode_data_url(data_url) {
+                if let Ok(hash) = save_image_to(&dir, &bytes) {
+                    let _ = conn.execute(
+                        "UPDATE members SET banner_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
+                        rusqlite::params![hash, user_id, server_id],
+                    );
+                    migrated += 1;
+                }
+            }
+        }
+    }
+
+    // Migrate key_store avatar/banner entries
+    {
+        let mut stmt = conn.prepare(
+            "SELECT key_id, key_data FROM key_store WHERE key_type IN ('avatar', 'banner_data', 'server_avatar') AND key_data LIKE 'data:%'"
+        ).map_err(|e| e.to_string())?;
+        let key_rows: Vec<(String, String)> = stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        }).map_err(|e| e.to_string())?
+          .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+
+        for (key_id, data_url) in &key_rows {
+            if let Some(bytes) = decode_data_url(data_url) {
+                if let Ok(hash) = save_image_to(&dir, &bytes) {
+                    // Save hash in a parallel key
+                    let hash_key = key_id.replace("_data", "_hash")
+                        .replace("server_avatar_", "server_avatar_hash_");
+                    let _ = conn.execute(
+                        "INSERT OR REPLACE INTO key_store (key_id, key_type, key_data, created_at) VALUES (?1, ?2, ?3, datetime('now'))",
+                        rusqlite::params![hash_key, "hash", hash],
+                    );
+                    migrated += 1;
+                }
+            }
+        }
+    }
+
+    Ok(migrated)
 }
 
 //  Tests 
