@@ -45,7 +45,7 @@ describe('channelsStore', () => {
     expect(ch2.position).toBe(2)
   })
 
-  it('createChannel calls db_save_channel with the correct payload', async () => {
+  it('createChannel calls db_save_mutation with a channel_create mutation', async () => {
     const { useChannelsStore } = await import('@/stores/channelsStore')
     const { invoke } = await import('@tauri-apps/api/core')
     const store = useChannelsStore()
@@ -54,12 +54,11 @@ describe('channelsStore', () => {
 
     const ch = await store.createChannel('srv-1', 'voice-lobby', 'voice')
 
-    expect(invoke).toHaveBeenCalledWith('db_save_channel', expect.objectContaining({
-      channel: expect.objectContaining({
-        id:        ch.id,
-        server_id: 'srv-1',
-        name:      'voice-lobby',
-        type:      'voice',
+    expect(invoke).toHaveBeenCalledWith('db_save_mutation', expect.objectContaining({
+      mutation: expect.objectContaining({
+        type:       'channel_create',
+        target_id:  ch.id,
+        channel_id: '__server__',
       }),
     }))
   })
@@ -95,7 +94,7 @@ describe('channelsStore', () => {
     expect(store.channels['srv-1'][0].name).toBe('keep-me')
   })
 
-  it('deleteChannel calls db_delete_channel with the correct id', async () => {
+  it('deleteChannel calls db_save_mutation with a channel_delete mutation', async () => {
     const { useChannelsStore } = await import('@/stores/channelsStore')
     const { invoke } = await import('@tauri-apps/api/core')
     const store = useChannelsStore()
@@ -107,7 +106,13 @@ describe('channelsStore', () => {
     vi.mocked(invoke).mockResolvedValue(undefined)
 
     await store.deleteChannel(ch.id)
-    expect(invoke).toHaveBeenCalledWith('db_delete_channel', { channelId: ch.id })
+    expect(invoke).toHaveBeenCalledWith('db_save_mutation', expect.objectContaining({
+      mutation: expect.objectContaining({
+        type:       'channel_delete',
+        target_id:  ch.id,
+        channel_id: '__server__',
+      }),
+    }))
   })
 
   it('deleteChannel clears activeChannelId when it matches the deleted channel', async () => {
@@ -141,7 +146,7 @@ describe('channelsStore', () => {
     expect(found?.name).toBe('new-name')
   })
 
-  it('renameChannel calls db_save_channel with the new name', async () => {
+  it('renameChannel calls db_save_mutation with a channel_update mutation', async () => {
     const { useChannelsStore } = await import('@/stores/channelsStore')
     const { invoke } = await import('@tauri-apps/api/core')
     const store = useChannelsStore()
@@ -153,8 +158,13 @@ describe('channelsStore', () => {
     vi.mocked(invoke).mockResolvedValue(undefined)
 
     await store.renameChannel(ch.id, 'renamed')
-    expect(invoke).toHaveBeenCalledWith('db_save_channel', expect.objectContaining({
-      channel: expect.objectContaining({ id: ch.id, name: 'renamed' }),
+    expect(invoke).toHaveBeenCalledWith('db_save_mutation', expect.objectContaining({
+      mutation: expect.objectContaining({
+        type:        'channel_update',
+        target_id:   ch.id,
+        channel_id:  '__server__',
+        new_content: JSON.stringify({ name: 'renamed' }),
+      }),
     }))
   })
 

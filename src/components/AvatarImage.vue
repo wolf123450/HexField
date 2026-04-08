@@ -25,10 +25,13 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { resolveImageHash } from '@/utils/imageCache'
 
 const props = withDefaults(defineProps<{
   /** base64 data URL or remote URL; null/undefined shows initials */
   src?: string | null
+  /** BLAKE3 content hash — resolved via imageCache */
+  hash?: string | null
   /** display name — used to compute initials and alt text */
   name?: string
   /** pixel size for the circle */
@@ -37,12 +40,23 @@ const props = withDefaults(defineProps<{
   animate?: boolean
 }>(), {
   src: null,
+  hash: null,
   name: '',
   size: 32,
   animate: false,
 })
 
-const resolvedSrc = computed(() => props.src || null)
+const hashResolvedSrc = ref<string | null>(null)
+
+watch(() => props.hash, async (newHash) => {
+  if (newHash) {
+    hashResolvedSrc.value = await resolveImageHash(newHash)
+  } else {
+    hashResolvedSrc.value = null
+  }
+}, { immediate: true })
+
+const resolvedSrc = computed(() => hashResolvedSrc.value || props.src || null)
 const isGif = computed(() => resolvedSrc.value?.startsWith('data:image/gif') ?? false)
 const gifPlaying = ref(props.animate)
 

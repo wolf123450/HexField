@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
 import type { Server, ServerMember, Mutation, ServerManifest, JoinRequest, JoinCapsule, PeerEndpoint } from '@/types/core'
+import { generateHLC } from '@/utils/hlc'
 
 export interface InviteCode {
   code: string
@@ -51,6 +52,14 @@ export const useServersStore = defineStore('servers', () => {
         .catch(() => null)
       if (dataUrl && servers.value[serverId]) {
         servers.value[serverId].avatarDataUrl = dataUrl
+      }
+    }
+    // Load server avatar hashes
+    for (const serverId of joinedServerIds.value) {
+      const hash = await invoke<string | null>('db_load_key', { keyId: `server_avatar_hash_${serverId}` })
+        .catch(() => null)
+      if (hash && servers.value[serverId]) {
+        servers.value[serverId].avatarHash = hash
       }
     }
   }
@@ -141,9 +150,11 @@ export const useServersStore = defineStore('servers', () => {
         onlineStatus,
         // Prefer DB-persisted values; fall back to any in-memory gossip not yet flushed.
         avatarDataUrl: r.avatar_data_url ?? existing[r.user_id]?.avatarDataUrl,
+        avatarHash:    r.avatar_hash   ?? existing[r.user_id]?.avatarHash,
         bio:           r.bio           ?? existing[r.user_id]?.bio,
         bannerColor:   r.banner_color  ?? existing[r.user_id]?.bannerColor,
         bannerDataUrl: r.banner_data_url ?? existing[r.user_id]?.bannerDataUrl,
+        bannerHash:    r.banner_hash   ?? existing[r.user_id]?.bannerHash,
       }
     }
     // Hydrate own member record with current identity data (source of truth for name/avatar/bio/banner).
@@ -179,18 +190,22 @@ export const useServersStore = defineStore('servers', () => {
     payload: {
       displayName?: string
       avatarDataUrl?: string | null
+      avatarHash?: string | null
       bio?: string | null
       bannerColor?: string | null
       bannerDataUrl?: string | null
+      bannerHash?: string | null
     },
   ) {
     const m = members.value[serverId]?.[userId]
     if (!m) return
     if (payload.displayName   !== undefined) m.displayName   = payload.displayName
     if (payload.avatarDataUrl !== undefined) m.avatarDataUrl = payload.avatarDataUrl
+    if (payload.avatarHash    !== undefined) m.avatarHash    = payload.avatarHash ?? undefined
     if (payload.bio           !== undefined) m.bio           = payload.bio
     if (payload.bannerColor   !== undefined) m.bannerColor   = payload.bannerColor
     if (payload.bannerDataUrl !== undefined) m.bannerDataUrl = payload.bannerDataUrl
+    if (payload.bannerHash    !== undefined) m.bannerHash    = payload.bannerHash ?? undefined
     // Persist the updated member record to DB so bios/banners survive restarts
     invoke('db_upsert_member', {
       member: {
@@ -203,9 +218,11 @@ export const useServersStore = defineStore('servers', () => {
         public_dh_key:    m.publicDHKey,
         online_status:    m.onlineStatus,
         avatar_data_url:  m.avatarDataUrl ?? null,
+        avatar_hash:      m.avatarHash    ?? null,
         bio:              m.bio           ?? null,
         banner_color:     m.bannerColor   ?? null,
         banner_data_url:  m.bannerDataUrl ?? null,
+        banner_hash:      m.bannerHash    ?? null,
       },
     }).catch(() => {}) // fire-and-forget; in-memory state is already updated
   }
@@ -218,6 +235,18 @@ export const useServersStore = defineStore('servers', () => {
       keyId:   `server_avatar_${serverId}`,
       keyType: 'server_avatar',
       keyData: dataUrl ?? '',
+    })
+  }
+
+  async function updateServerAvatarHash(serverId: string, hash: string | null) {
+    if (servers.value[serverId]) {
+      servers.value[serverId].avatarHash = hash ?? undefined
+      servers.value[serverId].avatarDataUrl = undefined
+    }
+    await invoke('db_save_key', {
+      keyId:   `server_avatar_hash_${serverId}`,
+      keyType: 'server_avatar_hash',
+      keyData: hash ?? '',
     })
   }
 
@@ -843,6 +872,17 @@ export const useServersStore = defineStore('servers', () => {
           online_status:   'offline',
         },
       })
+
+      // Create member_join mutation for the owner so it syncs via negentropy
+      await createMemberJoinMutation({
+        userId: manifest.owner.userId,
+        serverId: server.id,
+        displayName: manifest.owner.displayName,
+        publicSignKey: manifest.owner.publicSignKey,
+        publicDHKey: manifest.owner.publicDHKey,
+        roles: ['owner', 'admin'],
+        joinedAt: server.createdAt,
+      })
     }
 
     // Persist self as member (unless we are the owner)
@@ -869,6 +909,17 @@ export const useServersStore = defineStore('servers', () => {
           public_dh_key:   selfMember.publicDHKey,
           online_status:   selfMember.onlineStatus,
         },
+      })
+
+      // Create member_join mutation for self so it syncs via negentropy
+      await createMemberJoinMutation({
+        userId: selfMember.userId,
+        serverId: selfMember.serverId,
+        displayName: selfMember.displayName,
+        publicSignKey: selfMember.publicSignKey,
+        publicDHKey: selfMember.publicDHKey,
+        roles: selfMember.roles,
+        joinedAt: selfMember.joinedAt,
       })
     }
 
@@ -1160,6 +1211,89 @@ export const useServersStore = defineStore('servers', () => {
     useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
   }
 
+  async function createMemberJoinMutation(member: {
+    userId: string
+    serverId: string
+    displayName: string
+    publicSignKey: string
+    publicDHKey: string
+    roles: string[]
+    joinedAt: string
+  }): Promise<void> {
+    const { useMessagesStore } = await import('./messagesStore')
+    const messagesStore = useMessagesStore()
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'member_join',
+      targetId:   member.userId,
+      channelId:  '__server__',
+      authorId:   member.userId,
+      newContent: JSON.stringify(member),
+      logicalTs:  generateHLC(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    await messagesStore.applyMutation(mutation)
+
+    // Also upsert locally so member appears immediately
+    if (!members.value[member.serverId]) members.value[member.serverId] = {}
+    members.value[member.serverId][member.userId] = {
+      userId: member.userId,
+      serverId: member.serverId,
+      displayName: member.displayName,
+      roles: member.roles,
+      joinedAt: member.joinedAt,
+      publicSignKey: member.publicSignKey,
+      publicDHKey: member.publicDHKey,
+      onlineStatus: 'online',
+    }
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId: member.serverId, mutation: serializeMutation(mutation) })
+  }
+
+  async function broadcastProfileMutation(serverId: string, profile: {
+    displayName?: string
+    avatarHash?: string
+    bio?: string
+    bannerColor?: string
+    bannerHash?: string
+  }): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    const { useMessagesStore } = await import('./messagesStore')
+    const messagesStore = useMessagesStore()
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'member_profile_update',
+      targetId:   identityStore.userId!,
+      channelId:  '__server__',
+      authorId:   identityStore.userId!,
+      newContent: JSON.stringify({ serverId, ...profile }),
+      logicalTs:  generateHLC(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    await messagesStore.applyMutation(mutation)
+
+    // Update local member record
+    const m = members.value[serverId]?.[identityStore.userId!]
+    if (m) {
+      if (profile.displayName) m.displayName = profile.displayName
+      if (profile.avatarHash) m.avatarHash = profile.avatarHash
+      if (profile.bio !== undefined) m.bio = profile.bio
+      if (profile.bannerColor !== undefined) m.bannerColor = profile.bannerColor
+      if (profile.bannerHash) m.bannerHash = profile.bannerHash
+    }
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+  }
+
   return {
     servers,
     members,
@@ -1175,6 +1309,7 @@ export const useServersStore = defineStore('servers', () => {
     updateMemberDisplayName,
     updateMemberProfile,
     updateServerAvatar,
+    updateServerAvatarHash,
     updateServerIconBgColor,
     applyServerMutation,
     joinFromManifest,
@@ -1204,5 +1339,8 @@ export const useServersStore = defineStore('servers', () => {
     exportArchive,
     importArchive,
     applyRebaseline,
+    serializeMutation,
+    createMemberJoinMutation,
+    broadcastProfileMutation,
   }
 })

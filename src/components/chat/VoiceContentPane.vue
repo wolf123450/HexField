@@ -42,7 +42,7 @@
           :class="{ speaking: voiceStore.speakingPeers.has('self') }"
         >
           <div class="av-ring" />
-          <AvatarImage :src="identityStore.avatarDataUrl" :name="identityStore.displayName || 'You'" :size="64" class="av-avatar" />
+          <AvatarImage :hash="identityStore.avatarHash" :src="identityStore.avatarDataUrl" :name="identityStore.displayName || 'You'" :size="64" class="av-avatar" />
           <div class="tile-overlay">
             <span class="tile-label">{{ identityStore.displayName || 'You' }} (you)</span>
           </div>
@@ -115,7 +115,7 @@
             :class="{ speaking: voiceStore.speakingPeers.has(peer.userId) }"
           >
             <div class="av-ring" />
-            <AvatarImage :src="serversStore.members[serverId]?.[peer.userId]?.avatarDataUrl ?? null" :name="peerName(peer.userId)" :size="64" class="av-avatar" />
+            <AvatarImage :hash="serversStore.members[serverId]?.[peer.userId]?.avatarHash ?? null" :src="serversStore.members[serverId]?.[peer.userId]?.avatarDataUrl ?? null" :name="peerName(peer.userId)" :size="64" class="av-avatar" />
             <div class="tile-overlay">
               <span class="tile-label">{{ peerName(peer.userId) }}</span>
             </div>
