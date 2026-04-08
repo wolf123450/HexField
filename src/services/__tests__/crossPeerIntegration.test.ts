@@ -20,7 +20,6 @@ import { CryptoService } from '@/services/cryptoService'
 import type { EncryptedEnvelope } from '@/types/core'
 import {
   isValidChatMessage,
-  isValidMemberAnnounce,
   isValidPresenceUpdate,
   isValidMutation,
   isValidTypingStart,
@@ -349,28 +348,89 @@ describe('server join request payload', () => {
   })
 })
 
-// ── 6. Member announce / gossip payloads ─────────────────────────────────────
+// ── 6. Mutation-based member/channel sync payloads ───────────────────────────
 
-describe('member announce and gossip', () => {
-  it('member_announce payload passes validator', () => {
-    // Wire format: { type, members: [...] }
-    const announce = {
-      type: 'member_announce',
-      members: [{
+describe('mutation-based sync', () => {
+  it('channel_create mutation is accepted by isValidMutation', () => {
+    const mutation = {
+      id: 'mut1',
+      type: 'channel_create',
+      targetId: 'ch1',
+      channelId: '__server__',
+      authorId: 'user1',
+      newContent: JSON.stringify({ id: 'ch1', serverId: 's1', name: 'general', type: 'text', position: 0 }),
+      logicalTs: '1000-000000',
+      createdAt: new Date().toISOString(),
+    }
+
+    expect(isValidMutation({ mutation })).toBe(true)
+  })
+
+  it('member_join mutation is accepted by isValidMutation', () => {
+    const mutation = {
+      id: 'mut2',
+      type: 'member_join',
+      targetId: 'bob-uuid',
+      channelId: '__server__',
+      authorId: 'bob-uuid',
+      newContent: JSON.stringify({
         userId: 'bob-uuid',
-        serverId: 'server-uuid',
+        serverId: 's1',
         displayName: 'Bob',
         publicSignKey: bobSignPub,
         publicDHKey: bobDHPub,
         roles: ['member'],
-      }],
+        joinedAt: new Date().toISOString(),
+      }),
+      logicalTs: '2000-000000',
+      createdAt: new Date().toISOString(),
     }
 
-    expect(isValidMemberAnnounce(announce)).toBe(true)
+    expect(isValidMutation({ mutation })).toBe(true)
   })
 
-  it('member_announce with empty members array fails validation', () => {
-    expect(isValidMemberAnnounce({ type: 'member_announce', members: [] })).toBe(false)
+  it('member_profile_update mutation with avatarHash is accepted', () => {
+    const mutation = {
+      id: 'mut3',
+      type: 'member_profile_update',
+      targetId: 'user1',
+      channelId: '__server__',
+      authorId: 'user1',
+      newContent: JSON.stringify({ serverId: 's1', displayName: 'Alice', avatarHash: 'abc123' }),
+      logicalTs: '3000-000000',
+      createdAt: new Date().toISOString(),
+    }
+
+    expect(isValidMutation({ mutation })).toBe(true)
+  })
+
+  it('emoji_add mutation is accepted by isValidMutation', () => {
+    const mutation = {
+      id: 'mut4',
+      type: 'emoji_add',
+      targetId: 'emoji1',
+      channelId: '__server__',
+      authorId: 'user1',
+      newContent: JSON.stringify({ id: 'emoji1', serverId: 's1', name: 'wave', uploadedBy: 'user1' }),
+      logicalTs: '4000-000000',
+      createdAt: new Date().toISOString(),
+    }
+
+    expect(isValidMutation({ mutation })).toBe(true)
+  })
+
+  it('emoji_remove mutation is accepted by isValidMutation', () => {
+    const mutation = {
+      id: 'mut5',
+      type: 'emoji_remove',
+      targetId: 'emoji1',
+      channelId: '__server__',
+      authorId: 'user1',
+      logicalTs: '5000-000000',
+      createdAt: new Date().toISOString(),
+    }
+
+    expect(isValidMutation({ mutation })).toBe(true)
   })
 
   it('presence_update payload passes validator', () => {
