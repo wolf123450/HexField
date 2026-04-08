@@ -247,6 +247,28 @@
   - [x] Chunk integrity: corrupted chunk is rejected and re-requested
   - [x] Retention pruning removes files older than configured threshold
 
+### 5b-ii — Content-Addressed Image Storage & Negentropy Sync Expansion
+- [x] BLAKE3 image save/load Tauri commands (`db_save_image`, `db_load_image`)
+- [x] Migration 011: `avatar_hash` / `banner_hash` columns on `members` table
+- [x] `imageCache` utility (LRU, data URL → blob URL management)
+- [x] `AvatarImage` component updated to resolve hash-based images from CAS
+- [x] All upload flows (identity, server icon, emoji) save via CAS + store hashes
+- [x] Gossip layer hash+fetch protocol for avatar/banner images
+- [x] Data URL → CAS migration for pre-existing avatars/banners
+- [x] New mutation types: `channel_create/update/delete`, `member_join`, `member_profile_update`, `emoji_add/remove`
+- [x] Rust `apply_mutation_side_effects` handles all 15 mutation types (36 tests)
+- [x] `syncService._onPush` hydrates server-level mutations (channels, members, emoji)
+- [x] `networkStore.handleMutationMessage` applies channel/member/emoji mutations
+- [x] Gossip removed for `member_announce`, `channel_gossip`, `emoji_sync` (replaced by negentropy mutations)
+- [x] One-time mutation backfill for pre-existing members, channels, and profiles
+- [x] Sync reordering: `__server__` mutations sync first for fast hydration
+- [x] Join flow creates `member_join` mutations for negentropy sync
+- [x] Integration tests for mutation-based channel/member/emoji sync
+- [ ] **Follow-up**: Optimize `AvatarImage` to use `convertFileSrc` + asset protocol (avoid base64 round-trip)
+- [ ] **Follow-up**: Add retention policy differentiation (avatars exempt from pruning)
+- [ ] **Follow-up**: Remove deprecated `avatar_data_url` / `banner_data_url` columns after migration period
+- [ ] **Follow-up**: Add negentropy sync for `devices` table
+
 ---
 
 ## Phase 5c — NAT Relay
