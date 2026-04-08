@@ -587,6 +587,19 @@ const SERVER_ICON_DIM        = 64
 const SERVER_ICON_MAX_GIF    = 512 * 1024
 const SERVER_ICON_MAX_STATIC = 4 * 1024 * 1024
 
+async function saveServerIcon(serverId: string, dataUrl: string) {
+  const base64 = dataUrl.split(',')[1]
+  const binaryStr = atob(base64)
+  const bytes = new Uint8Array(binaryStr.length)
+  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+
+  const { invoke } = await import('@tauri-apps/api/core')
+  const hash = await invoke<string>('save_image', { data: Array.from(bytes) })
+
+  await serversStore.updateServerAvatarHash(serverId, hash)
+  networkStore.broadcastServerAvatar(serverId, hash).catch(() => {})
+}
+
 async function onIconSelected(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
   if (!file) return
@@ -597,8 +610,7 @@ async function onIconSelected(e: Event) {
   if (file.type === 'image/gif') {
     if (file.size > SERVER_ICON_MAX_GIF) return
     const dataUrl = await readAsDataUrl(file)
-    await serversStore.updateServerAvatar(sid, dataUrl)
-    networkStore.broadcastServerAvatar(sid, dataUrl).catch(() => {})
+    await saveServerIcon(sid, dataUrl)
     return
   }
 
@@ -616,8 +628,7 @@ async function onIconSelected(e: Event) {
     const h = imgEl.height * scale
     ctx.drawImage(imgEl, (SERVER_ICON_DIM - w) / 2, (SERVER_ICON_DIM - h) / 2, w, h)
     const dataUrl = canvas.toDataURL('image/png', 0.9)
-    await serversStore.updateServerAvatar(sid, dataUrl)
-    networkStore.broadcastServerAvatar(sid, dataUrl).catch(() => {})
+    await saveServerIcon(sid, dataUrl)
   }
   imgEl.onerror = () => URL.revokeObjectURL(objectUrl)
   imgEl.src = objectUrl
