@@ -163,6 +163,7 @@ pub fn run() {
             prune_attachments,
             get_attachment_storage_bytes,
             enforce_storage_limit,
+            migrate_data_urls_to_files,
             // OS Keychain
             keychain_save,
             keychain_load,

@@ -108,6 +108,20 @@ export const useIdentityStore = defineStore('identity', () => {
     // Initialise personal blocks/mutes (localStorage-backed, keyed by userId)
     const { usePersonalBlocksStore } = await import('./personalBlocksStore')
     usePersonalBlocksStore().init(userId.value!)
+
+    // One-time migration: convert existing data URL images to disk files
+    try {
+      const migrated = await invoke<number>('migrate_data_urls_to_files')
+      if (migrated > 0) {
+        console.log(`[identity] migrated ${migrated} data URL images to disk`)
+        // Reload hashes after migration
+        const newAvatarHash = await invoke<string | null>('db_load_key', { keyId: 'local_avatar_hash' })
+          .catch(() => null)
+        if (newAvatarHash) avatarHash.value = newAvatarHash
+      }
+    } catch (e) {
+      console.warn('[identity] data URL migration failed:', e)
+    }
   }
 
   async function updateDisplayName(name: string) {
