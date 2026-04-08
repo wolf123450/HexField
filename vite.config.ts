@@ -22,6 +22,7 @@ export default defineConfig(async () => ({
   test: {
     environment: "jsdom",
     globals: true,
+    setupFiles: ["./src/test-setup.ts"],
     exclude: ["**/node_modules/**", "**/dist/**", "e2e/**"],
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

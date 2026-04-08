@@ -12,22 +12,16 @@ function isString(v: unknown): v is string {
 
 export function isValidChatMessage(msg: Obj): boolean {
   return (
-    isString(msg.id) &&
+    isString(msg.messageId) &&
     isString(msg.channelId) &&
+    isString(msg.serverId) &&
     isString(msg.authorId) &&
-    isString(msg.ciphertext) &&
-    isString(msg.nonce)
+    Array.isArray(msg.envelopes)
   )
 }
 
 export function isValidMemberAnnounce(msg: Obj): boolean {
-  return (
-    isString(msg.userId) &&
-    isString(msg.serverId) &&
-    isString(msg.displayName) &&
-    isString(msg.publicSignKey) &&
-    isString(msg.publicDHKey)
-  )
+  return Array.isArray(msg.members) && msg.members.length > 0
 }
 
 const VALID_STATUSES = new Set(['online', 'idle', 'dnd', 'offline'])
@@ -53,7 +47,7 @@ export function isValidTypingStart(msg: Obj): boolean {
 }
 
 export function isValidProfileUpdate(msg: Obj): boolean {
-  return isString(msg.displayName) || typeof msg.avatarDataUrl === 'string'
+  return msg.payload !== undefined && msg.payload !== null && typeof msg.payload === 'object'
 }
 
 export function isValidVoiceJoin(msg: Obj): boolean {

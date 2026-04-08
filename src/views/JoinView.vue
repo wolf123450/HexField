@@ -76,6 +76,10 @@ onMounted(async () => {
     const first = channelsStore.channels[server.id]?.find(c => c.type === 'text')
     if (first) channelsStore.setActiveChannel(first.id)
 
+    // Re-sync with host to recover any messages that were pushed before
+    // joinFromManifest ran and were dropped by the FK constraint.
+    networkStore.resyncPeer(invite.userId)
+
     uiStore.showNotification(`Joined ${server.name}!`, 'success', 3000)
     router.replace({ path: '/servers' })
   } catch (e: unknown) {

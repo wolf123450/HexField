@@ -51,7 +51,9 @@ export const useNetworkStore = defineStore('network', () => {
 
   // ── Rate limiter ───────────────────────────────────────────────────────────
   // Limit inbound data-channel messages per peer to prevent flooding.
-  const RATE_LIMIT = 15           // max messages per window
+  // Set high enough to accommodate burst sync traffic (negentropy + push chunks)
+  // while still blocking malicious flooding.
+  const RATE_LIMIT = 100          // max messages per window
   const RATE_WINDOW_MS = 1000     // 1-second sliding window
   const peerMessageCounts = new Map<string, { count: number; windowStart: number }>()
 
@@ -176,6 +178,9 @@ export const useNetworkStore = defineStore('network', () => {
         gossipOwnPresence(userId).catch(e => console.warn('[network] gossipOwnPresence error:', e))
         gossipOwnProfile(userId).catch(e => console.warn('[network] gossipOwnProfile error:', e))
         gossipServerAvatars(userId).catch(e => console.warn('[network] gossipServerAvatars error:', e))
+        // Also explicitly request the peer's full profile (covers avatars larger than the
+        // gossip cap that would otherwise be stripped by gossipOwnProfile on the other side).
+        requestProfile(userId).catch(e => console.warn('[network] requestProfile error:', e))
         // Record heartbeat baseline so the watchdog doesn't immediately time this peer out.
         lastHeartbeatFrom.set(userId, Date.now())
         // Start history reconciliation with newly connected peer
@@ -763,8 +768,10 @@ export const useNetworkStore = defineStore('network', () => {
     const ownMemberships = Object.values(serversStore.members)
       .flatMap(serverMembers => Object.values(serverMembers))
       .filter(m => m.userId === uid)
-      // Include avatar so the remote can render our image.
-      .map(m => ({ ...m, avatarDataUrl: identityStore.avatarDataUrl ?? undefined }))
+      // avatarDataUrl is intentionally excluded here — member_announce packets
+      // already push keys + roles.  Avatar arrives via the separate profile_update
+      // gossip (gossipOwnProfile / handleProfileRequest).
+      .map(({ ...m }) => { delete (m as Record<string, unknown>).avatarDataUrl; return m })
 
     if (ownMemberships.length === 0) return
     webrtcService.sendToPeer(peerId, { type: 'member_announce', members: ownMemberships })
@@ -1352,6 +1359,17 @@ export const useNetworkStore = defineStore('network', () => {
     }
   }
 
+  /**
+   * Trigger a fresh sync round with a peer that is already connected.
+   * Useful after importing a server manifest so that messages received
+   * (and dropped due to missing FK) during the initial connection can be
+   * recovered by re-initiating negentropy against the now-populated DB.
+   */
+  function resyncPeer(peerId: string) {
+    if (!connectedPeers.value.includes(peerId)) return
+    startSync(peerId).catch(e => console.warn('[network] resync error:', e))
+  }
+
   return {
     signalingState,
     serverUrl,
@@ -1380,5 +1398,6 @@ export const useNetworkStore = defineStore('network', () => {
     requestProfile,
     broadcastServerAvatar,
     broadcastAttachmentWant,
+    resyncPeer,
   }
 })

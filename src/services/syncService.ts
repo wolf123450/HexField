@@ -188,6 +188,11 @@ async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
 
 // ── Push content to peer ──────────────────────────────────────────────────────
 
+// WebRTC data channels (SCTP) have a ~65 KB max message size.  A naive push of
+// a large channel history easily exceeds this.  Send in fixed-size batches so
+// every individual frame stays well under the limit.
+const SYNC_PUSH_CHUNK_SIZE = 50
+
 async function _pushItems(
   peerId: string,
   sessionId: string,
@@ -198,13 +203,15 @@ async function _pushItems(
   try {
     if (table === 'messages') {
       const messages: MessageRow[] = await invoke('sync_get_messages', { ids })
-      if (messages.length > 0) {
-        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, messages } satisfies SyncPush)
+      for (let i = 0; i < messages.length; i += SYNC_PUSH_CHUNK_SIZE) {
+        const chunk = messages.slice(i, i + SYNC_PUSH_CHUNK_SIZE)
+        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, messages: chunk } satisfies SyncPush)
       }
     } else {
       const mutations: MutationRow[] = await invoke('sync_get_mutations', { ids })
-      if (mutations.length > 0) {
-        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, mutations } satisfies SyncPush)
+      for (let i = 0; i < mutations.length; i += SYNC_PUSH_CHUNK_SIZE) {
+        const chunk = mutations.slice(i, i + SYNC_PUSH_CHUNK_SIZE)
+        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, mutations: chunk } satisfies SyncPush)
       }
     }
   } catch (e) {
