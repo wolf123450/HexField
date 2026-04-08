@@ -278,18 +278,32 @@ async function onAvatarFileSelected(e: Event) {
 }
 
 async function saveAvatar(dataUrl: string) {
-  await identityStore.updateAvatar(dataUrl)
+  // Convert data URL to bytes for disk storage
+  const base64 = dataUrl.split(',')[1]
+  const binaryStr = atob(base64)
+  const bytes = new Uint8Array(binaryStr.length)
+  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+
   const { invoke } = await import('@tauri-apps/api/core')
-  await invoke('db_save_key', { keyId: 'local_avatar_data', keyType: 'avatar', keyData: dataUrl })
-    .catch(() => {})
+  const hash = await invoke<string>('save_image', { data: Array.from(bytes) })
+
+  // Store hash (replaces old data URL persistence)
+  await identityStore.updateAvatarHash(hash)
+
+  // Update self in all server member lists
   const uid = identityStore.userId
   if (uid) {
     for (const sid of serversStore.joinedServerIds) {
       const m = serversStore.members[sid]?.[uid]
-      if (m) m.avatarDataUrl = dataUrl
+      if (m) {
+        m.avatarHash = hash
+        m.avatarDataUrl = undefined
+      }
     }
   }
-  networkStore.broadcastProfile({ avatarDataUrl: dataUrl }).catch(() => {})
+
+  // Broadcast to peers — send hash, not data URL
+  networkStore.broadcastProfile({ avatarHash: hash }).catch(() => {})
 }
 
 async function saveBio() {
