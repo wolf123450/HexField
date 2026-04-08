@@ -95,6 +95,8 @@ export type MutationType =
   | 'channel_create' | 'channel_update' | 'channel_delete' | 'channel_acl_update'
   | 'device_attest' | 'device_revoke'
   | 'member_kick' | 'member_ban' | 'member_unban'
+  | 'member_join' | 'member_profile_update'
+  | 'emoji_add' | 'emoji_remove'
   | 'voice_kick' | 'voice_mute' | 'voice_unmute'
   | 'access_mode_update'
 
