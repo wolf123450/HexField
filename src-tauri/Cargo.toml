@@ -1,6 +1,6 @@
 [package]
 name = "hexfield"
-version = "0.2.4"
+version = "0.2.5"
 description = "HexField — privacy-first P2P chat"
 authors = []
 edition = "2021"
@@ -70,3 +70,6 @@ windows            = { version = "0.58", features = ["Win32_Graphics_Gdi", "Win3
 # Not available on Windows/macOS (uses Unix sockets; cross-platform support planned upstream).
 [target.'cfg(target_os = "linux")'.dependencies]
 tauri-plugin-pilot = { git = "https://github.com/mpiton/tauri-pilot" }
+
+[dev-dependencies]
+tempfile = "3"

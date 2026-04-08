@@ -2,8 +2,9 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
-import type { CustomEmoji } from '@/types/core'
+import type { CustomEmoji, Mutation } from '@/types/core'
 import { APP_STORAGE_PREFIX } from '@/appConfig'
+import { generateHLC } from '@/utils/hlc'
 
 const RECENT_KEY = APP_STORAGE_PREFIX + 'recent_emoji'
 const USAGE_KEY  = APP_STORAGE_PREFIX + 'emoji_usage'
@@ -51,11 +52,6 @@ export const useEmojiStore = defineStore('emoji', () => {
     const dataUrl = `data:image/webp;base64,${base64}`
     imageCache.value[emojiId] = dataUrl
     return dataUrl
-  }
-
-  function receiveEmojiSync(metadata: CustomEmoji) {
-    if (!custom.value[metadata.serverId]) custom.value[metadata.serverId] = {}
-    custom.value[metadata.serverId][metadata.id] = metadata
   }
 
   function useEmoji(emojiId: string) {
@@ -107,18 +103,88 @@ export const useEmojiStore = defineStore('emoji', () => {
     const dataUrl = `data:image/webp;base64,${btoa(String.fromCharCode(...new Uint8Array(imageBytes)))}`
     imageCache.value[id] = dataUrl
 
+    // Create mutation so emoji syncs via negentropy
+    const { useMessagesStore } = await import('./messagesStore')
+    const messagesStore = useMessagesStore()
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'emoji_add',
+      targetId:   id,
+      channelId:  '__server__',
+      authorId:   identityStore.userId!,
+      newContent: JSON.stringify({
+        id,
+        serverId,
+        name,
+        filePath: `emoji/${serverId}/${id}.webp`,
+        uploadedBy: identityStore.userId,
+      }),
+      logicalTs:  generateHLC(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    await messagesStore.applyMutation(mutation)
+
     const { useNetworkStore } = await import('./networkStore')
-    useNetworkStore().broadcast({
-      type: 'emoji_sync',
-      serverId,
-      emoji: { id, name, uploadedBy: emojiMeta.uploadedBy, createdAt: emojiMeta.createdAt },
-    })
+    const { useServersStore } = await import('./serversStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: useServersStore().serializeMutation(mutation) })
   }
 
   async function storeEmojiImage(emojiId: string, serverId: string, imageBytes: number[]): Promise<void> {
     await invoke('store_emoji_image', { emojiId, serverId, imageBytes })
     const base64 = btoa(String.fromCharCode(...new Uint8Array(imageBytes)))
     imageCache.value[emojiId] = `data:image/webp;base64,${base64}`
+  }
+
+  async function removeEmoji(serverId: string, emojiId: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    const { useMessagesStore } = await import('./messagesStore')
+    const messagesStore = useMessagesStore()
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'emoji_remove',
+      targetId:   emojiId,
+      channelId:  '__server__',
+      authorId:   identityStore.userId!,
+      logicalTs:  generateHLC(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    await messagesStore.applyMutation(mutation)
+
+    // Remove from in-memory state
+    if (custom.value[serverId]) {
+      delete custom.value[serverId][emojiId]
+    }
+
+    const { useNetworkStore } = await import('./networkStore')
+    const { useServersStore } = await import('./serversStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: useServersStore().serializeMutation(mutation) })
+  }
+
+  function applyEmojiAddMutation(payload: { id: string; serverId: string; name: string; uploadedBy: string }) {
+    const { serverId } = payload
+    if (!custom.value[serverId]) custom.value[serverId] = {}
+    if (!custom.value[serverId][payload.id]) {
+      custom.value[serverId][payload.id] = {
+        id: payload.id,
+        serverId,
+        name: payload.name,
+        uploadedBy: payload.uploadedBy,
+        createdAt: new Date().toISOString(),
+      }
+    }
+  }
+
+  function applyEmojiRemoveMutation(emojiId: string) {
+    for (const serverEmojis of Object.values(custom.value)) {
+      delete serverEmojis[emojiId]
+    }
   }
 
   return {
@@ -129,10 +195,12 @@ export const useEmojiStore = defineStore('emoji', () => {
     usageCounts,
     loadEmoji,
     getEmojiImage,
-    receiveEmojiSync,
     useEmoji,
     uploadCustomEmoji,
     storeEmojiImage,
+    removeEmoji,
+    applyEmojiAddMutation,
+    applyEmojiRemoveMutation,
   }
 })
 

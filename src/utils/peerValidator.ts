@@ -12,21 +12,11 @@ function isString(v: unknown): v is string {
 
 export function isValidChatMessage(msg: Obj): boolean {
   return (
-    isString(msg.id) &&
+    isString(msg.messageId) &&
     isString(msg.channelId) &&
-    isString(msg.authorId) &&
-    isString(msg.ciphertext) &&
-    isString(msg.nonce)
-  )
-}
-
-export function isValidMemberAnnounce(msg: Obj): boolean {
-  return (
-    isString(msg.userId) &&
     isString(msg.serverId) &&
-    isString(msg.displayName) &&
-    isString(msg.publicSignKey) &&
-    isString(msg.publicDHKey)
+    isString(msg.authorId) &&
+    Array.isArray(msg.envelopes)
   )
 }
 
@@ -53,13 +43,9 @@ export function isValidTypingStart(msg: Obj): boolean {
 }
 
 export function isValidProfileUpdate(msg: Obj): boolean {
-  return isString(msg.displayName) || typeof msg.avatarDataUrl === 'string'
+  return msg.payload !== undefined && msg.payload !== null && typeof msg.payload === 'object'
 }
 
 export function isValidVoiceJoin(msg: Obj): boolean {
   return isString(msg.channelId)
-}
-
-export function isValidEmojiSync(msg: Obj): boolean {
-  return Array.isArray(msg.emojis)
 }

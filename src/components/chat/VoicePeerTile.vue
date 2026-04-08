@@ -10,7 +10,7 @@
   >
     <div class="avatar-wrap">
       <div class="speaking-ring" />
-      <AvatarImage :src="member?.avatarDataUrl ?? null" :name="displayName" :size="36" class="avatar" />
+      <AvatarImage :hash="member?.avatarHash ?? null" :src="member?.avatarDataUrl ?? null" :name="displayName" :size="36" class="avatar" />
       <div v-if="!peer.audioEnabled && !peer.adminMuted" class="mute-indicator">
         <AppIcon :path="mdiMicrophoneOff" :size="10" />
       </div>

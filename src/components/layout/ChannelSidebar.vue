@@ -80,7 +80,7 @@
         <div v-if="voiceStore.session?.channelId === ch.id" class="voice-participant" :class="{ speaking: voiceStore.speakingPeers.has('self') }">
           <div class="vp-avatar-wrap">
             <div class="vp-speaking-ring" />
-            <AvatarImage :src="identityStore.avatarDataUrl" :name="identityStore.displayName" :size="24" />
+            <AvatarImage :hash="identityStore.avatarHash" :src="identityStore.avatarDataUrl" :name="identityStore.displayName" :size="24" />
             <div v-if="voiceStore.isMuted" class="vp-mute">
               <AppIcon :path="mdiMicrophoneOff" :size="8" />
             </div>
@@ -97,7 +97,7 @@
         >
           <div class="vp-avatar-wrap">
             <div class="vp-speaking-ring" />
-            <AvatarImage :src="serversStore.members[serversStore.activeServerId ?? '']?.[uid]?.avatarDataUrl ?? null" :name="peerDisplayName(uid)" :size="24" />
+            <AvatarImage :hash="serversStore.members[serversStore.activeServerId ?? '']?.[uid]?.avatarHash ?? null" :src="serversStore.members[serversStore.activeServerId ?? '']?.[uid]?.avatarDataUrl ?? null" :name="peerDisplayName(uid)" :size="24" />
             <div v-if="voiceStore.peers[uid] && !voiceStore.peers[uid].audioEnabled" class="vp-mute">
               <AppIcon :path="mdiMicrophoneOff" :size="8" />
             </div>
@@ -180,7 +180,7 @@
           @click="uiStore.openUserProfile(identityStore.userId ?? '', serversStore.activeServerId ?? '')"
           @contextmenu.prevent="openStatusPicker"
         >
-          <AvatarImage :src="identityStore.avatarDataUrl" :name="identityStore.displayName" :size="32" />
+          <AvatarImage :hash="identityStore.avatarHash" :src="identityStore.avatarDataUrl" :name="identityStore.displayName" :size="32" />
           <StatusBadge
             :status="ownStatus"
             :size="12"
@@ -276,13 +276,13 @@ const textChannels  = computed(() =>
   serverChannels.value.filter(c =>
     (c.type === 'text' || c.type === 'announcement') &&
     (isAdmin.value || channelsStore.isChannelVisible(c.id, identityStore.userId, myRoles.value))
-  )
+  ).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
 )
 const voiceChannels = computed(() =>
   serverChannels.value.filter(c =>
     c.type === 'voice' &&
     (isAdmin.value || channelsStore.isChannelVisible(c.id, identityStore.userId, myRoles.value))
-  )
+  ).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
 )
 
 const isAdmin = useIsAdmin(computed(() => serversStore.activeServerId))

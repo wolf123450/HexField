@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU16;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
+use tauri::image::Image;
 
 mod db;
 mod commands;
@@ -88,6 +89,14 @@ pub fn run() {
                 local_user_id: Arc::new(Mutex::new(String::new())),
                 webrtc_manager: Arc::new(webrtc_manager::WebRTCManager::new()),
             });
+
+            // Set the window taskbar/title-bar icon.  The conf schema does not
+            // support a per-window `icon` field, so we do it here at runtime.
+            if let Some(window) = app.get_webview_window("main") {
+                const ICON: Image<'_> = tauri::include_image!("./icons/icon.ico");
+                let _ = window.set_icon(ICON);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -142,6 +151,8 @@ pub fn run() {
             // Attachments (Phase 5b)
             get_attachment_path,
             has_attachment,
+            save_image,
+            load_image_data_url,
             get_chunk_count,
             save_attachment,
             save_attachment_chunk,
@@ -152,6 +163,7 @@ pub fn run() {
             prune_attachments,
             get_attachment_storage_bytes,
             enforce_storage_limit,
+            migrate_data_urls_to_files,
             // OS Keychain
             keychain_save,
             keychain_load,

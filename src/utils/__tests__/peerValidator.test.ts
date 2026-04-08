@@ -1,13 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
   isValidChatMessage,
-  isValidMemberAnnounce,
   isValidPresenceUpdate,
   isValidMutation,
   isValidTypingStart,
   isValidProfileUpdate,
   isValidVoiceJoin,
-  isValidEmojiSync,
 } from '@/utils/peerValidator'
 
 describe('peerValidator', () => {
@@ -15,32 +13,17 @@ describe('peerValidator', () => {
 
   it('accepts a well-formed chat message', () => {
     expect(isValidChatMessage({
-      id: 'msg-1', channelId: 'ch-1', authorId: 'user-1',
-      ciphertext: 'abc123', nonce: 'nonce123',
+      messageId: 'msg-1', channelId: 'ch-1', serverId: 'srv-1',
+      authorId: 'user-1', envelopes: [{ recipientId: 'r1', ciphertext: 'ct', nonce: 'n' }],
     })).toBe(true)
   })
 
-  it('rejects chat message missing ciphertext', () => {
-    expect(isValidChatMessage({ id: 'msg-1', channelId: 'ch-1', authorId: 'u', nonce: 'n' })).toBe(false)
+  it('rejects chat message missing envelopes', () => {
+    expect(isValidChatMessage({ messageId: 'msg-1', channelId: 'ch-1', serverId: 'srv-1', authorId: 'u' })).toBe(false)
   })
 
-  it('rejects chat message with empty id', () => {
-    expect(isValidChatMessage({ id: '', channelId: 'ch', authorId: 'u', ciphertext: 'c', nonce: 'n' })).toBe(false)
-  })
-
-  // ── isValidMemberAnnounce ─────────────────────────────────────────────────
-
-  it('accepts a well-formed member announce', () => {
-    expect(isValidMemberAnnounce({
-      userId: 'u1', serverId: 's1', displayName: 'Alice',
-      publicSignKey: 'key1', publicDHKey: 'key2',
-    })).toBe(true)
-  })
-
-  it('rejects member announce missing publicSignKey', () => {
-    expect(isValidMemberAnnounce({
-      userId: 'u1', serverId: 's1', displayName: 'Alice', publicDHKey: 'key2',
-    })).toBe(false)
+  it('rejects chat message with empty messageId', () => {
+    expect(isValidChatMessage({ messageId: '', channelId: 'ch', serverId: 's', authorId: 'u', envelopes: [] })).toBe(false)
   })
 
   // ── isValidPresenceUpdate ─────────────────────────────────────────────────
@@ -89,16 +72,21 @@ describe('peerValidator', () => {
 
   // ── isValidProfileUpdate ──────────────────────────────────────────────────
 
-  it('accepts profile update with displayName', () => {
-    expect(isValidProfileUpdate({ displayName: 'Alice' })).toBe(true)
+  it('accepts profile update with payload object', () => {
+    expect(isValidProfileUpdate({ payload: { displayName: 'Alice' } })).toBe(true)
   })
 
-  it('accepts profile update with avatarDataUrl', () => {
-    expect(isValidProfileUpdate({ avatarDataUrl: 'data:image/png;base64,abc' })).toBe(true)
+  it('accepts profile update with avatar in payload', () => {
+    expect(isValidProfileUpdate({ payload: { avatarDataUrl: 'data:image/png;base64,abc' } })).toBe(true)
   })
 
-  it('rejects profile update with neither', () => {
+  it('rejects profile update without payload', () => {
     expect(isValidProfileUpdate({})).toBe(false)
+  })
+
+  it('rejects profile update with non-object payload', () => {
+    expect(isValidProfileUpdate({ payload: 'bad' })).toBe(false)
+    expect(isValidProfileUpdate({ payload: null })).toBe(false)
   })
 
   // ── isValidVoiceJoin ──────────────────────────────────────────────────────
@@ -109,17 +97,5 @@ describe('peerValidator', () => {
 
   it('rejects voice_join without channelId', () => {
     expect(isValidVoiceJoin({})).toBe(false)
-  })
-
-  // ── isValidEmojiSync ──────────────────────────────────────────────────────
-
-  it('accepts emoji_sync with emojis array', () => {
-    expect(isValidEmojiSync({ emojis: [] })).toBe(true)
-    expect(isValidEmojiSync({ emojis: [{ id: 'e1' }] })).toBe(true)
-  })
-
-  it('rejects emoji_sync without array', () => {
-    expect(isValidEmojiSync({ emojis: 'bad' })).toBe(false)
-    expect(isValidEmojiSync({})).toBe(false)
   })
 })
