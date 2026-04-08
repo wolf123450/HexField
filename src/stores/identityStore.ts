@@ -10,9 +10,11 @@ export const useIdentityStore = defineStore('identity', () => {
   const publicSignKey     = ref<string | null>(null)
   const publicDHKey       = ref<string | null>(null)
   const avatarDataUrl     = ref<string | null>(null)
+  const avatarHash        = ref<string | null>(null)
   const bio               = ref<string | null>(null)
   const bannerColor       = ref<string | null>(null)
   const bannerDataUrl     = ref<string | null>(null)
+  const bannerHash        = ref<string | null>(null)
   const isRegistered      = ref<boolean>(false)
   /** True when the identity keys are stored passphrase-wrapped (Phase 2 crypto tier). */
   const passphraseProtected = ref<boolean>(false)
@@ -68,6 +70,15 @@ export const useIdentityStore = defineStore('identity', () => {
         publicDHKey.value   = cryptoService.getPublicDHKey()
       }
       if (existingAvatar) avatarDataUrl.value = existingAvatar
+
+      const existingAvatarHash = await invoke<string | null>('db_load_key', { keyId: 'local_avatar_hash' })
+        .catch(() => null)
+      if (existingAvatarHash) avatarHash.value = existingAvatarHash
+
+      const existingBannerHash = await invoke<string | null>('db_load_key', { keyId: 'local_banner_hash' })
+        .catch(() => null)
+      if (existingBannerHash) bannerHash.value = existingBannerHash
+
       bio.value         = await invoke<string | null>('db_load_key', { keyId: 'local_bio' })
       bannerColor.value = await invoke<string | null>('db_load_key', { keyId: 'local_banner_color' })
       bannerDataUrl.value = await invoke<string | null>('db_load_key', { keyId: 'local_banner_data' })
@@ -106,6 +117,20 @@ export const useIdentityStore = defineStore('identity', () => {
 
   function updateAvatar(dataUrl: string) {
     avatarDataUrl.value = dataUrl
+  }
+
+  async function updateAvatarHash(hash: string) {
+    avatarHash.value = hash
+    avatarDataUrl.value = null
+    await invoke('db_save_key', { keyId: 'local_avatar_hash', keyType: 'avatar_hash', keyData: hash })
+  }
+
+  async function updateBannerHash(hash: string | null) {
+    bannerHash.value = hash
+    bannerDataUrl.value = null
+    if (hash) {
+      await invoke('db_save_key', { keyId: 'local_banner_hash', keyType: 'banner_hash', keyData: hash })
+    }
   }
 
   async function updateBio(text: string) {
@@ -254,16 +279,20 @@ export const useIdentityStore = defineStore('identity', () => {
     publicSignKey,
     publicDHKey,
     avatarDataUrl,
+    avatarHash,
     bio,
     bannerColor,
     bannerDataUrl,
+    bannerHash,
     isRegistered,
     passphraseProtected,
     keychainProtected,
     initializeIdentity,
     updateDisplayName,
     updateAvatar,
+    updateAvatarHash,
     updateBio,
+    updateBannerHash,
     updateBanner,
     exportIdentity,
     importIdentity,
