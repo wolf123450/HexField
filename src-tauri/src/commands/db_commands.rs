@@ -169,23 +169,10 @@ pub fn db_save_message(state: State<AppState>, msg: MessageRow) -> Result<(), St
 
 // ── Mutations ─────────────────────────────────────────────────────────────────
 
-#[tauri::command]
-pub fn db_save_mutation(state: State<AppState>, mutation: MutationRow) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-
-    conn.execute(
-        "INSERT OR IGNORE INTO mutations
-         (id, type, target_id, channel_id, author_id, new_content, emoji_id, logical_ts, created_at, verified)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        rusqlite::params![
-            mutation.id, mutation.mutation_type, mutation.target_id,
-            mutation.channel_id, mutation.author_id, mutation.new_content,
-            mutation.emoji_id, mutation.logical_ts, mutation.created_at,
-            mutation.verified as i64
-        ],
-    ).map_err(|e| e.to_string())?;
-
-    // Apply side effects
+fn apply_mutation_side_effects(
+    conn: &rusqlite::Connection,
+    mutation: &MutationRow,
+) -> Result<(), String> {
     match mutation.mutation_type.as_str() {
         "delete" => {
             conn.execute(
@@ -225,7 +212,6 @@ pub fn db_save_mutation(state: State<AppState>, mutation: MutationRow) -> Result
                 if let Ok(payload) = serde_json::from_str::<serde_json::Value>(new_content) {
                     if let Some(role) = payload.get("roleName").and_then(|v| v.as_str()) {
                         let server_id = payload.get("serverId").and_then(|v| v.as_str()).unwrap_or("");
-                        // Append role to JSON array if not present
                         let current: Option<String> = conn.query_row(
                             "SELECT roles FROM members WHERE user_id = ?1 AND server_id = ?2",
                             [&mutation.target_id, server_id],
@@ -295,13 +281,11 @@ pub fn db_save_mutation(state: State<AppState>, mutation: MutationRow) -> Result
             ).map_err(|e| e.to_string())?;
         }
         "server_rebaseline" => {
-            // new_content holds the historyStartsAt HLC string
             if let Some(hist_ts) = &mutation.new_content {
                 conn.execute(
                     "UPDATE servers SET history_starts_at = ?1 WHERE id = ?2",
                     [hist_ts, &mutation.target_id],
                 ).map_err(|e| e.to_string())?;
-                // Patch raw_json so historyStartsAt survives a reload
                 let raw: Option<String> = conn.query_row(
                     "SELECT raw_json FROM servers WHERE id = ?1",
                     [&mutation.target_id],
@@ -320,8 +304,161 @@ pub fn db_save_mutation(state: State<AppState>, mutation: MutationRow) -> Result
                 }
             }
         }
+        "member_join" => {
+            if let Some(new_content) = &mutation.new_content {
+                if let Ok(payload) = serde_json::from_str::<serde_json::Value>(new_content) {
+                    let user_id = payload.get("userId").and_then(|v| v.as_str()).unwrap_or("");
+                    let server_id = payload.get("serverId").and_then(|v| v.as_str()).unwrap_or("");
+                    let display_name = payload.get("displayName").and_then(|v| v.as_str()).unwrap_or("");
+                    let public_sign_key = payload.get("publicSignKey").and_then(|v| v.as_str()).unwrap_or("");
+                    let public_dh_key = payload.get("publicDHKey").and_then(|v| v.as_str()).unwrap_or("");
+                    let roles = payload.get("roles").map(|v| v.to_string()).unwrap_or_else(|| "[]".into());
+                    let joined_at = payload.get("joinedAt").and_then(|v| v.as_str()).unwrap_or(&mutation.created_at);
+
+                    conn.execute(
+                        "INSERT OR IGNORE INTO members
+                         (user_id, server_id, display_name, roles, joined_at,
+                          public_sign_key, public_dh_key, online_status)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,'offline')",
+                        rusqlite::params![user_id, server_id, display_name, roles, joined_at,
+                                          public_sign_key, public_dh_key],
+                    ).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        "member_profile_update" => {
+            if let Some(new_content) = &mutation.new_content {
+                if let Ok(patch) = serde_json::from_str::<serde_json::Value>(new_content) {
+                    let server_id = patch.get("serverId").and_then(|v| v.as_str()).unwrap_or("");
+                    let target_id = &mutation.target_id;
+
+                    if let Some(name) = patch.get("displayName").and_then(|v| v.as_str()) {
+                        conn.execute(
+                            "UPDATE members SET display_name = ?1 WHERE user_id = ?2 AND server_id = ?3",
+                            [name, target_id, server_id],
+                        ).map_err(|e| e.to_string())?;
+                    }
+                    if let Some(hash) = patch.get("avatarHash").and_then(|v| v.as_str()) {
+                        conn.execute(
+                            "UPDATE members SET avatar_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
+                            [hash, target_id, server_id],
+                        ).map_err(|e| e.to_string())?;
+                    }
+                    if let Some(bio) = patch.get("bio").and_then(|v| v.as_str()) {
+                        conn.execute(
+                            "UPDATE members SET bio = ?1 WHERE user_id = ?2 AND server_id = ?3",
+                            [bio, target_id, server_id],
+                        ).map_err(|e| e.to_string())?;
+                    }
+                    if let Some(hash) = patch.get("bannerHash").and_then(|v| v.as_str()) {
+                        conn.execute(
+                            "UPDATE members SET banner_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
+                            [hash, target_id, server_id],
+                        ).map_err(|e| e.to_string())?;
+                    }
+                    if let Some(color) = patch.get("bannerColor").and_then(|v| v.as_str()) {
+                        conn.execute(
+                            "UPDATE members SET banner_color = ?1 WHERE user_id = ?2 AND server_id = ?3",
+                            [color, target_id, server_id],
+                        ).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+        }
+        "channel_create" => {
+            if let Some(new_content) = &mutation.new_content {
+                if let Ok(ch) = serde_json::from_str::<serde_json::Value>(new_content) {
+                    let id = ch.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let server_id = ch.get("serverId").and_then(|v| v.as_str()).unwrap_or("");
+                    let name = ch.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let ch_type = ch.get("type").and_then(|v| v.as_str()).unwrap_or("text");
+                    let position = ch.get("position").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let topic = ch.get("topic").and_then(|v| v.as_str());
+
+                    conn.execute(
+                        "INSERT OR IGNORE INTO channels (id, server_id, name, type, position, topic, created_at)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                        rusqlite::params![id, server_id, name, ch_type, position, topic, mutation.created_at],
+                    ).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        "channel_update" => {
+            if let Some(new_content) = &mutation.new_content {
+                if let Ok(patch) = serde_json::from_str::<serde_json::Value>(new_content) {
+                    if let Some(name) = patch.get("name").and_then(|v| v.as_str()) {
+                        conn.execute(
+                            "UPDATE channels SET name = ?1 WHERE id = ?2",
+                            [name, &mutation.target_id],
+                        ).map_err(|e| e.to_string())?;
+                    }
+                    if let Some(topic) = patch.get("topic").and_then(|v| v.as_str()) {
+                        conn.execute(
+                            "UPDATE channels SET topic = ?1 WHERE id = ?2",
+                            [topic, &mutation.target_id],
+                        ).map_err(|e| e.to_string())?;
+                    }
+                    if let Some(position) = patch.get("position").and_then(|v| v.as_i64()) {
+                        conn.execute(
+                            "UPDATE channels SET position = ?1 WHERE id = ?2",
+                            rusqlite::params![position, mutation.target_id],
+                        ).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+        }
+        "channel_delete" => {
+            conn.execute(
+                "DELETE FROM channels WHERE id = ?1",
+                [&mutation.target_id],
+            ).map_err(|e| e.to_string())?;
+        }
+        "emoji_add" => {
+            if let Some(new_content) = &mutation.new_content {
+                if let Ok(emoji) = serde_json::from_str::<serde_json::Value>(new_content) {
+                    let id = emoji.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let server_id = emoji.get("serverId").and_then(|v| v.as_str()).unwrap_or("");
+                    let name = emoji.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let file_path = emoji.get("filePath").and_then(|v| v.as_str()).unwrap_or("");
+                    let uploaded_by = emoji.get("uploadedBy").and_then(|v| v.as_str()).unwrap_or("");
+
+                    conn.execute(
+                        "INSERT OR IGNORE INTO custom_emoji (id, server_id, name, file_path, uploaded_by, created_at)
+                         VALUES (?1,?2,?3,?4,?5,?6)",
+                        rusqlite::params![id, server_id, name, file_path, uploaded_by, mutation.created_at],
+                    ).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        "emoji_remove" => {
+            conn.execute(
+                "DELETE FROM custom_emoji WHERE id = ?1",
+                [&mutation.target_id],
+            ).map_err(|e| e.to_string())?;
+        }
         _ => {}
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn db_save_mutation(state: State<AppState>, mutation: MutationRow) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO mutations
+         (id, type, target_id, channel_id, author_id, new_content, emoji_id, logical_ts, created_at, verified)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        rusqlite::params![
+            mutation.id, mutation.mutation_type, mutation.target_id,
+            mutation.channel_id, mutation.author_id, mutation.new_content,
+            mutation.emoji_id, mutation.logical_ts, mutation.created_at,
+            mutation.verified as i64
+        ],
+    ).map_err(|e| e.to_string())?;
+
+    // Apply side effects
+    apply_mutation_side_effects(&conn, &mutation)?;
 
     Ok(())
 }
@@ -1775,6 +1912,141 @@ mod tests {
         let scoped = search_messages_in(&conn, "srv-1", "Unique phrase", Some("ch-a"));
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].id, "m-gen");
+    }
+
+    // ── apply_mutation_side_effects: new mutation types ───────────────────────
+
+    use super::apply_mutation_side_effects;
+
+    #[test]
+    fn test_member_join_side_effect() {
+        let conn = test_conn();
+        let sid = "srv-join";
+        seed_server(&conn, sid);
+        let mutation = MutationRow {
+            id: "m1".into(),
+            mutation_type: "member_join".into(),
+            target_id: "user42".into(),
+            channel_id: "__server__".into(),
+            author_id: "user42".into(),
+            new_content: Some(format!(
+                r#"{{"userId":"user42","serverId":"{}","displayName":"Alice","publicSignKey":"pk1","publicDHKey":"dk1","roles":["member"],"joinedAt":"2024-01-01T00:00:00Z"}}"#,
+                sid
+            )),
+            emoji_id: None,
+            logical_ts: "1000-000000".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+            verified: true,
+        };
+        apply_mutation_side_effects(&conn, &mutation).unwrap();
+
+        let display_name: String = conn.query_row(
+            "SELECT display_name FROM members WHERE user_id = 'user42' AND server_id = ?1",
+            [sid], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(display_name, "Alice");
+    }
+
+    #[test]
+    fn test_member_profile_update_side_effect() {
+        let conn = test_conn();
+        let sid = "srv-prof";
+        seed_server(&conn, sid);
+        // Pre-insert a member
+        upsert_member(&conn, &MemberRow {
+            user_id: "u1".into(),
+            server_id: sid.into(),
+            display_name: "Old".into(),
+            roles: Some("[]".into()),
+            joined_at: "2024-01-01T00:00:00Z".into(),
+            public_sign_key: "pk".into(),
+            public_dh_key: "dk".into(),
+            online_status: "offline".into(),
+            avatar_data_url: None,
+            bio: None,
+            banner_color: None,
+            banner_data_url: None,
+            avatar_hash: None,
+            banner_hash: None,
+        });
+
+        let mutation = MutationRow {
+            id: "m2".into(),
+            mutation_type: "member_profile_update".into(),
+            target_id: "u1".into(),
+            channel_id: "__server__".into(),
+            author_id: "u1".into(),
+            new_content: Some(format!(
+                r#"{{"serverId":"{}","displayName":"New","avatarHash":"abc123"}}"#,
+                sid
+            )),
+            emoji_id: None,
+            logical_ts: "2000-000000".into(),
+            created_at: "2024-06-01T00:00:00Z".into(),
+            verified: true,
+        };
+        apply_mutation_side_effects(&conn, &mutation).unwrap();
+
+        let (name, hash): (String, Option<String>) = conn.query_row(
+            "SELECT display_name, avatar_hash FROM members WHERE user_id = 'u1' AND server_id = ?1",
+            [sid], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(name, "New");
+        assert_eq!(hash, Some("abc123".into()));
+    }
+
+    #[test]
+    fn test_channel_create_side_effect() {
+        let conn = test_conn();
+        let sid = "srv-chcr";
+        seed_server(&conn, sid);
+        let mutation = MutationRow {
+            id: "m3".into(),
+            mutation_type: "channel_create".into(),
+            target_id: "ch1".into(),
+            channel_id: "__server__".into(),
+            author_id: "u1".into(),
+            new_content: Some(format!(
+                r#"{{"id":"ch1","serverId":"{}","name":"general","type":"text","position":0}}"#,
+                sid
+            )),
+            emoji_id: None,
+            logical_ts: "1000-000000".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+            verified: true,
+        };
+        apply_mutation_side_effects(&conn, &mutation).unwrap();
+
+        let name: String = conn.query_row(
+            "SELECT name FROM channels WHERE id = 'ch1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(name, "general");
+    }
+
+    #[test]
+    fn test_channel_delete_side_effect() {
+        let conn = test_conn();
+        let sid = "srv-chdel";
+        let cid = "ch-del";
+        seed_server_and_channel(&conn, sid, cid);
+        let mutation = MutationRow {
+            id: "m4".into(),
+            mutation_type: "channel_delete".into(),
+            target_id: cid.into(),
+            channel_id: "__server__".into(),
+            author_id: "u1".into(),
+            new_content: None,
+            emoji_id: None,
+            logical_ts: "3000-000000".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+            verified: true,
+        };
+        apply_mutation_side_effects(&conn, &mutation).unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM channels WHERE id = ?1", [cid], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 0);
     }
 }
 
