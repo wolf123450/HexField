@@ -42,7 +42,7 @@
           <div v-for="m in otherMembers" :key="m.userId" class="checkbox-row member-row">
             <label>
               <input v-model="allowedUsers" type="checkbox" :value="m.userId" />
-              <AvatarImage :src="m.avatarDataUrl ?? null" :name="m.displayName" :size="20" class="member-avatar" />
+              <AvatarImage :hash="m.avatarHash ?? null" :src="m.avatarDataUrl ?? null" :name="m.displayName" :size="20" class="member-avatar" />
               {{ m.displayName }}
             </label>
           </div>
@@ -55,7 +55,7 @@
           <div v-for="m in otherMembers" :key="m.userId" class="checkbox-row member-row">
             <label>
               <input v-model="deniedUsers" type="checkbox" :value="m.userId" />
-              <AvatarImage :src="m.avatarDataUrl ?? null" :name="m.displayName" :size="20" class="member-avatar" />
+              <AvatarImage :hash="m.avatarHash ?? null" :src="m.avatarDataUrl ?? null" :name="m.displayName" :size="20" class="member-avatar" />
               {{ m.displayName }}
             </label>
           </div>

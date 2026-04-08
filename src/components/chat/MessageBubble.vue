@@ -41,6 +41,7 @@
 
     <template v-if="showHeader">
       <AvatarImage
+        :hash="authorAvatarHash"
         :src="authorAvatarSrc"
         :name="authorName"
         :size="36"
@@ -169,6 +170,10 @@ const author = computed(() => {
 const authorAvatarSrc = computed(() => {
   if (props.message.authorId === identityStore.userId) return identityStore.avatarDataUrl ?? null
   return author.value?.avatarDataUrl ?? null
+})
+const authorAvatarHash = computed(() => {
+  if (props.message.authorId === identityStore.userId) return identityStore.avatarHash ?? null
+  return author.value?.avatarHash ?? null
 })
 
 const authorName = computed(() => {

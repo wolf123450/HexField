@@ -15,7 +15,7 @@
 
           <div class="avatar-row">
             <div class="avatar-wrap" :title="isAdmin ? 'Click to change server icon' : undefined" :class="{ clickable: isAdmin }" @click="isAdmin ? iconInput?.click() : undefined">
-              <AvatarImage :src="server?.avatarDataUrl ?? null" :name="server?.name ?? ''" :size="80" />
+              <AvatarImage :hash="server?.avatarHash ?? null" :src="server?.avatarDataUrl ?? null" :name="server?.name ?? ''" :size="80" />
               <div v-if="isAdmin" class="avatar-overlay">
                 <AppIcon :path="mdiCamera" :size="20" />
               </div>
