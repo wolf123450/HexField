@@ -74,14 +74,16 @@ describe('syncService.startSync', () => {
 
     await startSync('peer-bob')
 
-    // 2 channels × 2 tables + 1 server-level mutations pass = 5 sessions
+    // 1 server-level mutations + 2 channels × 2 tables = 5 sessions
     const negInits = sendFn.mock.calls.filter((c) => c[1]?.type === 'sync_neg_init')
     expect(negInits).toHaveLength(5)
     expect(negInits[0][0]).toBe('peer-bob')
-    expect(negInits[0][1]).toMatchObject({ type: 'sync_neg_init', channelId: 'chan-1', table: 'messages' })
-    expect(negInits[1][1]).toMatchObject({ type: 'sync_neg_init', channelId: 'chan-1', table: 'mutations' })
-    expect(negInits[2][1]).toMatchObject({ type: 'sync_neg_init', channelId: 'chan-2', table: 'messages' })
-    expect(negInits[4][1]).toMatchObject({ type: 'sync_neg_init', channelId: '__server__', table: 'mutations' })
+    // Server-level mutations come FIRST
+    expect(negInits[0][1]).toMatchObject({ type: 'sync_neg_init', channelId: '__server__', table: 'mutations' })
+    expect(negInits[1][1]).toMatchObject({ type: 'sync_neg_init', channelId: 'chan-1', table: 'messages' })
+    expect(negInits[2][1]).toMatchObject({ type: 'sync_neg_init', channelId: 'chan-1', table: 'mutations' })
+    expect(negInits[3][1]).toMatchObject({ type: 'sync_neg_init', channelId: 'chan-2', table: 'messages' })
+    expect(negInits[4][1]).toMatchObject({ type: 'sync_neg_init', channelId: 'chan-2', table: 'mutations' })
   })
 
   it('does not throw when sync_list_channels returns empty list', async () => {
@@ -173,8 +175,10 @@ describe('syncService.handleSyncMessage — sync_neg_reply (initiator)', () => {
 
     // Trigger startSync so that a pending session is registered
     await startSync('peer-bob')
-    // Capture the sessionId from the first sync_neg_init
-    const initCall = sendFn.mock.calls.find((c) => c[1]?.type === 'sync_neg_init')
+    // Capture the sessionId for the chan-1/messages init (not __server__/mutations which comes first)
+    const initCall = sendFn.mock.calls.find(
+      (c) => c[1]?.type === 'sync_neg_init' && c[1]?.channelId === 'chan-1' && c[1]?.table === 'messages',
+    )
     expect(initCall).toBeDefined()
     const sessionId = initCall![1].sessionId as string
 
