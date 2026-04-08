@@ -8,8 +8,18 @@
 //!   5. add_ice_candidate()    — both sides; called as signal_ice arrives
 //!   6. send()                 — send arbitrary UTF-8 over data channel
 //!   7. close_peer() / destroy_all()
+//!
+//! ICE buffering
+//! ─────────────
+//! ICE trickling races are handled at the manager level with an `ice_queue`
+//! HashMap.  Candidates for a peer are buffered there whenever:
+//!   a) the peer entry doesn't exist yet (offer not yet processed), OR
+//!   b) `remote_desc_ready` is false (set_remote_description still in flight).
+//! After set_remote_description completes in both handle_offer and handle_answer,
+//! the queue is drained and the candidates are applied to the actual PeerConnection.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
@@ -74,6 +84,8 @@ struct PeerEntry {
     pc: Arc<RTCPeerConnection>,
     /// The negotiated data channel; None until `on_open` fires.
     dc: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    /// Becomes true once set_remote_description has completed; guards ICE application.
+    remote_desc_ready: Arc<AtomicBool>,
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────────
@@ -81,6 +93,10 @@ struct PeerEntry {
 pub struct WebRTCManager {
     local_user_id: Arc<std::sync::Mutex<String>>,
     peers: Arc<Mutex<HashMap<String, PeerEntry>>>,
+    /// Manager-level ICE candidate queue.  Candidates are stored here when they
+    /// arrive before the peer entry exists or before set_remote_description
+    /// completes.  Drained immediately after set_remote_description succeeds.
+    ice_queue: Arc<Mutex<HashMap<String, Vec<RTCIceCandidateInit>>>>,
 }
 
 impl WebRTCManager {
@@ -88,6 +104,7 @@ impl WebRTCManager {
         WebRTCManager {
             local_user_id: Arc::new(std::sync::Mutex::new(String::new())),
             peers: Arc::new(Mutex::new(HashMap::new())),
+            ice_queue: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -229,10 +246,27 @@ impl WebRTCManager {
 
     // ── Public API ──────────────────────────────────────────────────────────
 
+    // ── Internal: drain ICE queue into a peer connection ──────────────────────
+
+    async fn drain_ice_queue(&self, peer_id: &str, pc: &Arc<RTCPeerConnection>) {
+        let queued = self
+            .ice_queue
+            .lock()
+            .await
+            .remove(peer_id)
+            .unwrap_or_default();
+        for candidate in queued {
+            if let Err(e) = pc.add_ice_candidate(candidate).await {
+                log::warn!("[webrtc] ICE drain error for {peer_id}: {e}");
+            }
+        }
+    }
+
     /// Caller side: create offer and emit `webrtc_offer` event.
     pub async fn create_offer(&self, peer_id: &str, app: &AppHandle) -> Result<(), String> {
         let pc = Self::build_pc().await?;
         let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
+        let remote_desc_ready = Arc::new(AtomicBool::new(false));
         Self::wire_callbacks(pc.clone(), peer_id.to_string(), dc_slot.clone(), app.clone());
 
         // Caller creates the data channel; callee receives it via on_data_channel
@@ -247,11 +281,13 @@ impl WebRTCManager {
             .await
             .map_err(|e| e.to_string())?;
 
+        // remote_desc_ready stays false until handle_answer sets the remote description.
         self.peers.lock().await.insert(
             peer_id.to_string(),
             PeerEntry {
                 pc,
                 dc: dc_slot,
+                remote_desc_ready,
             },
         );
 
@@ -274,25 +310,34 @@ impl WebRTCManager {
     ) -> Result<(), String> {
         let pc = Self::build_pc().await?;
         let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
+        let remote_desc_ready = Arc::new(AtomicBool::new(false));
         Self::wire_callbacks(pc.clone(), from.to_string(), dc_slot.clone(), app.clone());
+
+        // Insert the peer entry early so add_ice_candidate buffers rather than
+        // errors with "no peer entry".  remote_desc_ready stays false until
+        // set_remote_description completes, so candidates go to ice_queue.
+        self.peers.lock().await.insert(
+            from.to_string(),
+            PeerEntry {
+                pc: pc.clone(),
+                dc: dc_slot,
+                remote_desc_ready: remote_desc_ready.clone(),
+            },
+        );
 
         let offer = RTCSessionDescription::offer(sdp).map_err(|e| e.to_string())?;
         pc.set_remote_description(offer)
             .await
             .map_err(|e| e.to_string())?;
 
+        // Remote description is set — flip the flag and drain any buffered candidates.
+        remote_desc_ready.store(true, Ordering::Release);
+        self.drain_ice_queue(from, &pc).await;
+
         let answer = pc.create_answer(None).await.map_err(|e| e.to_string())?;
         pc.set_local_description(answer.clone())
             .await
             .map_err(|e| e.to_string())?;
-
-        self.peers.lock().await.insert(
-            from.to_string(),
-            PeerEntry {
-                pc,
-                dc: dc_slot,
-            },
-        );
 
         app.emit(
             "webrtc_answer",
@@ -306,33 +351,55 @@ impl WebRTCManager {
 
     /// Caller side: receive answer from callee.
     pub async fn handle_answer(&self, from: &str, sdp: String) -> Result<(), String> {
-        let peers = self.peers.lock().await;
-        let entry = peers
-            .get(from)
-            .ok_or_else(|| format!("no peer entry for {from}"))?;
+        let (pc, remote_desc_ready) = {
+            let peers = self.peers.lock().await;
+            let entry = peers
+                .get(from)
+                .ok_or_else(|| format!("no peer entry for {from}"))?;
+            (entry.pc.clone(), entry.remote_desc_ready.clone())
+        };
         let answer = RTCSessionDescription::answer(sdp).map_err(|e| e.to_string())?;
-        entry
-            .pc
-            .set_remote_description(answer)
+        pc.set_remote_description(answer)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+
+        // Remote description is set — flip the flag and drain any buffered candidates.
+        remote_desc_ready.store(true, Ordering::Release);
+        self.drain_ice_queue(from, &pc).await;
+        Ok(())
     }
 
     /// Both sides: add a remote ICE candidate.
+    /// If the peer entry doesn't exist yet, or set_remote_description hasn't
+    /// completed, the candidate is buffered in ice_queue and applied once ready.
     pub async fn add_ice_candidate(
         &self,
         from: &str,
         candidate: RTCIceCandidateInit,
     ) -> Result<(), String> {
-        let peers = self.peers.lock().await;
-        let entry = peers
-            .get(from)
-            .ok_or_else(|| format!("no peer entry for {from}"))?;
-        entry
-            .pc
-            .add_ice_candidate(candidate)
-            .await
-            .map_err(|e| e.to_string())
+        // Snapshot the pc if the entry exists AND remote desc is ready.
+        let maybe_pc = {
+            let peers = self.peers.lock().await;
+            peers
+                .get(from)
+                .filter(|e| e.remote_desc_ready.load(Ordering::Acquire))
+                .map(|e| e.pc.clone())
+        };
+
+        if let Some(pc) = maybe_pc {
+            pc.add_ice_candidate(candidate)
+                .await
+                .map_err(|e| e.to_string())
+        } else {
+            // Buffer — either no peer entry yet, or remote desc still in flight.
+            self.ice_queue
+                .lock()
+                .await
+                .entry(from.to_string())
+                .or_default()
+                .push(candidate);
+            Ok(())
+        }
     }
 
     /// Send a UTF-8 string to a connected peer's data channel.
@@ -356,6 +423,7 @@ impl WebRTCManager {
     /// Close a single peer connection and remove it from the map.
     pub async fn close_peer(&self, peer_id: &str) -> Result<(), String> {
         let entry = self.peers.lock().await.remove(peer_id);
+        self.ice_queue.lock().await.remove(peer_id);
         if let Some(e) = entry {
             e.pc.close().await.map_err(|e| e.to_string())?;
         }
@@ -364,6 +432,7 @@ impl WebRTCManager {
 
     /// Close all peer connections.
     pub async fn destroy_all(&self) -> Result<(), String> {
+        self.ice_queue.lock().await.clear();
         let mut peers = self.peers.lock().await;
         let mut errors: Vec<String> = vec![];
         for (_, entry) in peers.drain() {

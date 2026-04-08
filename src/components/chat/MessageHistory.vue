@@ -141,7 +141,17 @@ watch(() => allMessages.value.length, async () => {
 
 function scrollToBottom() {
   const count = allMessages.value.length
-  if (count > 0) virtualizer.value.scrollToIndex(count - 1, { align: 'end' })
+  if (count === 0) return
+  virtualizer.value.scrollToIndex(count - 1, { align: 'end' })
+  // Belt-and-suspenders: after the virtualizer updates the DOM, also set
+  // scrollTop directly.  scrollToIndex uses estimated heights, so items that
+  // measure taller than the 60px estimate push the true bottom further down
+  // than the virtualizer predicted — leaving us "up a bit".  The nextTick DOM
+  // scroll corrects that after measurements are applied.
+  nextTick(() => {
+    const el = scrollContainer.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
 }
 
 function scrollToMessageId(id: string) {

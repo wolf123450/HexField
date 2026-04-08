@@ -260,13 +260,13 @@ describe('chat wire message round-trip', () => {
       envelopes: [envelopeForBob, envelopeForSelf],
     }
 
-    // Validate structure
+    // Validate structure using actual ChatWireMessage field names
     expect(isValidChatMessage({
-      id: wireMsg.messageId,
+      messageId: wireMsg.messageId,
       channelId: wireMsg.channelId,
-      authorId: wireMsg.authorId,
-      ciphertext: envelopeForBob.ciphertext,
-      nonce: envelopeForBob.nonce,
+      serverId:  wireMsg.serverId,
+      authorId:  wireMsg.authorId,
+      envelopes: wireMsg.envelopes,
     })).toBe(true)
 
     // Bob finds his envelope
@@ -353,30 +353,24 @@ describe('server join request payload', () => {
 
 describe('member announce and gossip', () => {
   it('member_announce payload passes validator', () => {
+    // Wire format: { type, members: [...] }
     const announce = {
       type: 'member_announce',
-      userId: 'bob-uuid',
-      serverId: 'server-uuid',
-      displayName: 'Bob',
-      publicSignKey: bobSignPub,
-      publicDHKey: bobDHPub,
-      roles: ['member'],
+      members: [{
+        userId: 'bob-uuid',
+        serverId: 'server-uuid',
+        displayName: 'Bob',
+        publicSignKey: bobSignPub,
+        publicDHKey: bobDHPub,
+        roles: ['member'],
+      }],
     }
 
     expect(isValidMemberAnnounce(announce)).toBe(true)
   })
 
-  it('member_announce with empty publicSignKey fails validation', () => {
-    const announce = {
-      type: 'member_announce',
-      userId: 'bob-uuid',
-      serverId: 'server-uuid',
-      displayName: 'Bob',
-      publicSignKey: '',
-      publicDHKey: bobDHPub,
-    }
-
-    expect(isValidMemberAnnounce(announce)).toBe(false)
+  it('member_announce with empty members array fails validation', () => {
+    expect(isValidMemberAnnounce({ type: 'member_announce', members: [] })).toBe(false)
   })
 
   it('presence_update payload passes validator', () => {
@@ -393,9 +387,12 @@ describe('member announce and gossip', () => {
   })
 
   it('profile_update payload passes validator', () => {
-    expect(isValidProfileUpdate({ displayName: 'NewName' })).toBe(true)
-    expect(isValidProfileUpdate({ avatarDataUrl: 'data:image/png;base64,...' })).toBe(true)
-    expect(isValidProfileUpdate({})).toBe(false)
+    // Wire format: { type, payload: { displayName?, avatarDataUrl?, ... } }
+    expect(isValidProfileUpdate({ payload: { displayName: 'NewName' } })).toBe(true)
+    expect(isValidProfileUpdate({ payload: { avatarDataUrl: 'data:image/png;base64,...' } })).toBe(true)
+    expect(isValidProfileUpdate({ payload: {} })).toBe(true) // empty payload object is still valid
+    expect(isValidProfileUpdate({})).toBe(false)             // missing payload entirely
+    expect(isValidProfileUpdate({ payload: null })).toBe(false)
   })
 })
 
