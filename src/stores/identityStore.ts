@@ -122,6 +122,17 @@ export const useIdentityStore = defineStore('identity', () => {
     } catch (e) {
       console.warn('[identity] data URL migration failed:', e)
     }
+
+    // One-time mutation backfill for existing data
+    try {
+      const { backfillMutations } = await import('@/utils/mutationBackfill')
+      const backfilled = await backfillMutations()
+      if (backfilled > 0) {
+        console.log(`[identity] backfilled ${backfilled} mutations for existing data`)
+      }
+    } catch (e) {
+      console.warn('[identity] mutation backfill failed:', e)
+    }
   }
 
   async function updateDisplayName(name: string) {
