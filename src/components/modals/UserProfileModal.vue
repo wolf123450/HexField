@@ -6,6 +6,7 @@
         <div class="profile-banner" :style="bannerStyle">
           <div class="profile-avatar-wrap">
             <AvatarImage
+              :hash="avatarHashSrc"
               :src="avatarSrc"
               :name="displayName"
               :size="72"
@@ -147,6 +148,11 @@ const avatarSrc = computed(() =>
   isSelf.value
     ? identityStore.avatarDataUrl
     : (member.value?.avatarDataUrl ?? null)
+)
+const avatarHashSrc = computed(() =>
+  isSelf.value
+    ? (identityStore.avatarHash ?? null)
+    : (member.value?.avatarHash ?? null)
 )
 
 const member = computed(() => {
