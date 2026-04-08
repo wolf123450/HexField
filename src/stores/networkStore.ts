@@ -768,10 +768,15 @@ export const useNetworkStore = defineStore('network', () => {
     const ownMemberships = Object.values(serversStore.members)
       .flatMap(serverMembers => Object.values(serverMembers))
       .filter(m => m.userId === uid)
-      // avatarDataUrl is intentionally excluded here — member_announce packets
-      // already push keys + roles.  Avatar arrives via the separate profile_update
+      // avatarDataUrl and avatarHash are intentionally excluded — member_announce packets
+      // push keys + roles only.  Avatar arrives via the separate profile_update
       // gossip (gossipOwnProfile / handleProfileRequest).
-      .map(({ ...m }) => { delete (m as Record<string, unknown>).avatarDataUrl; return m })
+      .map(({ ...m }) => {
+        const rec = m as Record<string, unknown>
+        delete rec.avatarDataUrl
+        delete rec.avatarHash
+        return m
+      })
 
     if (ownMemberships.length === 0) return
     webrtcService.sendToPeer(peerId, { type: 'member_announce', members: ownMemberships })
@@ -823,11 +828,20 @@ export const useNetworkStore = defineStore('network', () => {
     for (const sid of serversStore.joinedServerIds) {
       serversStore.updateMemberProfile(sid, fromUserId, {
         displayName:   payload.displayName   as string | undefined,
-        avatarDataUrl: payload.avatarDataUrl as string | null | undefined,
+        avatarHash:    payload.avatarHash    as string | null | undefined,
         bio:           payload.bio           as string | null | undefined,
         bannerColor:   payload.bannerColor   as string | null | undefined,
-        bannerDataUrl: payload.bannerDataUrl as string | null | undefined,
+        bannerHash:    payload.bannerHash    as string | null | undefined,
       })
+    }
+
+    // Fetch images we don't have locally
+    const hashesToFetch = [payload.avatarHash, payload.bannerHash].filter(Boolean) as string[]
+    for (const hash of hashesToFetch) {
+      const has = await invoke<boolean>('has_attachment', { contentHash: hash }).catch(() => false)
+      if (!has) {
+        broadcast({ type: 'attachment_want', contentHash: hash, messageId: '' })
+      }
     }
   }
 
@@ -838,10 +852,10 @@ export const useNetworkStore = defineStore('network', () => {
       type:    'profile_update',
       payload: {
         displayName:   identityStore.displayName,
-        avatarDataUrl: identityStore.avatarDataUrl,
+        avatarHash:    identityStore.avatarHash,
         bio:           identityStore.bio,
         bannerColor:   identityStore.bannerColor,
-        bannerDataUrl: identityStore.bannerDataUrl,
+        bannerHash:    identityStore.bannerHash,
       },
     })
   }
@@ -867,10 +881,10 @@ export const useNetworkStore = defineStore('network', () => {
   /** Send a profile_update to all connected peers. */
   async function broadcastProfile(payload: {
     displayName?:   string
-    avatarDataUrl?: string | null
+    avatarHash?:    string | null
     bio?:           string | null
     bannerColor?:   string | null
-    bannerDataUrl?: string | null
+    bannerHash?:    string | null
   }) {
     broadcast({ type: 'profile_update', payload })
   }
@@ -901,19 +915,25 @@ export const useNetworkStore = defineStore('network', () => {
   }
 
   async function handleServerAvatarUpdate(msg: Record<string, unknown>) {
-    const serverId  = msg.serverId  as string | undefined
-    const avatarDataUrl = msg.avatarDataUrl as string | null | undefined
-    if (!serverId) return
+    const serverId   = msg.serverId   as string | undefined
+    const avatarHash = msg.avatarHash as string | undefined
+    if (!serverId || !avatarHash) return
     const { useServersStore } = await import('./serversStore')
     const serversStore = useServersStore()
     if (serversStore.joinedServerIds.includes(serverId)) {
-      serversStore.updateServerAvatar(serverId, avatarDataUrl ?? null)
+      await serversStore.updateServerAvatarHash(serverId, avatarHash)
+
+      // Fetch the image if we don't have it locally
+      const has = await invoke<boolean>('has_attachment', { contentHash: avatarHash }).catch(() => false)
+      if (!has) {
+        broadcast({ type: 'attachment_want', contentHash: avatarHash, messageId: '' })
+      }
     }
   }
 
   /** Broadcast a server avatar change to all peers. */
-  async function broadcastServerAvatar(serverId: string, avatarDataUrl: string | null) {
-    broadcast({ type: 'server_avatar_update', serverId, avatarDataUrl })
+  async function broadcastServerAvatar(serverId: string, avatarHash: string | null) {
+    broadcast({ type: 'server_avatar_update', serverId, avatarHash })
   }
 
   // ── Attachment gossip (Phase 5b) ───────────────────────────────────────────
@@ -994,9 +1014,9 @@ export const useNetworkStore = defineStore('network', () => {
     const { useServersStore } = await import('./serversStore')
     const serversStore = useServersStore()
     for (const sid of serversStore.joinedServerIds) {
-      const avatarDataUrl = serversStore.servers[sid]?.avatarDataUrl
-      if (avatarDataUrl) {
-        webrtcService.sendToPeer(peerId, { type: 'server_avatar_update', serverId: sid, avatarDataUrl })
+      const avatarHash = serversStore.servers[sid]?.avatarHash
+      if (avatarHash) {
+        webrtcService.sendToPeer(peerId, { type: 'server_avatar_update', serverId: sid, avatarHash })
       }
     }
   }
@@ -1009,10 +1029,10 @@ export const useNetworkStore = defineStore('network', () => {
       type:    'profile_update',
       payload: {
         displayName:   identityStore.displayName,
-        avatarDataUrl: identityStore.avatarDataUrl,
+        avatarHash:    identityStore.avatarHash,
         bio:           identityStore.bio,
         bannerColor:   identityStore.bannerColor,
-        bannerDataUrl: identityStore.bannerDataUrl,
+        bannerHash:    identityStore.bannerHash,
       },
     })
   }
