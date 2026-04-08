@@ -150,9 +150,11 @@ export const useServersStore = defineStore('servers', () => {
         onlineStatus,
         // Prefer DB-persisted values; fall back to any in-memory gossip not yet flushed.
         avatarDataUrl: r.avatar_data_url ?? existing[r.user_id]?.avatarDataUrl,
+        avatarHash:    r.avatar_hash   ?? existing[r.user_id]?.avatarHash,
         bio:           r.bio           ?? existing[r.user_id]?.bio,
         bannerColor:   r.banner_color  ?? existing[r.user_id]?.bannerColor,
         bannerDataUrl: r.banner_data_url ?? existing[r.user_id]?.bannerDataUrl,
+        bannerHash:    r.banner_hash   ?? existing[r.user_id]?.bannerHash,
       }
     }
     // Hydrate own member record with current identity data (source of truth for name/avatar/bio/banner).

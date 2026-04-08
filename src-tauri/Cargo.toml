@@ -1,6 +1,6 @@
 [package]
 name = "hexfield"
-version = "0.2.4"
+version = "0.2.5"
 description = "HexField — privacy-first P2P chat"
 authors = []
 edition = "2021"

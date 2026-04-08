@@ -288,8 +288,7 @@ async function _onPush(wire: SyncPush): Promise<void> {
           if (mutation.type === 'member_profile_update' && mutation.newContent) {
             const patch = JSON.parse(mutation.newContent)
             if (patch.serverId) {
-              const m = serversStore.members[patch.serverId]?.[mutation.targetId]
-              if (m) Object.assign(m, patch)
+              serversStore.updateMemberProfile(patch.serverId, mutation.targetId, patch)
             }
           }
 
