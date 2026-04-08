@@ -151,6 +151,8 @@ pub fn run() {
             // Attachments (Phase 5b)
             get_attachment_path,
             has_attachment,
+            save_image,
+            load_image_data_url,
             get_chunk_count,
             save_attachment,
             save_attachment_chunk,
