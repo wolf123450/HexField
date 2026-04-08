@@ -20,6 +20,7 @@ export interface Server {
   memberCount:     number
   createdAt:       string        // ISO 8601
   inviteCode?:     string
+  avatarHash?:     string
   customEmoji:     CustomEmoji[]
   historyStartsAt?: string       // set when server is re-baselined (Phase 6)
   accessMode?:     'open' | 'closed'   // default 'open'
@@ -36,9 +37,11 @@ export interface ServerMember {
   publicDHKey:     string
   onlineStatus:    OnlineStatus
   avatarDataUrl?:  string | null
+  avatarHash?:     string
   bio?:            string | null
   bannerColor?:    string | null
   bannerDataUrl?:  string | null
+  bannerHash?:     string
 }
 
 export type OnlineStatus = 'online' | 'idle' | 'dnd' | 'offline'
