@@ -377,7 +377,7 @@ pub fn db_load_mutations(
 pub fn db_load_servers(state: State<AppState>) -> Result<Vec<ServerRow>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, description, icon_url, owner_id, invite_code, created_at, raw_json FROM servers"
+        "SELECT id, name, description, icon_url, owner_id, invite_code, created_at, raw_json, avatar_hash FROM servers"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |row| {
         Ok(ServerRow {
@@ -389,6 +389,7 @@ pub fn db_load_servers(state: State<AppState>) -> Result<Vec<ServerRow>, String>
             invite_code: row.get(5)?,
             created_at:  row.get(6)?,
             raw_json:    row.get(7)?,
+            avatar_hash: row.get(8)?,
         })
     }).map_err(|e| e.to_string())?
     .collect::<Result<Vec<_>, _>>()
@@ -401,11 +402,12 @@ pub fn db_save_server(state: State<AppState>, server: ServerRow) -> Result<(), S
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT OR REPLACE INTO servers
-         (id, name, description, icon_url, owner_id, invite_code, created_at, raw_json)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+         (id, name, description, icon_url, owner_id, invite_code, created_at, raw_json, avatar_hash)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
         rusqlite::params![
             server.id, server.name, server.description, server.icon_url,
-            server.owner_id, server.invite_code, server.created_at, server.raw_json
+            server.owner_id, server.invite_code, server.created_at, server.raw_json,
+            server.avatar_hash
         ],
     ).map_err(|e| e.to_string())?;
     Ok(())
@@ -489,7 +491,7 @@ pub fn db_load_members(state: State<AppState>, server_id: String) -> Result<Vec<
     let mut stmt = conn.prepare(
         "SELECT user_id, server_id, display_name, roles, joined_at,
          public_sign_key, public_dh_key, online_status, avatar_data_url,
-         bio, banner_color, banner_data_url
+         bio, banner_color, banner_data_url, avatar_hash, banner_hash
          FROM members WHERE server_id = ?1"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&server_id], |row| {
@@ -506,6 +508,8 @@ pub fn db_load_members(state: State<AppState>, server_id: String) -> Result<Vec<
             bio:              row.get(9)?,
             banner_color:     row.get(10)?,
             banner_data_url:  row.get(11)?,
+            avatar_hash:      row.get(12)?,
+            banner_hash:      row.get(13)?,
         })
     }).map_err(|e| e.to_string())?
     .collect::<Result<Vec<_>, _>>()
@@ -518,12 +522,13 @@ pub fn db_upsert_member(state: State<AppState>, member: MemberRow) -> Result<(),
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT OR REPLACE INTO members
-         (user_id, server_id, display_name, roles, joined_at, public_sign_key, public_dh_key, online_status, avatar_data_url, bio, banner_color, banner_data_url)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+         (user_id, server_id, display_name, roles, joined_at, public_sign_key, public_dh_key, online_status, avatar_data_url, bio, banner_color, banner_data_url, avatar_hash, banner_hash)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         rusqlite::params![
             member.user_id, member.server_id, member.display_name, member.roles,
             member.joined_at, member.public_sign_key, member.public_dh_key, member.online_status,
             member.avatar_data_url, member.bio, member.banner_color, member.banner_data_url,
+            member.avatar_hash, member.banner_hash,
         ],
     ).map_err(|e| e.to_string())?;
     Ok(())
@@ -1263,12 +1268,13 @@ mod tests {
             "INSERT OR REPLACE INTO members
              (user_id, server_id, display_name, roles, joined_at,
               public_sign_key, public_dh_key, online_status, avatar_data_url,
-              bio, banner_color, banner_data_url)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+              bio, banner_color, banner_data_url, avatar_hash, banner_hash)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             rusqlite::params![
                 m.user_id, m.server_id, m.display_name, m.roles,
                 m.joined_at, m.public_sign_key, m.public_dh_key, m.online_status,
                 m.avatar_data_url, m.bio, m.banner_color, m.banner_data_url,
+                m.avatar_hash, m.banner_hash,
             ],
         ).unwrap();
     }
@@ -1277,7 +1283,7 @@ mod tests {
         conn.query_row(
             "SELECT user_id, server_id, display_name, roles, joined_at,
              public_sign_key, public_dh_key, online_status, avatar_data_url,
-             bio, banner_color, banner_data_url
+             bio, banner_color, banner_data_url, avatar_hash, banner_hash
              FROM members WHERE user_id = ?1 AND server_id = ?2",
             [user_id, server_id],
             |row| Ok(MemberRow {
@@ -1293,6 +1299,8 @@ mod tests {
                 bio:             row.get(9)?,
                 banner_color:    row.get(10)?,
                 banner_data_url: row.get(11)?,
+                avatar_hash:     row.get(12)?,
+                banner_hash:     row.get(13)?,
             }),
         ).ok()
     }
@@ -1452,6 +1460,8 @@ mod tests {
             bio:             None,
             banner_color:    None,
             banner_data_url: None,
+            avatar_hash:     None,
+            banner_hash:     None,
         };
         upsert_member(&conn, &member);
 
@@ -1600,6 +1610,8 @@ mod tests {
             bio:             None,
             banner_color:    None,
             banner_data_url: None,
+            avatar_hash:     None,
+            banner_hash:     None,
         };
         upsert_member(&conn, &original);
 
