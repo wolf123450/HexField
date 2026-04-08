@@ -20,10 +20,6 @@ export function isValidChatMessage(msg: Obj): boolean {
   )
 }
 
-export function isValidMemberAnnounce(msg: Obj): boolean {
-  return Array.isArray(msg.members) && msg.members.length > 0
-}
-
 const VALID_STATUSES = new Set(['online', 'idle', 'dnd', 'offline'])
 
 export function isValidPresenceUpdate(msg: Obj): boolean {
@@ -52,8 +48,4 @@ export function isValidProfileUpdate(msg: Obj): boolean {
 
 export function isValidVoiceJoin(msg: Obj): boolean {
   return isString(msg.channelId)
-}
-
-export function isValidEmojiSync(msg: Obj): boolean {
-  return Array.isArray(msg.emojis)
 }

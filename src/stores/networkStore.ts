@@ -14,13 +14,11 @@ import type { NATType } from '@/utils/natDetection'
 import { cryptoService } from '@/services/cryptoService'
 import {
   isValidChatMessage,
-  isValidMemberAnnounce,
   isValidPresenceUpdate,
   isValidMutation,
   isValidTypingStart,
   isValidProfileUpdate,
   isValidVoiceJoin,
-  isValidEmojiSync,
 } from '@/utils/peerValidator'
 
 export type SignalingState = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -174,13 +172,7 @@ export const useNetworkStore = defineStore('network', () => {
         // before startSync sends sync_neg_init, so the remote decrypts our messages
         // in the right order (SCTP preserves send order).
         gossipOwnDevice(userId).catch(e => console.warn('[network] gossipOwnDevice error:', e))
-        gossipOwnMembership(userId).catch(e => console.warn('[network] gossipOwnMembership error:', e))
         gossipOwnPresence(userId).catch(e => console.warn('[network] gossipOwnPresence error:', e))
-        gossipOwnProfile(userId).catch(e => console.warn('[network] gossipOwnProfile error:', e))
-        gossipServerAvatars(userId).catch(e => console.warn('[network] gossipServerAvatars error:', e))
-        // Also explicitly request the peer's full profile (covers avatars larger than the
-        // gossip cap that would otherwise be stripped by gossipOwnProfile on the other side).
-        requestProfile(userId).catch(e => console.warn('[network] requestProfile error:', e))
         // Record heartbeat baseline so the watchdog doesn't immediately time this peer out.
         lastHeartbeatFrom.set(userId, Date.now())
         // Start history reconciliation with newly connected peer
@@ -450,10 +442,6 @@ export const useNetworkStore = defineStore('network', () => {
         if (!isValidMutation(msg)) { console.warn('[network] invalid mutation from', userId); return }
         handleMutationMessage(msg)
         break
-      case 'emoji_sync':
-        if (!isValidEmojiSync(msg)) { console.warn('[network] invalid emoji_sync from', userId); return }
-        handleEmojiSync(msg)
-        break
       case 'emoji_image_request':
         handleEmojiImageRequest(userId, msg)
         break
@@ -468,12 +456,6 @@ export const useNetworkStore = defineStore('network', () => {
         break
       case 'device_attest':
         handleDeviceAttest(msg)
-        break
-      case 'member_announce':
-        if (!isValidMemberAnnounce(msg)) { console.warn('[network] invalid member_announce from', userId); return }
-        handleMemberAnnounce(userId, msg).catch(e =>
-          console.warn('[network] member_announce error:', e)
-        )
         break
       case 'presence_update':
         if (!isValidPresenceUpdate(msg)) { console.warn('[network] invalid presence_update from', userId); return }
@@ -540,11 +522,6 @@ export const useNetworkStore = defineStore('network', () => {
         break
       case 'server_join_denied':
         handleServerJoinDenied(msg)
-        break
-      case 'channel_gossip':
-        handleChannelGossip(msg).catch(e =>
-          console.warn('[network] channel_gossip error:', e)
-        )
         break
       default:
         console.debug('[network] unhandled data message type:', msg.type)
@@ -712,29 +689,6 @@ export const useNetworkStore = defineStore('network', () => {
     }
   }
 
-  async function handleChannelGossip(msg: Record<string, unknown>) {
-    const ch = msg.channel as Record<string, unknown> | undefined
-    if (!ch || typeof ch.id !== 'string') return
-    const { useChannelsStore } = await import('./channelsStore')
-    await useChannelsStore().receiveChannelGossip({
-      id:       ch.id as string,
-      serverId: ch.serverId as string,
-      name:     ch.name as string,
-      type:     ch.type as import('@/types/core').ChannelType,
-      position: ch.position as number,
-      topic:    ch.topic as string | undefined,
-    })
-  }
-
-  async function handleEmojiSync(msg: Record<string, unknown>) {
-    const { useEmojiStore } = await import('./emojiStore')
-    const emojiStore = useEmojiStore()
-    const emoji = msg.emoji as { id: string; name: string; uploadedBy: string; createdAt: string }
-    const serverId = msg.serverId as string
-    if (!emoji || !serverId) return
-    emojiStore.receiveEmojiSync({ id: emoji.id, serverId, name: emoji.name, uploadedBy: emoji.uploadedBy, createdAt: emoji.createdAt })
-  }
-
   async function handleEmojiImageRequest(fromUserId: string, msg: Record<string, unknown>) {
     const emojiId = msg.emojiId as string
     if (!emojiId) return
@@ -810,52 +764,6 @@ export const useNetworkStore = defineStore('network', () => {
         createdAt:     new Date().toISOString(),
       },
     })
-  }
-
-  /**
-   * Gossip our own membership records to a newly connected peer.
-   * This lets them populate their members map so they can decrypt our messages
-   * and display our name/avatar correctly.
-   */
-  async function gossipOwnMembership(peerId: string) {
-    const { useServersStore } = await import('./serversStore')
-    const { useIdentityStore } = await import('./identityStore')
-    const serversStore  = useServersStore()
-    const identityStore = useIdentityStore()
-    if (!identityStore.userId) return
-
-    const uid = identityStore.userId
-    const ownMemberships = Object.values(serversStore.members)
-      .flatMap(serverMembers => Object.values(serverMembers))
-      .filter(m => m.userId === uid)
-      // avatarDataUrl and avatarHash are intentionally excluded — member_announce packets
-      // push keys + roles only.  Avatar arrives via the separate profile_update
-      // gossip (gossipOwnProfile / handleProfileRequest).
-      .map(({ ...m }) => {
-        const rec = m as Record<string, unknown>
-        delete rec.avatarDataUrl
-        delete rec.avatarHash
-        return m
-      })
-
-    if (ownMemberships.length === 0) return
-    webrtcService.sendToPeer(peerId, { type: 'member_announce', members: ownMemberships })
-  }
-
-  async function handleMemberAnnounce(fromUserId: string, msg: Record<string, unknown>) {
-    const memberList = msg.members as Array<{
-      userId: string; serverId: string; displayName: string
-      publicSignKey: string; publicDHKey: string
-      roles: string[]; joinedAt: string; onlineStatus: string
-      avatarDataUrl?: string
-    }>
-    if (!Array.isArray(memberList)) return
-    const { useServersStore } = await import('./serversStore')
-    const serversStore = useServersStore()
-    for (const m of memberList) {
-      if (m.userId !== fromUserId) continue // Only accept sender's own memberships
-      await serversStore.upsertMember(m)
-    }
   }
 
   async function handlePresenceUpdate(fromUserId: string, msg: Record<string, unknown>) {
@@ -1067,34 +975,6 @@ export const useNetworkStore = defineStore('network', () => {
     const hashHex = contentHash.replace('blake3:', '')
     // totalChunks may not be in the message (older clients) — fall back to 0 and let Rust work it out
     await attachmentService.receiveChunk(hashHex, chunkIndex, data, totalChunks ?? 0)
-  }
-
-  /** Send all known server avatars to a newly connected peer so they stay in sync. */
-  async function gossipServerAvatars(peerId: string) {
-    const { useServersStore } = await import('./serversStore')
-    const serversStore = useServersStore()
-    for (const sid of serversStore.joinedServerIds) {
-      const avatarHash = serversStore.servers[sid]?.avatarHash
-      if (avatarHash) {
-        webrtcService.sendToPeer(peerId, { type: 'server_avatar_update', serverId: sid, avatarHash })
-      }
-    }
-  }
-
-  /** Send own full profile to a single newly connected peer. */
-  async function gossipOwnProfile(peerId: string) {
-    const { useIdentityStore } = await import('./identityStore')
-    const identityStore = useIdentityStore()
-    webrtcService.sendToPeer(peerId, {
-      type:    'profile_update',
-      payload: {
-        displayName:   identityStore.displayName,
-        avatarHash:    identityStore.avatarHash,
-        bio:           identityStore.bio,
-        bannerColor:   identityStore.bannerColor,
-        bannerHash:    identityStore.bannerHash,
-      },
-    })
   }
 
   async function handleDeviceLinkRequest(_fromUserId: string, msg: Record<string, unknown>) {
