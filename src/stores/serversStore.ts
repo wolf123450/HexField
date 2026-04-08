@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
 import type { Server, ServerMember, Mutation, ServerManifest, JoinRequest, JoinCapsule, PeerEndpoint } from '@/types/core'
+import { generateHLC } from '@/utils/hlc'
 
 export interface InviteCode {
   code: string
@@ -1186,6 +1187,89 @@ export const useServersStore = defineStore('servers', () => {
     useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
   }
 
+  async function createMemberJoinMutation(member: {
+    userId: string
+    serverId: string
+    displayName: string
+    publicSignKey: string
+    publicDHKey: string
+    roles: string[]
+    joinedAt: string
+  }): Promise<void> {
+    const { useMessagesStore } = await import('./messagesStore')
+    const messagesStore = useMessagesStore()
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'member_join',
+      targetId:   member.userId,
+      channelId:  '__server__',
+      authorId:   member.userId,
+      newContent: JSON.stringify(member),
+      logicalTs:  generateHLC(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    await messagesStore.applyMutation(mutation)
+
+    // Also upsert locally so member appears immediately
+    if (!members.value[member.serverId]) members.value[member.serverId] = {}
+    members.value[member.serverId][member.userId] = {
+      userId: member.userId,
+      serverId: member.serverId,
+      displayName: member.displayName,
+      roles: member.roles,
+      joinedAt: member.joinedAt,
+      publicSignKey: member.publicSignKey,
+      publicDHKey: member.publicDHKey,
+      onlineStatus: 'online',
+    }
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId: member.serverId, mutation: serializeMutation(mutation) })
+  }
+
+  async function broadcastProfileMutation(serverId: string, profile: {
+    displayName?: string
+    avatarHash?: string
+    bio?: string
+    bannerColor?: string
+    bannerHash?: string
+  }): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    const { useMessagesStore } = await import('./messagesStore')
+    const messagesStore = useMessagesStore()
+
+    const mutation: Mutation = {
+      id:         uuidv7(),
+      type:       'member_profile_update',
+      targetId:   identityStore.userId!,
+      channelId:  '__server__',
+      authorId:   identityStore.userId!,
+      newContent: JSON.stringify({ serverId, ...profile }),
+      logicalTs:  generateHLC(),
+      createdAt:  new Date().toISOString(),
+      verified:   true,
+    }
+
+    await messagesStore.applyMutation(mutation)
+
+    // Update local member record
+    const m = members.value[serverId]?.[identityStore.userId!]
+    if (m) {
+      if (profile.displayName) m.displayName = profile.displayName
+      if (profile.avatarHash) m.avatarHash = profile.avatarHash
+      if (profile.bio !== undefined) m.bio = profile.bio
+      if (profile.bannerColor !== undefined) m.bannerColor = profile.bannerColor
+      if (profile.bannerHash) m.bannerHash = profile.bannerHash
+    }
+
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
+  }
+
   return {
     servers,
     members,
@@ -1232,5 +1316,7 @@ export const useServersStore = defineStore('servers', () => {
     importArchive,
     applyRebaseline,
     serializeMutation,
+    createMemberJoinMutation,
+    broadcastProfileMutation,
   }
 })
