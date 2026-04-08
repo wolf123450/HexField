@@ -80,16 +80,15 @@ export function setSendFn(fn: SendFn): void {
 
 export async function startSync(peerId: string): Promise<void> {
   try {
-    const channelIds: string[] = await invoke('sync_list_channels')
+    // Pass 0: Server-level mutations FIRST (members, channels, devices, emoji, server updates)
+    await _startNegSession(peerId, '__server__', 'mutations')
 
-    // Pass 0: messages per channel; Pass 1: mutations per channel
+    // Then per-channel passes
+    const channelIds: string[] = await invoke('sync_list_channels')
     for (const channelId of channelIds) {
       await _startNegSession(peerId, channelId, 'messages')
       await _startNegSession(peerId, channelId, 'mutations')
     }
-
-    // Pass 2: server-level mutations (channel_id = '__server__')
-    await _startNegSession(peerId, '__server__', 'mutations')
   } catch (e) {
     console.warn('[sync] startSync error:', e)
   }
