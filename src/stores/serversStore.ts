@@ -870,6 +870,17 @@ export const useServersStore = defineStore('servers', () => {
           online_status:   'offline',
         },
       })
+
+      // Create member_join mutation for the owner so it syncs via negentropy
+      await createMemberJoinMutation({
+        userId: manifest.owner.userId,
+        serverId: server.id,
+        displayName: manifest.owner.displayName,
+        publicSignKey: manifest.owner.publicSignKey,
+        publicDHKey: manifest.owner.publicDHKey,
+        roles: ['owner', 'admin'],
+        joinedAt: server.createdAt,
+      })
     }
 
     // Persist self as member (unless we are the owner)
@@ -896,6 +907,17 @@ export const useServersStore = defineStore('servers', () => {
           public_dh_key:   selfMember.publicDHKey,
           online_status:   selfMember.onlineStatus,
         },
+      })
+
+      // Create member_join mutation for self so it syncs via negentropy
+      await createMemberJoinMutation({
+        userId: selfMember.userId,
+        serverId: selfMember.serverId,
+        displayName: selfMember.displayName,
+        publicSignKey: selfMember.publicSignKey,
+        publicDHKey: selfMember.publicDHKey,
+        roles: selfMember.roles,
+        joinedAt: selfMember.joinedAt,
       })
     }
 
