@@ -650,6 +650,66 @@ export const useNetworkStore = defineStore('network', () => {
       const { useChannelsStore } = await import('./channelsStore')
       await useChannelsStore().persistAndSetAcl(JSON.parse(mutation.newContent))
     }
+
+    // Channel mutations
+    if (['channel_create', 'channel_update', 'channel_delete'].includes(mutation.type)) {
+      const { useChannelsStore } = await import('./channelsStore')
+      await useChannelsStore().applyChannelMutation(mutation)
+    }
+
+    // Member mutations
+    if (mutation.type === 'member_join' && mutation.newContent) {
+      const { useServersStore } = await import('./serversStore')
+      const serversStore = useServersStore()
+      const payload = JSON.parse(mutation.newContent)
+      if (payload.serverId && payload.userId) {
+        if (!serversStore.members[payload.serverId]) serversStore.members[payload.serverId] = {}
+        serversStore.members[payload.serverId][payload.userId] = {
+          userId: payload.userId,
+          serverId: payload.serverId,
+          displayName: payload.displayName ?? '',
+          roles: payload.roles ?? ['member'],
+          joinedAt: payload.joinedAt ?? mutation.createdAt,
+          publicSignKey: payload.publicSignKey ?? '',
+          publicDHKey: payload.publicDHKey ?? '',
+          onlineStatus: 'offline',
+        }
+      }
+    }
+
+    if (mutation.type === 'member_profile_update' && mutation.newContent) {
+      const { useServersStore } = await import('./serversStore')
+      const serversStore = useServersStore()
+      const patch = JSON.parse(mutation.newContent)
+      if (patch.serverId) {
+        const m = serversStore.members[patch.serverId]?.[mutation.targetId]
+        if (m) {
+          if (patch.displayName) m.displayName = patch.displayName
+          if (patch.avatarHash) m.avatarHash = patch.avatarHash
+          if (patch.bio !== undefined) m.bio = patch.bio
+          if (patch.bannerColor !== undefined) m.bannerColor = patch.bannerColor
+          if (patch.bannerHash) m.bannerHash = patch.bannerHash
+        }
+      }
+      // Trigger image fetch for new hashes
+      const hashesToFetch = [patch.avatarHash, patch.bannerHash].filter(Boolean) as string[]
+      for (const hash of hashesToFetch) {
+        const has = await invoke<boolean>('has_attachment', { contentHash: hash }).catch(() => false)
+        if (!has) {
+          broadcast({ type: 'attachment_want', contentHash: hash, messageId: '' })
+        }
+      }
+    }
+
+    // Emoji mutations
+    if (mutation.type === 'emoji_add' && mutation.newContent) {
+      const { useEmojiStore } = await import('./emojiStore')
+      useEmojiStore().applyEmojiAddMutation(JSON.parse(mutation.newContent))
+    }
+    if (mutation.type === 'emoji_remove') {
+      const { useEmojiStore } = await import('./emojiStore')
+      useEmojiStore().applyEmojiRemoveMutation(mutation.targetId)
+    }
   }
 
   async function handleChannelGossip(msg: Record<string, unknown>) {
