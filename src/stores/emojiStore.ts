@@ -54,11 +54,6 @@ export const useEmojiStore = defineStore('emoji', () => {
     return dataUrl
   }
 
-  function receiveEmojiSync(metadata: CustomEmoji) {
-    if (!custom.value[metadata.serverId]) custom.value[metadata.serverId] = {}
-    custom.value[metadata.serverId][metadata.id] = metadata
-  }
-
   function useEmoji(emojiId: string) {
     recent.value = [emojiId, ...recent.value.filter(id => id !== emojiId)].slice(0, MAX_RECENT)
     localStorage.setItem(RECENT_KEY, JSON.stringify(recent.value))
@@ -200,7 +195,6 @@ export const useEmojiStore = defineStore('emoji', () => {
     usageCounts,
     loadEmoji,
     getEmojiImage,
-    receiveEmojiSync,
     useEmoji,
     uploadCustomEmoji,
     storeEmojiImage,

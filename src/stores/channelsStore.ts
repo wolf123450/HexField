@@ -228,26 +228,6 @@ export const useChannelsStore = defineStore('channels', () => {
     }
   }
 
-  /**
-   * Receive a channel_gossip wire message from a peer: persist + add to in-memory list.
-   */
-  async function receiveChannelGossip(channel: Channel) {
-    const list = channels.value[channel.serverId] ?? []
-    if (list.find(c => c.id === channel.id)) return  // already known
-    channels.value[channel.serverId] = [...list, channel]
-    await invoke('db_save_channel', {
-      channel: {
-        id:         channel.id,
-        server_id:  channel.serverId,
-        name:       channel.name,
-        type:       channel.type,
-        position:   channel.position,
-        topic:      channel.topic ?? null,
-        created_at: new Date().toISOString(),
-      },
-    })
-  }
-
   return {
     channels,
     activeChannelId,
@@ -261,6 +241,5 @@ export const useChannelsStore = defineStore('channels', () => {
     renameChannel,
     setActiveChannel,
     applyChannelMutation,
-    receiveChannelGossip,
   }
 })
