@@ -1,4 +1,5 @@
 ﻿use std::path::PathBuf;
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use tauri::Manager;
 
 pub(crate) const CHUNK_SIZE: usize = 256 * 1024; // 256 KB
@@ -400,6 +401,57 @@ pub fn enforce_storage_limit(
     prune_to_limit(&dir, limit)
 }
 
+//  Image storage helpers 
+
+/// Detect MIME type from magic bytes.
+pub(crate) fn detect_image_mime(data: &[u8]) -> &'static str {
+    if data.len() >= 4 && data[0..4] == [0x89, 0x50, 0x4E, 0x47] {
+        "image/png"
+    } else if data.len() >= 6 && &data[0..6] == b"GIF87a" {
+        "image/gif"
+    } else if data.len() >= 6 && &data[0..6] == b"GIF89a" {
+        "image/gif"
+    } else if data.len() >= 2 && data[0..2] == [0xFF, 0xD8] {
+        "image/jpeg"
+    } else if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// BLAKE3 hash data and save via `save_attachment_to`. Returns the hex hash string.
+pub(crate) fn save_image_to(dir: &PathBuf, data: &[u8]) -> Result<String, String> {
+    let hash = blake3::hash(data).to_hex().to_string();
+    save_attachment_to(dir, &hash, data)?;
+    Ok(hash)
+}
+
+/// Load an attachment by hash, detect MIME, and return a `data:` URL.
+pub(crate) fn load_image_data_url_from(dir: &PathBuf, content_hash: &str) -> Result<String, String> {
+    let path = bin_path(dir, content_hash);
+    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let mime = detect_image_mime(&data);
+    let encoded = B64.encode(&data);
+    Ok(format!("data:{};base64,{}", mime, encoded))
+}
+
+//  Image Tauri commands 
+
+/// Save image data, content-addressed by BLAKE3 hash. Returns the hash.
+#[tauri::command]
+pub fn save_image(app_handle: tauri::AppHandle, data: Vec<u8>) -> Result<String, String> {
+    let dir = attachments_dir(&app_handle)?;
+    save_image_to(&dir, &data)
+}
+
+/// Load an image by content hash and return it as a data: URL.
+#[tauri::command]
+pub fn load_image_data_url(app_handle: tauri::AppHandle, content_hash: String) -> Result<String, String> {
+    let dir = attachments_dir(&app_handle)?;
+    load_image_data_url_from(&dir, &content_hash)
+}
+
 //  Tests 
 
 #[cfg(test)]
@@ -677,5 +729,55 @@ mod tests {
         let pruned = prune_to_limit(&dir.0, 1000).unwrap();
         assert!(pruned.is_empty(), "no pruning when already under limit");
         assert!(bin_path(&dir.0, &hash).exists());
+    }
+
+    //  8. Image save/load helpers 
+
+    #[test]
+    fn test_save_image_returns_blake3_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = b"fake png content".to_vec();
+        let expected_hash = blake3::hash(&data).to_hex().to_string();
+        let hash = save_image_to(&dir.path().to_path_buf(), &data).unwrap();
+        assert_eq!(hash, expected_hash);
+        let file_path = bin_path(&dir.path().to_path_buf(), &hash);
+        assert!(file_path.exists());
+        assert_eq!(std::fs::read(&file_path).unwrap(), data);
+    }
+
+    #[test]
+    fn test_save_image_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = b"same content".to_vec();
+        let hash1 = save_image_to(&dir.path().to_path_buf(), &data).unwrap();
+        let hash2 = save_image_to(&dir.path().to_path_buf(), &data).unwrap();
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_load_image_data_url_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut data = vec![0x89, 0x50, 0x4E, 0x47]; // PNG magic
+        data.extend_from_slice(b"rest of png");
+        let hash = save_image_to(&dir.path().to_path_buf(), &data).unwrap();
+        let data_url = load_image_data_url_from(&dir.path().to_path_buf(), &hash).unwrap();
+        assert!(data_url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn test_load_image_data_url_gif() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut data = b"GIF89a".to_vec();
+        data.extend_from_slice(b"rest of gif");
+        let hash = save_image_to(&dir.path().to_path_buf(), &data).unwrap();
+        let data_url = load_image_data_url_from(&dir.path().to_path_buf(), &hash).unwrap();
+        assert!(data_url.starts_with("data:image/gif;base64,"));
+    }
+
+    #[test]
+    fn test_load_image_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = load_image_data_url_from(&dir.path().to_path_buf(), "nonexistent");
+        assert!(result.is_err());
     }
 }
