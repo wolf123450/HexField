@@ -14,7 +14,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
-import type { MessageRow, MutationRow } from '@/types/core'
+import type { MessageRow, MutationRow, Mutation } from '@/types/core'
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -221,6 +221,21 @@ async function _pushItems(
 
 // ── Receive pushed content ────────────────────────────────────────────────────
 
+function _rowToMutation(r: MutationRow): Mutation {
+  return {
+    id:         r.id,
+    type:       r.type as Mutation['type'],
+    targetId:   r.target_id,
+    channelId:  r.channel_id,
+    authorId:   r.author_id,
+    newContent: r.new_content ?? undefined,
+    emojiId:    r.emoji_id ?? undefined,
+    logicalTs:  r.logical_ts,
+    createdAt:  r.created_at,
+    verified:   Boolean(r.verified),
+  }
+}
+
 async function _onPush(wire: SyncPush): Promise<void> {
   try {
     if (wire.table === 'messages' && wire.messages && wire.messages.length > 0) {
@@ -236,6 +251,56 @@ async function _onPush(wire: SyncPush): Promise<void> {
       const messagesStore = useMessagesStore()
       if (wire.channelId !== '__server__') {
         await messagesStore.loadMutationsForChannel(wire.channelId)
+      }
+
+      // Hydrate channels, members, emoji from server-level mutations
+      if (wire.channelId === '__server__') {
+        const { useChannelsStore } = await import('@/stores/channelsStore')
+        const channelsStore = useChannelsStore()
+        const { useServersStore } = await import('@/stores/serversStore')
+        const serversStore = useServersStore()
+        const { useEmojiStore } = await import('@/stores/emojiStore')
+        const emojiStore = useEmojiStore()
+
+        for (const row of wire.mutations) {
+          const mutation = _rowToMutation(row)
+
+          if (['channel_create', 'channel_update', 'channel_delete'].includes(mutation.type)) {
+            await channelsStore.applyChannelMutation(mutation)
+          }
+
+          if (mutation.type === 'member_join' && mutation.newContent) {
+            const payload = JSON.parse(mutation.newContent)
+            if (payload.serverId && payload.userId) {
+              if (!serversStore.members[payload.serverId]) serversStore.members[payload.serverId] = {}
+              serversStore.members[payload.serverId][payload.userId] = {
+                userId: payload.userId,
+                serverId: payload.serverId,
+                displayName: payload.displayName ?? '',
+                roles: payload.roles ?? ['member'],
+                joinedAt: payload.joinedAt ?? mutation.createdAt,
+                publicSignKey: payload.publicSignKey ?? '',
+                publicDHKey: payload.publicDHKey ?? '',
+                onlineStatus: 'offline',
+              }
+            }
+          }
+
+          if (mutation.type === 'member_profile_update' && mutation.newContent) {
+            const patch = JSON.parse(mutation.newContent)
+            if (patch.serverId) {
+              const m = serversStore.members[patch.serverId]?.[mutation.targetId]
+              if (m) Object.assign(m, patch)
+            }
+          }
+
+          if (mutation.type === 'emoji_add' && mutation.newContent) {
+            emojiStore.applyEmojiAddMutation(JSON.parse(mutation.newContent))
+          }
+          if (mutation.type === 'emoji_remove') {
+            emojiStore.applyEmojiRemoveMutation(mutation.targetId)
+          }
+        }
       }
     }
   } catch (e) {
