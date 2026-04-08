@@ -1231,5 +1231,6 @@ export const useServersStore = defineStore('servers', () => {
     exportArchive,
     importArchive,
     applyRebaseline,
+    serializeMutation,
   }
 })
