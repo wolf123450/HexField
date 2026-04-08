@@ -555,7 +555,7 @@ pub fn db_load_channels(state: State<AppState>, server_id: String) -> Result<Vec
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT id, server_id, name, type, position, topic, created_at
-         FROM channels WHERE server_id = ?1 ORDER BY position ASC"
+         FROM channels WHERE server_id = ?1 ORDER BY position ASC, created_at ASC"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&server_id], |row| {
         Ok(ChannelRow {

@@ -276,13 +276,13 @@ const textChannels  = computed(() =>
   serverChannels.value.filter(c =>
     (c.type === 'text' || c.type === 'announcement') &&
     (isAdmin.value || channelsStore.isChannelVisible(c.id, identityStore.userId, myRoles.value))
-  )
+  ).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
 )
 const voiceChannels = computed(() =>
   serverChannels.value.filter(c =>
     c.type === 'voice' &&
     (isAdmin.value || channelsStore.isChannelVisible(c.id, identityStore.userId, myRoles.value))
-  )
+  ).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
 )
 
 const isAdmin = useIsAdmin(computed(() => serversStore.activeServerId))

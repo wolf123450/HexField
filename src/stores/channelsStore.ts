@@ -12,14 +12,42 @@ export const useChannelsStore = defineStore('channels', () => {
 
   async function loadChannels(serverId: string) {
     const rows = await invoke<any[]>('db_load_channels', { serverId })
-    channels.value[serverId] = rows.map(r => ({
+    const mapped = rows.map(r => ({
       id:            r.id,
       serverId:      r.server_id,
       name:          r.name,
       type:          r.type as ChannelType,
-      position:      r.position,
+      position:      r.position as number,
       topic:         r.topic ?? undefined,
+      _createdAt:    r.created_at as string,   // kept for position-fix persist only
     }))
+
+    // Detect position collisions and reassign sequentially by (position, id).
+    // UUID v7 ids are time-sortable, so ties resolve by creation order.
+    const seen = new Set<number>()
+    let hasDuplicates = false
+    for (const ch of mapped) {
+      if (seen.has(ch.position)) { hasDuplicates = true; break }
+      seen.add(ch.position)
+    }
+    if (hasDuplicates) {
+      mapped.sort((a, b) => a.position - b.position || a.id.localeCompare(b.id))
+      for (let i = 0; i < mapped.length; i++) {
+        if (mapped[i].position !== i) {
+          mapped[i].position = i
+          invoke('db_save_channel', {
+            channel: {
+              id: mapped[i].id, server_id: mapped[i].serverId,
+              name: mapped[i].name, type: mapped[i].type,
+              position: i, topic: mapped[i].topic ?? null,
+              created_at: mapped[i]._createdAt,
+            },
+          }).catch(() => {})
+        }
+      }
+    }
+
+    channels.value[serverId] = mapped.map(({ _createdAt: _, ...ch }) => ch)
     await loadChannelAcls(serverId)
   }
 

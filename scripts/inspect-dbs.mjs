@@ -41,6 +41,11 @@ for (const [name, dbPath] of Object.entries(instances)) {
   console.log(`\nSERVERS (${servers.length}):`)
   servers.forEach(r => console.log(`  ${r.id.slice(0,8)}  "${r.name}"  owner:${r.owner_id.slice(0,8)}`))
 
+  // Channels
+  const channels = db.prepare('SELECT id, server_id, name, position FROM channels').all()
+  console.log(`\nCHANNELS (${channels.length}):`)
+  channels.forEach(r => console.log(`  ${r.id}  srv:${r.server_id}  "${r.name}" pos:${r.position}`))
+
   // Members
   const members = db.prepare(`
     SELECT user_id, server_id, display_name,

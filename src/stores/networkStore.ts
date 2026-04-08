@@ -659,14 +659,7 @@ export const useNetworkStore = defineStore('network', () => {
       const serversStore = useServersStore()
       const patch = JSON.parse(mutation.newContent)
       if (patch.serverId) {
-        const m = serversStore.members[patch.serverId]?.[mutation.targetId]
-        if (m) {
-          if (patch.displayName) m.displayName = patch.displayName
-          if (patch.avatarHash) m.avatarHash = patch.avatarHash
-          if (patch.bio !== undefined) m.bio = patch.bio
-          if (patch.bannerColor !== undefined) m.bannerColor = patch.bannerColor
-          if (patch.bannerHash) m.bannerHash = patch.bannerHash
-        }
+        serversStore.updateMemberProfile(patch.serverId, mutation.targetId, patch)
       }
       // Trigger image fetch for new hashes
       const hashesToFetch = [patch.avatarHash, patch.bannerHash].filter(Boolean) as string[]
