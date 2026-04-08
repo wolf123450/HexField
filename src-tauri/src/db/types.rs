@@ -40,6 +40,7 @@ pub struct ServerRow {
     pub invite_code: Option<String>,
     pub created_at: String,
     pub raw_json: String,
+    pub avatar_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -68,6 +69,8 @@ pub struct MemberRow {
     pub bio: Option<String>,
     pub banner_color: Option<String>,
     pub banner_data_url: Option<String>,
+    pub avatar_hash: Option<String>,
+    pub banner_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
