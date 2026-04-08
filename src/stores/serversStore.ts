@@ -53,6 +53,14 @@ export const useServersStore = defineStore('servers', () => {
         servers.value[serverId].avatarDataUrl = dataUrl
       }
     }
+    // Load server avatar hashes
+    for (const serverId of joinedServerIds.value) {
+      const hash = await invoke<string | null>('db_load_key', { keyId: `server_avatar_hash_${serverId}` })
+        .catch(() => null)
+      if (hash && servers.value[serverId]) {
+        servers.value[serverId].avatarHash = hash
+      }
+    }
   }
 
   async function createServer(name: string, _iconFile?: File): Promise<Server> {
@@ -179,18 +187,22 @@ export const useServersStore = defineStore('servers', () => {
     payload: {
       displayName?: string
       avatarDataUrl?: string | null
+      avatarHash?: string | null
       bio?: string | null
       bannerColor?: string | null
       bannerDataUrl?: string | null
+      bannerHash?: string | null
     },
   ) {
     const m = members.value[serverId]?.[userId]
     if (!m) return
     if (payload.displayName   !== undefined) m.displayName   = payload.displayName
     if (payload.avatarDataUrl !== undefined) m.avatarDataUrl = payload.avatarDataUrl
+    if (payload.avatarHash    !== undefined) m.avatarHash    = payload.avatarHash ?? undefined
     if (payload.bio           !== undefined) m.bio           = payload.bio
     if (payload.bannerColor   !== undefined) m.bannerColor   = payload.bannerColor
     if (payload.bannerDataUrl !== undefined) m.bannerDataUrl = payload.bannerDataUrl
+    if (payload.bannerHash    !== undefined) m.bannerHash    = payload.bannerHash ?? undefined
     // Persist the updated member record to DB so bios/banners survive restarts
     invoke('db_upsert_member', {
       member: {
@@ -203,9 +215,11 @@ export const useServersStore = defineStore('servers', () => {
         public_dh_key:    m.publicDHKey,
         online_status:    m.onlineStatus,
         avatar_data_url:  m.avatarDataUrl ?? null,
+        avatar_hash:      m.avatarHash    ?? null,
         bio:              m.bio           ?? null,
         banner_color:     m.bannerColor   ?? null,
         banner_data_url:  m.bannerDataUrl ?? null,
+        banner_hash:      m.bannerHash    ?? null,
       },
     }).catch(() => {}) // fire-and-forget; in-memory state is already updated
   }
@@ -218,6 +232,18 @@ export const useServersStore = defineStore('servers', () => {
       keyId:   `server_avatar_${serverId}`,
       keyType: 'server_avatar',
       keyData: dataUrl ?? '',
+    })
+  }
+
+  async function updateServerAvatarHash(serverId: string, hash: string | null) {
+    if (servers.value[serverId]) {
+      servers.value[serverId].avatarHash = hash ?? undefined
+      servers.value[serverId].avatarDataUrl = undefined
+    }
+    await invoke('db_save_key', {
+      keyId:   `server_avatar_hash_${serverId}`,
+      keyType: 'server_avatar_hash',
+      keyData: hash ?? '',
     })
   }
 
@@ -1175,6 +1201,7 @@ export const useServersStore = defineStore('servers', () => {
     updateMemberDisplayName,
     updateMemberProfile,
     updateServerAvatar,
+    updateServerAvatarHash,
     updateServerIconBgColor,
     applyServerMutation,
     joinFromManifest,
