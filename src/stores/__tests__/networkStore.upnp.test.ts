@@ -83,7 +83,7 @@ describe('UPnP integration in networkStore', () => {
     await setupStore('open')
 
     const setPublicIpCalls = invokeImpl.mock.calls.filter(
-      ([cmd]: [string]) => cmd === 'set_public_ip',
+      (args) => args[0] === 'set_public_ip',
     )
     expect(setPublicIpCalls).toHaveLength(1)
     expect(setPublicIpCalls[0][1]).toEqual({ ip: '203.0.113.42' })
@@ -93,7 +93,7 @@ describe('UPnP integration in networkStore', () => {
     await setupStore('symmetric')
 
     const setPublicIpCalls = invokeImpl.mock.calls.filter(
-      ([cmd]: [string]) => cmd === 'set_public_ip',
+      (args) => args[0] === 'set_public_ip',
     )
     expect(setPublicIpCalls).toHaveLength(0)
   })
@@ -105,7 +105,7 @@ describe('UPnP integration in networkStore', () => {
     await store.disconnect()
 
     const removeCalls = invokeImpl.mock.calls.filter(
-      ([cmd]: [string]) => cmd === 'upnp_remove_mapping',
+      (args) => args[0] === 'upnp_remove_mapping',
     )
     expect(removeCalls).toHaveLength(1)
   })
