@@ -63,7 +63,7 @@ import type { Attachment } from '@/types/core'
 import { v7 as uuidv7 } from 'uuid'
 import { prepareAttachment } from '@/services/attachmentService'
 
-const MAX_INLINE_BYTES = 100 * 1024  // 100 KB
+const MAX_INLINE_BYTES = 40 * 1024  // 40 KB — must fit in a single SCTP frame (~65 KB limit) after base64 + JSON overhead
 const MAX_IMAGE_DIMENSION = 1920      // px — downscale larger images before embed
 
 const props = defineProps<{

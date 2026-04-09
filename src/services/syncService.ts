@@ -187,10 +187,13 @@ async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
 
 // ── Push content to peer ──────────────────────────────────────────────────────
 
-// WebRTC data channels (SCTP) have a ~65 KB max message size.  A naive push of
-// a large channel history easily exceeds this.  Send in fixed-size batches so
-// every individual frame stays well under the limit.
-const SYNC_PUSH_CHUNK_SIZE = 50
+// WebRTC data channels (SCTP) have a ~65 KB max message size.  Chunk by
+// serialized byte size so every individual SCTP frame stays well under the
+// limit.  A message whose content is a base64-encoded image can easily exceed
+// this on its own (100 KB binary → ~133 KB base64); those are stripped to a
+// placeholder so the endless negentropy retry loop is broken.  New messages
+// use a 40 KB inline cap (see MessageInput.vue) so they always fit.
+const SCTP_SAFE_BYTES = 60_000
 
 async function _pushItems(
   peerId: string,
@@ -202,16 +205,43 @@ async function _pushItems(
   try {
     if (table === 'messages') {
       const messages: MessageRow[] = await invoke('sync_get_messages', { ids })
-      for (let i = 0; i < messages.length; i += SYNC_PUSH_CHUNK_SIZE) {
-        const chunk = messages.slice(i, i + SYNC_PUSH_CHUNK_SIZE)
-        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, messages: chunk } satisfies SyncPush)
+      let batch: MessageRow[] = []
+      let batchBytes = 0
+      const flush = () => {
+        if (batch.length === 0) return
+        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, messages: batch } satisfies SyncPush)
+        batch = []
+        batchBytes = 0
       }
+      for (const msg of messages) {
+        // If the content is a large data URL, strip it to a placeholder so
+        // the SCTP frame stays under the limit and negentropy stops retrying.
+        const safe: MessageRow = (msg.content?.startsWith('data:') && msg.content.length > SCTP_SAFE_BYTES)
+          ? { ...msg, content: '[image: too large to sync inline]' }
+          : msg
+        const itemBytes = JSON.stringify(safe).length
+        if (batchBytes + itemBytes > SCTP_SAFE_BYTES && batch.length > 0) flush()
+        batch.push(safe)
+        batchBytes += itemBytes
+      }
+      flush()
     } else {
       const mutations: MutationRow[] = await invoke('sync_get_mutations', { ids })
-      for (let i = 0; i < mutations.length; i += SYNC_PUSH_CHUNK_SIZE) {
-        const chunk = mutations.slice(i, i + SYNC_PUSH_CHUNK_SIZE)
-        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, mutations: chunk } satisfies SyncPush)
+      let batch: MutationRow[] = []
+      let batchBytes = 0
+      const flush = () => {
+        if (batch.length === 0) return
+        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, mutations: batch } satisfies SyncPush)
+        batch = []
+        batchBytes = 0
       }
+      for (const mut of mutations) {
+        const itemBytes = JSON.stringify(mut).length
+        if (batchBytes + itemBytes > SCTP_SAFE_BYTES && batch.length > 0) flush()
+        batch.push(mut)
+        batchBytes += itemBytes
+      }
+      flush()
     }
   } catch (e) {
     console.warn('[sync] push error:', e)
