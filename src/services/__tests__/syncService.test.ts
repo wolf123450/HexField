@@ -351,3 +351,96 @@ describe('syncService.handleSyncMessage — sync_want', () => {
     )
   })
 })
+
+// ── SCTP size enforcement ──────────────────────────────────────────────────────
+
+// The sync_push wire frame has a fixed ~160-byte envelope overhead on top of
+// the serialised items.  _pushItems must account for this so the full JSON
+// string passed to webrtcService.sendToPeer never exceeds SCTP_SAFE_BYTES.
+
+const SCTP_SAFE_BYTES = 60_000   // must match the constant in syncService.ts
+const SESSION_ID      = '01234567-89ab-cdef-0123-456789abcdef'
+const CHANNEL_ID      = '01234567-89ab-cdef-0123-456789abcdef'
+
+/** Returns the byte length of the full sync_push frame for a single message row. */
+function envelopeLen(row: ReturnType<typeof makeMessageRow>): number {
+  return JSON.stringify({
+    type: 'sync_push', sessionId: SESSION_ID, table: 'messages', channelId: CHANNEL_ID,
+    messages: [row],
+  }).length
+}
+
+describe('syncService SCTP envelope size enforcement', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('strips inlineData from raw_attachments when item exceeds SCTP budget', async () => {
+    // A message with a 100 KB image (~133 KB base64).
+    // Without stripping the full envelope would be ~133 KB — well above the 65 KB SCTP limit.
+    const inlineData = 'A'.repeat(133_000)
+    const row = {
+      ...makeMessageRow('img-msg'),
+      raw_attachments: JSON.stringify([
+        { id: 'att-1', name: 'photo.jpg', size: 100_000, mimeType: 'image/jpeg',
+          inlineData, transferState: 'inline' },
+      ]),
+    }
+
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'sync_get_messages') return [row]
+      return null
+    })
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    const sends: unknown[] = []
+    setSendFn((_peerId, data) => sends.push(data))
+
+    await handleSyncMessage('peer-a', {
+      type: 'sync_want', sessionId: SESSION_ID, table: 'messages',
+      channelId: CHANNEL_ID, ids: ['img-msg'],
+    })
+
+    // After stripping, one frame should have been sent.
+    expect(sends).toHaveLength(1)
+    const wireLen = JSON.stringify(sends[0]).length
+    // The full wire payload must fit within SCTP_SAFE_BYTES.
+    expect(wireLen).toBeLessThanOrEqual(SCTP_SAFE_BYTES)
+    // The large inlineData must not appear in the wire frame.
+    expect(JSON.stringify(sends[0])).not.toContain(inlineData.slice(0, 100))
+  })
+
+  it('full sync_push envelope fits within SCTP_SAFE_BYTES for items near the threshold', async () => {
+    // Build a message row whose serialised form is just under SCTP_SAFE_BYTES
+    // (so it is NOT stripped by the strip check), but whose full envelope—including
+    // the sync_push wrapper—exceeds SCTP_SAFE_BYTES.
+    // This demonstrates the envelope-overhead accounting gap.
+    const base = makeMessageRow('padded-msg')
+    const baseLen = JSON.stringify(base).length
+    // 'hello' (5 chars) is already counted in baseLen; pad so total = SCTP_SAFE_BYTES - 1.
+    const pad = 'P'.repeat(SCTP_SAFE_BYTES - 1 - baseLen + 'hello'.length)
+    const row = { ...base, content: pad }
+
+    // Confirm: item is just under the strip threshold…
+    expect(JSON.stringify(row).length).toBeLessThan(SCTP_SAFE_BYTES)
+    // …but its full envelope would exceed SCTP_SAFE_BYTES:
+    expect(envelopeLen(row)).toBeGreaterThan(SCTP_SAFE_BYTES) // proves the bug exists pre-fix
+
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'sync_get_messages') return [row]
+      return null
+    })
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    const sends: unknown[] = []
+    setSendFn((_peerId, data) => sends.push(data))
+
+    await handleSyncMessage('peer-a', {
+      type: 'sync_want', sessionId: SESSION_ID, table: 'messages',
+      channelId: CHANNEL_ID, ids: ['padded-msg'],
+    })
+
+    // Every payload sent must be within the SCTP budget.
+    for (const payload of sends) {
+      expect(JSON.stringify(payload).length).toBeLessThanOrEqual(SCTP_SAFE_BYTES)
+    }
+  })
+})

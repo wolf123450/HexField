@@ -194,6 +194,11 @@ async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
 // placeholder so the endless negentropy retry loop is broken.  New messages
 // use a 40 KB inline cap (see MessageInput.vue) so they always fit.
 const SCTP_SAFE_BYTES = 60_000
+// The sync_push JSON envelope wraps the items array and adds a fixed overhead
+// (type, sessionId, table, channelId fields ≈ 160 chars).  We subtract a
+// generous bound so the FULL wire payload always fits within SCTP_SAFE_BYTES.
+const SYNC_PUSH_OVERHEAD = 256
+const ITEM_BUDGET = SCTP_SAFE_BYTES - SYNC_PUSH_OVERHEAD // 59,744
 
 async function _pushItems(
   peerId: string,
@@ -218,10 +223,10 @@ async function _pushItems(
         // limit and negentropy stops re-trying these rows forever.
         // Images are stored in raw_attachments[*].inlineData (base64), not content.
         let safe: MessageRow = msg
-        if (msg.content?.startsWith('data:') && msg.content.length > SCTP_SAFE_BYTES) {
+        if (msg.content?.startsWith('data:') && msg.content.length > ITEM_BUDGET) {
           safe = { ...safe, content: '[image: too large to sync inline]' }
         }
-        if (safe.raw_attachments && JSON.stringify(safe).length > SCTP_SAFE_BYTES) {
+        if (safe.raw_attachments && JSON.stringify(safe).length > ITEM_BUDGET) {
           try {
             const atts = JSON.parse(safe.raw_attachments) as Array<Record<string, unknown>>
             const stripped = atts.map(({ inlineData: _id, ...rest }) => rest)
@@ -231,7 +236,13 @@ async function _pushItems(
           }
         }
         const itemBytes = JSON.stringify(safe).length
-        if (batchBytes + itemBytes > SCTP_SAFE_BYTES && batch.length > 0) flush()
+        // Final guard: skip items that are still too large even after all stripping.
+        // This prevents a single item from blowing the SCTP frame regardless of source.
+        if (itemBytes > ITEM_BUDGET) {
+          console.warn('[sync] item too large to send even after stripping, skipping:', msg.id, itemBytes)
+          continue
+        }
+        if (batchBytes + itemBytes > ITEM_BUDGET && batch.length > 0) flush()
         batch.push(safe)
         batchBytes += itemBytes
       }
@@ -248,7 +259,7 @@ async function _pushItems(
       }
       for (const mut of mutations) {
         const itemBytes = JSON.stringify(mut).length
-        if (batchBytes + itemBytes > SCTP_SAFE_BYTES && batch.length > 0) flush()
+        if (batchBytes + itemBytes > ITEM_BUDGET && batch.length > 0) flush()
         batch.push(mut)
         batchBytes += itemBytes
       }
