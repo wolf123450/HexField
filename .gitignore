@@ -23,6 +23,10 @@ dist-ssr
 *.sln
 *.sw?
 
+# Rust build artifacts
+src-tauri/target/
+server/target/
+
 # Tauri update signing keys
 *.key
 *.key.pub
