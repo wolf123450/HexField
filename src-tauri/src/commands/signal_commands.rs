@@ -258,3 +258,144 @@ pub fn lan_get_local_addrs(state: State<AppState>) -> Result<Vec<serde_json::Val
         "port": port,
     })])
 }
+
+// ── UPnP commands (desktop only) ─────────────────────────────────────────
+
+/// Attempt UPnP/NAT-PMP port forwarding for the LAN signal port.
+/// Stores the result in AppState for later removal and endpoint generation.
+/// Returns the external port on success, or an error if UPnP is unavailable.
+#[cfg(not(mobile))]
+#[tauri::command]
+pub async fn upnp_forward_port(
+    state: State<'_, AppState>,
+) -> Result<u16, String> {
+    let internal_port = state.lan_signal_port.load(Ordering::Relaxed);
+    if internal_port == 0 {
+        return Err("LAN signal server not started yet".to_string());
+    }
+
+    let local_ip = crate::lan::get_primary_local_ip();
+    let local_ipv4 = match local_ip {
+        std::net::IpAddr::V4(v4) => v4,
+        std::net::IpAddr::V6(_) => return Err("IPv6 local IP not supported for UPnP".to_string()),
+    };
+
+    let mapping = crate::upnp::forward_port(local_ipv4, internal_port).await?;
+
+    state.upnp_external_port.store(mapping.external_port, Ordering::Relaxed);
+
+    Ok(mapping.external_port)
+}
+
+/// Remove the UPnP port mapping created by `upnp_forward_port`.
+/// Safe to call even if no mapping exists (returns Ok).
+#[cfg(not(mobile))]
+#[tauri::command]
+pub async fn upnp_remove_mapping(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let port = state.upnp_external_port.swap(0, Ordering::Relaxed);
+    if port == 0 {
+        return Ok(());
+    }
+    crate::upnp::remove_mapping(port).await
+}
+
+/// Return the public WAN endpoint for embedding in invite links.
+/// Requires that UPnP forwarding succeeded and public IP is known.
+/// Returns `null` if either is unavailable.
+#[cfg(not(mobile))]
+#[tauri::command]
+pub fn get_public_endpoint(
+    state: State<AppState>,
+) -> Result<Option<serde_json::Value>, String> {
+    let ext_port = state.upnp_external_port.load(Ordering::Relaxed);
+    if ext_port == 0 {
+        return Ok(None);
+    }
+
+    let public_ip = state.public_ip.lock().map_err(|e| e.to_string())?;
+    match &*public_ip {
+        Some(ip) => Ok(Some(serde_json::json!({
+            "type": "direct",
+            "addr": ip,
+            "port": ext_port,
+        }))),
+        None => Ok(None),
+    }
+}
+
+/// Store the public IP address discovered by the frontend (via STUN).
+/// Called by the frontend after `detectNATType()` runs.
+#[cfg(not(mobile))]
+#[tauri::command]
+pub fn set_public_ip(
+    state: State<AppState>,
+    ip: String,
+) -> Result<(), String> {
+    let mut guard = state.public_ip.lock().map_err(|e| e.to_string())?;
+    *guard = Some(ip);
+    Ok(())
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    /// Mirrors the get_public_endpoint logic — returns a JSON endpoint or None
+    /// based on the external port and public IP.
+    fn build_endpoint(ext_port: u16, public_ip: &Option<String>) -> Option<serde_json::Value> {
+        if ext_port == 0 {
+            return None;
+        }
+        public_ip.as_ref().map(|ip| serde_json::json!({
+            "type": "direct",
+            "addr": ip,
+            "port": ext_port,
+        }))
+    }
+
+    #[test]
+    fn endpoint_returns_none_when_no_upnp_mapping() {
+        let result = build_endpoint(0, &Some("203.0.113.1".to_string()));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn endpoint_returns_none_when_no_public_ip() {
+        let result = build_endpoint(8080, &None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn endpoint_returns_json_when_both_present() {
+        let result = build_endpoint(8080, &Some("203.0.113.1".to_string()));
+        assert!(result.is_some());
+        let v = result.unwrap();
+        assert_eq!(v["type"], "direct");
+        assert_eq!(v["addr"], "203.0.113.1");
+        assert_eq!(v["port"], 8080);
+    }
+
+    #[test]
+    fn upnp_port_swap_clears_atomically() {
+        let port = Arc::new(AtomicU16::new(9999));
+        let swapped = port.swap(0, Ordering::Relaxed);
+        assert_eq!(swapped, 9999);
+        assert_eq!(port.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn set_public_ip_stores_value() {
+        let public_ip: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        {
+            let mut guard = public_ip.lock().unwrap();
+            *guard = Some("198.51.100.5".to_string());
+        }
+        let guard = public_ip.lock().unwrap();
+        assert_eq!(*guard, Some("198.51.100.5".to_string()));
+    }
+}

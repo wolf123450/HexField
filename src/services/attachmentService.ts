@@ -13,7 +13,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { readFile } from '@tauri-apps/plugin-fs'
 import type { Attachment } from '@/types/core'
 
-export const CHUNK_SIZE = 256 * 1024 // must match Rust CHUNK_SIZE
+export const CHUNK_SIZE = 16 * 1024 // must match Rust CHUNK_SIZE — 16 KB so JSON-serialized chunks fit within ~65 KB SCTP limit
 
 // ── Hashing ───────────────────────────────────────────────────────────────────
 

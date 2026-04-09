@@ -3,7 +3,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use tauri::Manager;
 use crate::AppState;
 
-pub(crate) const CHUNK_SIZE: usize = 256 * 1024; // 256 KB
+pub(crate) const CHUNK_SIZE: usize = 16 * 1024; // 16 KB — must match JS; small enough that JSON-serialized number[] fits SCTP max msg size
 
 //  Path helpers 
 

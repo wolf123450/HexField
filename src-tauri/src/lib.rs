@@ -10,6 +10,8 @@ mod db;
 mod commands;
 #[cfg(not(mobile))]
 mod lan;
+#[cfg(not(mobile))]
+mod upnp;
 mod webrtc_manager;
 
 use commands::archive_commands::*;
@@ -35,6 +37,12 @@ pub struct AppState {
     pub local_user_id: Arc<Mutex<String>>,
     /// Rust-native WebRTC peer connections (data channels; Phase 1).
     pub webrtc_manager: Arc<webrtc_manager::WebRTCManager>,
+    /// External port from UPnP mapping (0 = no mapping). Desktop only.
+    #[cfg(not(mobile))]
+    pub upnp_external_port: Arc<AtomicU16>,
+    /// Public IP discovered via STUN or UPnP gateway. Desktop only.
+    #[cfg(not(mobile))]
+    pub public_ip: Arc<Mutex<Option<String>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -88,6 +96,10 @@ pub fn run() {
                 #[cfg(not(mobile))]
                 local_user_id: Arc::new(Mutex::new(String::new())),
                 webrtc_manager: Arc::new(webrtc_manager::WebRTCManager::new()),
+                #[cfg(not(mobile))]
+                upnp_external_port: Arc::new(AtomicU16::new(0)),
+                #[cfg(not(mobile))]
+                public_ip: Arc::new(Mutex::new(None)),
             });
 
             // Set the window taskbar/title-bar icon.  The conf schema does not
@@ -195,6 +207,15 @@ pub fn run() {
             lan_get_local_addrs,
             #[cfg(not(mobile))]
             lan_get_connected_peers,
+            // UPnP/NAT-PMP port forwarding (desktop only)
+            #[cfg(not(mobile))]
+            upnp_forward_port,
+            #[cfg(not(mobile))]
+            upnp_remove_mapping,
+            #[cfg(not(mobile))]
+            get_public_endpoint,
+            #[cfg(not(mobile))]
+            set_public_ip,
             // Sync (negentropy set reconciliation)
             sync_initiate,
             sync_respond,

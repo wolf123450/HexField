@@ -155,6 +155,16 @@ watch(() => uiStore.showInviteModal, async (open) => {
   } catch {
     endpoints.value = []
   }
+
+  // Fetch public WAN endpoint (requires UPnP + STUN success)
+  try {
+    const pub_ = await invoke<{ type: string; addr: string; port: number } | null>('get_public_endpoint')
+    if (pub_) {
+      endpoints.value.push({ type: pub_.type as PeerEndpoint['type'], addr: pub_.addr, port: pub_.port })
+    }
+  } catch {
+    // No public endpoint available — LAN-only invite
+  }
 })
 
 watch(inviteLink, async (link) => {
