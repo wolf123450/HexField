@@ -281,6 +281,10 @@
 - [x] Evaluate `turn` crate (webrtc-rs) for client-side TURN listener — **deferred**: crate is large/complex; browser-native WebRTC already handles TURN client-side when ICE servers are configured; Rust-side relay listener can be added later if peer demand warrants it; for now users configure external TURN in Settings > Voice
 - [ ] Rendezvous server TURN endpoint (if server configured) — requires server infrastructure
 - [x] Settings > Voice: manual TURN server entry
+- [x] UPnP/NAT-PMP port forwarding via `igd-next` (auto-forward LAN signal port)
+- [x] Public IP discovery via STUN, stored in Rust AppState for endpoint generation
+- [x] WAN `"direct"` endpoint embedded in invite links when UPnP + STUN succeed
+- [x] UPnP mapping cleanup on app disconnect
 - [ ] Test: symmetric NAT simulation (two clients behind carrier-grade NAT), verify relay fallback — requires real NAT environment; cannot be unit-tested; defer to QA/integration testing phase
 - [x] **Tests**
   - [x] `detectNATType()` returns expected type for full-cone, port-restricted, and symmetric setups (mock STUN)

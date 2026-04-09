@@ -252,7 +252,11 @@ export const useNetworkStore = defineStore('network', () => {
       if (type !== 'symmetric') {
         const { querySTUN } = await import('@/utils/natDetection')
         const addr = await querySTUN('stun.l.google.com:19302')
-        if (addr) ownPublicAddr.value = addr
+        if (addr) {
+          ownPublicAddr.value = addr
+          // Store public IP in Rust AppState for UPnP endpoint generation
+          invoke('set_public_ip', { ip: addr.ip }).catch(() => {})
+        }
       }
       console.debug(`[network] NAT type: ${type}`)
     }).catch(e => console.warn('[network] NAT detection error:', e))
@@ -324,6 +328,8 @@ export const useNetworkStore = defineStore('network', () => {
     reconnectAttempt.value = 0
     webrtcService.destroyAll()
     connectedPeers.value = []
+    // Remove UPnP port mapping (non-fatal)
+    invoke('upnp_remove_mapping').catch(() => {})
     await signalingService.disconnect()
   }
 
