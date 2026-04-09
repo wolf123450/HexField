@@ -136,6 +136,34 @@
       </div>
     </div>
 
+    <!-- ── Rendezvous Server ──────────────────────────────────────── -->
+    <div class="form-row">
+      <label class="form-label">Rendezvous Server</label>
+      <p class="form-hint" style="margin-bottom: var(--spacing-sm)">
+        Connect to a rendezvous server for cross-internet peer discovery, WebRTC signaling relay,
+        and TURN credential provisioning. Leave empty to use LAN-only mode.
+      </p>
+      <input
+        v-model="rendezvousUrl"
+        type="url"
+        placeholder="https://rendezvous.example.com"
+        class="form-input"
+        @change="saveRendezvousUrl"
+      />
+    </div>
+
+    <div class="form-row">
+      <label class="checkbox-row">
+        <input
+          :checked="discoverability === 'public'"
+          type="checkbox"
+          @change="toggleDiscoverability"
+        />
+        <span>Allow others to find me by name on the rendezvous server</span>
+      </label>
+      <p class="form-hint">When off, only users who share a server with you can see your profile.</p>
+    </div>
+
     <!-- ── Linked Devices ──────────────────────────────────────────── -->
     <div class="devices-section">
       <div class="devices-header">
@@ -189,6 +217,10 @@ const storageLimit  = ref(settingsStore.settings.storageLimitGB)
 const usedBytes     = ref<number>(0)
 const enforcing     = ref(false)
 
+// Rendezvous server settings
+const rendezvousUrl   = ref(settingsStore.settings.rendezvousServerUrl)
+const discoverability = ref(settingsStore.settings.userDiscoverability ?? 'public')
+
 const usedDisplay = computed(() => {
   const b = usedBytes.value
   if (b < 1024) return `${b} B`
@@ -214,6 +246,14 @@ async function enforceNow() {
 function saveShowDeleted()   { settingsStore.updateSetting('showDeletedMessagePlaceholder', showDeleted.value) }
 function saveConfirmDelete() { settingsStore.updateSetting('confirmBeforeDelete', confirmDelete.value) }
 function saveStorageLimit()  { settingsStore.updateSetting('storageLimitGB', storageLimit.value) }
+
+function saveRendezvousUrl() {
+  settingsStore.updateSetting('rendezvousServerUrl', rendezvousUrl.value.trim())
+}
+function toggleDiscoverability() {
+  discoverability.value = discoverability.value === 'public' ? 'private' : 'public'
+  settingsStore.updateSetting('userDiscoverability', discoverability.value)
+}
 
 // Device management
 const ownDevices = computed(() =>

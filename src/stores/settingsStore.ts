@@ -63,6 +63,7 @@ export interface UserSettings {
   videoFrameRate: 10 | 15 | 30;
   // Network
   rendezvousServerUrl: string;
+  userDiscoverability: 'public' | 'private';
   soundEnabled: boolean;
   notificationsEnabled: boolean;
   // Per-server / channel notification rules
@@ -109,6 +110,7 @@ const defaultSettings: UserSettings = {
   videoFrameRate: 30,
   // Network
   rendezvousServerUrl: '',
+  userDiscoverability: 'public',
   soundEnabled: true,
   notificationsEnabled: true,
   serverNotificationPrefs:  {},

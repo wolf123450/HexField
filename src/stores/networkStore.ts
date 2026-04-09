@@ -47,6 +47,11 @@ export const useNetworkStore = defineStore('network', () => {
   /** Snapshot of custom TURN servers from settingsStore — refreshed on init. */
   let _cachedCustomTURN: RTCIceServer[] = []
 
+  /** Rendezvous server auth token (userId after verified challenge). */
+  let _rendezvousToken: string | null = null
+  /** TURN credentials obtained from rendezvous server. */
+  let _turnCredentials: { urls: string[]; username: string; credential: string } | null = null
+
   // ── Rate limiter ───────────────────────────────────────────────────────────
   // Limit inbound data-channel messages per peer to prevent flooding.
   // Set high enough to accommodate burst sync traffic (negentropy + push chunks)
@@ -270,6 +275,78 @@ export const useNetworkStore = defineStore('network', () => {
     }).catch(() => { /* ignore in tests */ })
 
     webrtcService.setICEConfigBuilder(buildICEConfig)
+
+    // Auto-connect to rendezvous server if configured
+    connectToRendezvous(localUserId).catch(e =>
+      console.warn('[network] Rendezvous connection failed:', e),
+    )
+  }
+
+  /**
+   * Challenge-response authenticate with the rendezvous server and open a
+   * WebSocket for signal relay + presence.  Non-fatal — failures are logged.
+   */
+  async function connectToRendezvous(localUserId: string) {
+    const { useSettingsStore } = await import('./settingsStore')
+    const { useIdentityStore } = await import('./identityStore')
+    const settingsStore = useSettingsStore()
+    const identityStore = useIdentityStore()
+    const rendezvousUrl = settingsStore.settings.rendezvousServerUrl
+    if (!rendezvousUrl) return
+
+    // 1. Request challenge nonce
+    const challengeResp = await fetch(`${rendezvousUrl}/auth/challenge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_id: localUserId,
+        public_sign_key: identityStore.publicSignKey ?? '',
+        public_dh_key: identityStore.publicDHKey ?? '',
+        display_name: identityStore.displayName,
+      }),
+    })
+    if (!challengeResp.ok) throw new Error('Challenge request failed')
+    const { challenge } = await challengeResp.json()
+
+    // 2. Sign challenge with Ed25519 key
+    const signature = cryptoService.sign(new TextEncoder().encode(challenge))
+
+    // 3. Verify signature with server — receive bearer token
+    const verifyResp = await fetch(`${rendezvousUrl}/auth/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_id: localUserId,
+        public_sign_key: identityStore.publicSignKey ?? '',
+        public_dh_key: identityStore.publicDHKey ?? '',
+        display_name: identityStore.displayName,
+        signature,
+      }),
+    })
+    if (!verifyResp.ok) throw new Error('Auth verify failed')
+    const { token } = await verifyResp.json()
+    _rendezvousToken = token
+    console.log('[network] Authenticated with rendezvous server')
+
+    // 4. Connect WebSocket through the WS signaling relay
+    const wsScheme = rendezvousUrl.startsWith('https') ? 'wss' : 'ws'
+    const wsBase = rendezvousUrl.replace(/^https?/, wsScheme)
+    const wsUrl = `${wsBase}/ws?token=${encodeURIComponent(token)}&public_sign_key=${encodeURIComponent(identityStore.publicSignKey ?? '')}`
+    await signalingService.connect(wsUrl)
+    console.log('[network] Connected to rendezvous WS')
+
+    // 5. Fetch TURN credentials (non-fatal)
+    try {
+      const turnResp = await fetch(`${rendezvousUrl}/turn/credentials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: localUserId }),
+      })
+      if (turnResp.ok) {
+        _turnCredentials = await turnResp.json()
+        console.log('[network] TURN credentials obtained')
+      }
+    } catch (e) { console.warn('[network] TURN fetch failed:', e) }
   }
 
   /**
@@ -301,6 +378,15 @@ export const useNetworkStore = defineStore('network', () => {
     // User-configured custom TURN servers are always appended (regardless of NAT type).
     if (_cachedCustomTURN.length > 0) {
       base.push(..._cachedCustomTURN)
+    }
+
+    // Rendezvous-provided TURN credentials (from coturn shared-secret scheme).
+    if (_turnCredentials) {
+      base.push({
+        urls:       _turnCredentials.urls,
+        username:   _turnCredentials.username,
+        credential: _turnCredentials.credential,
+      })
     }
 
     return base
@@ -1329,6 +1415,9 @@ export const useNetworkStore = defineStore('network', () => {
     startSync(peerId).catch(e => console.warn('[network] resync error:', e))
   }
 
+  function getRendezvousToken() { return _rendezvousToken }
+  function getTurnCredentials() { return _turnCredentials }
+
   return {
     signalingState,
     serverUrl,
@@ -1358,5 +1447,7 @@ export const useNetworkStore = defineStore('network', () => {
     broadcastServerAvatar,
     broadcastAttachmentWant,
     resyncPeer,
+    getRendezvousToken,
+    getTurnCredentials,
   }
 })
