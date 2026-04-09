@@ -214,11 +214,22 @@ async function _pushItems(
         batchBytes = 0
       }
       for (const msg of messages) {
-        // If the content is a large data URL, strip it to a placeholder so
-        // the SCTP frame stays under the limit and negentropy stops retrying.
-        const safe: MessageRow = (msg.content?.startsWith('data:') && msg.content.length > SCTP_SAFE_BYTES)
-          ? { ...msg, content: '[image: too large to sync inline]' }
-          : msg
+        // Strip oversized inline payloads so the SCTP frame stays under the
+        // limit and negentropy stops re-trying these rows forever.
+        // Images are stored in raw_attachments[*].inlineData (base64), not content.
+        let safe: MessageRow = msg
+        if (msg.content?.startsWith('data:') && msg.content.length > SCTP_SAFE_BYTES) {
+          safe = { ...safe, content: '[image: too large to sync inline]' }
+        }
+        if (safe.raw_attachments && JSON.stringify(safe).length > SCTP_SAFE_BYTES) {
+          try {
+            const atts = JSON.parse(safe.raw_attachments) as Array<Record<string, unknown>>
+            const stripped = atts.map(({ inlineData: _id, ...rest }) => rest)
+            safe = { ...safe, raw_attachments: JSON.stringify(stripped) }
+          } catch {
+            safe = { ...safe, raw_attachments: null }
+          }
+        }
         const itemBytes = JSON.stringify(safe).length
         if (batchBytes + itemBytes > SCTP_SAFE_BYTES && batch.length > 0) flush()
         batch.push(safe)
