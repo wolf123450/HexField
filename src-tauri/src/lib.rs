@@ -133,6 +133,7 @@ pub fn run() {
             db_load_emoji,
             db_save_emoji,
             get_emoji_image,
+            get_emoji_image_path,
             store_emoji_image,
             // Devices
             db_load_devices,
@@ -164,7 +165,7 @@ pub fn run() {
             get_attachment_path,
             has_attachment,
             save_image,
-            load_image_data_url,
+            get_image_info,
             get_chunk_count,
             save_attachment,
             save_attachment_chunk,
@@ -176,6 +177,7 @@ pub fn run() {
             get_attachment_storage_bytes,
             enforce_storage_limit,
             migrate_data_urls_to_files,
+            migrate_attachment_inline_data,
             // OS Keychain
             keychain_save,
             keychain_load,

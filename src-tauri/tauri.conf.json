@@ -22,7 +22,11 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss: ws: https: ipc://localhost http://ipc.localhost http://localhost:*; media-src 'self' blob:; img-src 'self' data: blob: https://cdn.jsdelivr.net; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss: ws: https: ipc://localhost http://ipc.localhost http://localhost:*; media-src 'self' blob:; img-src 'self' data: blob: asset: https://asset.localhost https://cdn.jsdelivr.net; font-src 'self' data:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/**"]
+      }
     },
     "macOSPrivateApi": true
   },

@@ -428,14 +428,7 @@ pub(crate) fn save_image_to(dir: &PathBuf, data: &[u8]) -> Result<String, String
     Ok(hash)
 }
 
-/// Load an attachment by hash, detect MIME, and return a `data:` URL.
-pub(crate) fn load_image_data_url_from(dir: &PathBuf, content_hash: &str) -> Result<String, String> {
-    let path = bin_path(dir, content_hash);
-    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let mime = detect_image_mime(&data);
-    let encoded = B64.encode(&data);
-    Ok(format!("data:{};base64,{}", mime, encoded))
-}
+
 
 //  Image Tauri commands 
 
@@ -446,11 +439,24 @@ pub fn save_image(app_handle: tauri::AppHandle, data: Vec<u8>) -> Result<String,
     save_image_to(&dir, &data)
 }
 
-/// Load an image by content hash and return it as a data: URL.
+/// Return the filesystem path and MIME type for an image attachment.
+/// The frontend can pass the path to `convertFileSrc` to get an asset:// URL.
 #[tauri::command]
-pub fn load_image_data_url(app_handle: tauri::AppHandle, content_hash: String) -> Result<String, String> {
+pub fn get_image_info(
+    app_handle: tauri::AppHandle,
+    content_hash: String,
+) -> Result<crate::db::types::ImageInfo, String> {
     let dir = attachments_dir(&app_handle)?;
-    load_image_data_url_from(&dir, &content_hash)
+    let path = bin_path(&dir, &content_hash);
+    let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let mut magic = [0u8; 12];
+    use std::io::Read;
+    let _ = f.read(&mut magic);
+    let mime = detect_image_mime(&magic);
+    Ok(crate::db::types::ImageInfo {
+        path:      path.to_string_lossy().to_string(),
+        mime_type: mime.to_string(),
+    })
 }
 
 /// Decode a `data:<mime>;base64,<content>` URL into raw bytes.
@@ -538,6 +544,81 @@ pub fn migrate_data_urls_to_files(
                     migrated += 1;
                 }
             }
+        }
+    }
+
+    Ok(migrated)
+}
+
+/// One-time migration: find every message whose `raw_attachments` JSON blob contains
+/// an `inlineData` field, base64-decode the bytes, save them to the CAS store,
+/// and replace `inlineData` with `contentHash`/`chunkSize`/`transferState: "complete"`.
+/// Returns the number of attachment records converted.
+#[tauri::command]
+pub fn migrate_attachment_inline_data(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<u32, String> {
+    let dir = attachments_dir(&app_handle)?;
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    // Collect rows that might have inline data — avoid holding stmt borrow across loop
+    let rows: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, raw_attachments FROM messages \
+             WHERE raw_attachments IS NOT NULL AND raw_attachments LIKE '%inlineData%'"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+
+    let mut migrated: u32 = 0;
+
+    for (msg_id, raw_atts) in &rows {
+        let Ok(mut atts) = serde_json::from_str::<Vec<serde_json::Value>>(raw_atts) else {
+            continue;
+        };
+        let mut changed = false;
+
+        for att in &mut atts {
+            let Some(inline_b64) = att.get("inlineData").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            match B64.decode(inline_b64.as_bytes()) {
+                Ok(bytes) => match save_image_to(&dir, &bytes) {
+                    Ok(hash) => {
+                        let obj = att.as_object_mut().unwrap();
+                        obj.remove("inlineData");
+                        obj.insert("contentHash".to_string(),
+                            serde_json::Value::String(format!("blake3:{}", hash)));
+                        obj.insert("chunkSize".to_string(),
+                            serde_json::Value::Number(serde_json::Number::from(CHUNK_SIZE)));
+                        obj.insert("transferState".to_string(),
+                            serde_json::Value::String("complete".to_string()));
+                        changed = true;
+                        migrated += 1;
+                    }
+                    Err(e) => {
+                        log::warn!("[migrate_attachment_inline_data] save failed for msg {}: {}", msg_id, e);
+                    }
+                },
+                Err(_) => {
+                    // Corrupted base64 — drop the field so it stops retrying
+                    att.as_object_mut().map(|m| m.remove("inlineData"));
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            let new_raw = serde_json::to_string(&atts).map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE messages SET raw_attachments = ?1 WHERE id = ?2",
+                rusqlite::params![new_raw, msg_id],
+            ).map_err(|e| e.to_string())?;
         }
     }
 
@@ -871,5 +952,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result = load_image_data_url_from(&dir.path().to_path_buf(), "nonexistent");
         assert!(result.is_err());
+    }
+
+    //  9. get_image_info: bin_path constructs the correct path 
+
+    #[test]
+    fn test_get_image_info_returns_path_and_mime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hash = "deadbeef".to_string();
+        let dir = tmp.path().to_path_buf();
+        let expected = dir.join("de").join("deadbeef.bin");
+        assert_eq!(bin_path(&dir, &hash), expected);
     }
 }

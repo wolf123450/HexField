@@ -65,10 +65,8 @@ pub struct MemberRow {
     pub public_sign_key: String,
     pub public_dh_key: String,
     pub online_status: String,
-    pub avatar_data_url: Option<String>,
     pub bio: Option<String>,
     pub banner_color: Option<String>,
-    pub banner_data_url: Option<String>,
     pub avatar_hash: Option<String>,
     pub banner_hash: Option<String>,
 }
@@ -116,6 +114,12 @@ pub struct ModLogRow {
     pub reason: Option<String>,
     pub detail: Option<String>,
     pub created_at: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct ImageInfo {
+    pub path:      String,
+    pub mime_type: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

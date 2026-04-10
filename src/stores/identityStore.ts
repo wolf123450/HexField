@@ -123,6 +123,11 @@ export const useIdentityStore = defineStore('identity', () => {
       console.warn('[identity] data URL migration failed:', e)
     }
 
+    // One-time migration: convert legacy inline attachment base64 to CAS files
+    invoke<number>('migrate_attachment_inline_data')
+      .then(n => { if (n > 0) console.log(`[identity] migrated ${n} inline attachments to CAS`) })
+      .catch(e => console.warn('[identity] inline attachment migration failed:', e))
+
     // One-time mutation backfill for existing data
     try {
       const { backfillMutations } = await import('@/utils/mutationBackfill')
