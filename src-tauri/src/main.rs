@@ -37,7 +37,7 @@ fn register_dev_aumid() {
             let _ = RegSetValueExW(
                 hkey,
                 &HSTRING::from("DisplayName"),
-                0,
+                None,
                 REG_SZ,
                 Some(std::slice::from_raw_parts(
                     name_utf16.as_ptr() as *const u8,
