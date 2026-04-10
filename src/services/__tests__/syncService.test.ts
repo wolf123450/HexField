@@ -21,6 +21,31 @@ vi.mock('@/stores/messagesStore', () => ({
   }),
 }))
 
+const mockMembers: Record<string, Record<string, unknown>> = {}
+const mockUpdateMemberProfile = vi.fn()
+vi.mock('@/stores/serversStore', () => ({
+  useServersStore: () => ({
+    members: mockMembers,
+    updateMemberProfile: mockUpdateMemberProfile,
+  }),
+}))
+
+const mockApplyChannelMutation = vi.fn()
+vi.mock('@/stores/channelsStore', () => ({
+  useChannelsStore: () => ({
+    applyChannelMutation: mockApplyChannelMutation,
+  }),
+}))
+
+const mockApplyEmojiAdd    = vi.fn()
+const mockApplyEmojiRemove = vi.fn()
+vi.mock('@/stores/emojiStore', () => ({
+  useEmojiStore: () => ({
+    applyEmojiAddMutation:    mockApplyEmojiAdd,
+    applyEmojiRemoveMutation: mockApplyEmojiRemove,
+  }),
+}))
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function makeMessageRow(id: string) {
@@ -442,5 +467,69 @@ describe('syncService SCTP envelope size enforcement', () => {
     for (const payload of sends) {
       expect(JSON.stringify(payload).length).toBeLessThanOrEqual(SCTP_SAFE_BYTES)
     }
+  })
+})
+
+// ── member_join persistence ────────────────────────────────────────────────────
+
+// When B receives a member_join mutation from A via negentropy (because C joined
+// while connected to A but not B), _onPush must persist C into the SQLite members
+// table via db_upsert_member — not just update the in-memory serversStore.members
+// map.  Without this, any fetchMembers call (startup, server switch) clears C from
+// B's view and C's messages display as raw userId.
+
+describe('syncService._onPush — member_join persistence', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // Reset the shared members map between tests
+    for (const key of Object.keys(mockMembers)) delete mockMembers[key]
+  })
+
+  it('calls db_upsert_member when a member_join mutation arrives via sync_push', async () => {
+    mockInvoke.mockResolvedValue(undefined)
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    setSendFn(vi.fn())
+
+    const payload = {
+      userId:        'user-c',
+      serverId:      'srv-1',
+      displayName:   'Charlie',
+      publicSignKey: 'sign-key-charlie',
+      publicDHKey:   'dh-key-charlie',
+      roles:         ['member'],
+      joinedAt:      '2025-06-01T00:00:00.000Z',
+    }
+
+    await handleSyncMessage('peer-a', {
+      type:      'sync_push',
+      sessionId: 'sess-member',
+      table:     'mutations',
+      channelId: '__server__',
+      mutations: [{
+        id:          'mut-join-c',
+        type:        'member_join',
+        target_id:   'user-c',
+        channel_id:  '__server__',
+        author_id:   'user-c',
+        new_content: JSON.stringify(payload),
+        emoji_id:    null,
+        created_at:  '2025-06-01T00:00:00.000Z',
+        logical_ts:  '1750000000000-000001',
+        verified:    true,
+      }],
+    })
+
+    // The member MUST be persisted to the SQLite members table so that
+    // fetchMembers (on startup or server switch) can reload C.
+    expect(mockInvoke).toHaveBeenCalledWith('db_upsert_member', {
+      member: expect.objectContaining({
+        user_id:      'user-c',
+        server_id:    'srv-1',
+        display_name: 'Charlie',
+        public_sign_key: 'sign-key-charlie',
+        public_dh_key:   'dh-key-charlie',
+      }),
+    })
   })
 })

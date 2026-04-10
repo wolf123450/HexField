@@ -323,17 +323,32 @@ async function _onPush(wire: SyncPush): Promise<void> {
           if (mutation.type === 'member_join' && mutation.newContent) {
             const payload = JSON.parse(mutation.newContent)
             if (payload.serverId && payload.userId) {
-              if (!serversStore.members[payload.serverId]) serversStore.members[payload.serverId] = {}
-              serversStore.members[payload.serverId][payload.userId] = {
-                userId: payload.userId,
-                serverId: payload.serverId,
-                displayName: payload.displayName ?? '',
-                roles: payload.roles ?? ['member'],
-                joinedAt: payload.joinedAt ?? mutation.createdAt,
-                publicSignKey: payload.publicSignKey ?? '',
-                publicDHKey: payload.publicDHKey ?? '',
-                onlineStatus: 'offline',
+              const member = {
+                userId:        payload.userId        as string,
+                serverId:      payload.serverId      as string,
+                displayName:   (payload.displayName  as string) ?? '',
+                roles:         (payload.roles        as string[]) ?? ['member'],
+                joinedAt:      (payload.joinedAt     as string) ?? mutation.createdAt,
+                publicSignKey: (payload.publicSignKey as string) ?? '',
+                publicDHKey:   (payload.publicDHKey   as string) ?? '',
+                onlineStatus:  'offline' as const,
               }
+              // Update in-memory reactive map
+              if (!serversStore.members[member.serverId]) serversStore.members[member.serverId] = {}
+              serversStore.members[member.serverId][member.userId] = member
+              // Persist to SQLite so fetchMembers can reload C after restart or server switch
+              await invoke('db_upsert_member', {
+                member: {
+                  user_id:         member.userId,
+                  server_id:       member.serverId,
+                  display_name:    member.displayName,
+                  roles:           JSON.stringify(member.roles),
+                  joined_at:       member.joinedAt,
+                  public_sign_key: member.publicSignKey,
+                  public_dh_key:   member.publicDHKey,
+                  online_status:   member.onlineStatus,
+                },
+              })
             }
           }
 
