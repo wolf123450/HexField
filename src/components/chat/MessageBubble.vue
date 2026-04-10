@@ -167,10 +167,9 @@ const author = computed(() => {
   return members[props.message.authorId]
 })
 
-const authorAvatarSrc = computed(() => {
-  if (props.message.authorId === identityStore.userId) return identityStore.avatarDataUrl ?? null
-  return author.value?.avatarDataUrl ?? null
-})
+const authorAvatarSrc = computed(() =>
+  props.message.authorId === identityStore.userId ? (identityStore.avatarDataUrl ?? null) : null
+)
 const authorAvatarHash = computed(() => {
   if (props.message.authorId === identityStore.userId) return identityStore.avatarHash ?? null
   return author.value?.avatarHash ?? null

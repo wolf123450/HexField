@@ -147,7 +147,7 @@ const isEditable = computed(() => isSelf.value && !uiStore.userProfileReadOnly)
 const avatarSrc = computed(() =>
   isSelf.value
     ? identityStore.avatarDataUrl
-    : (member.value?.avatarDataUrl ?? null)
+    : null
 )
 const avatarHashSrc = computed(() =>
   isSelf.value
@@ -176,7 +176,7 @@ function deriveUserGradient(uid: string): string {
 }
 
 const bannerStyle = computed(() => {
-  const src = isSelf.value ? identityStore.bannerDataUrl : (member.value?.bannerDataUrl ?? null)
+  const src = isSelf.value ? identityStore.bannerDataUrl : null
   if (src) return { backgroundImage: `url(${src})`, backgroundSize: 'cover', backgroundPosition: 'center' }
   const color = isSelf.value ? identityStore.bannerColor : (member.value?.bannerColor ?? null)
   if (color) return { background: color }
@@ -303,7 +303,6 @@ async function saveAvatar(dataUrl: string) {
       const m = serversStore.members[sid]?.[uid]
       if (m) {
         m.avatarHash = hash
-        m.avatarDataUrl = undefined
       }
     }
   }

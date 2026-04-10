@@ -226,15 +226,6 @@ async function _pushItems(
         if (msg.content?.startsWith('data:') && msg.content.length > ITEM_BUDGET) {
           safe = { ...safe, content: '[image: too large to sync inline]' }
         }
-        if (safe.raw_attachments && JSON.stringify(safe).length > ITEM_BUDGET) {
-          try {
-            const atts = JSON.parse(safe.raw_attachments) as Array<Record<string, unknown>>
-            const stripped = atts.map(({ inlineData: _id, ...rest }) => rest)
-            safe = { ...safe, raw_attachments: JSON.stringify(stripped) }
-          } catch {
-            safe = { ...safe, raw_attachments: null }
-          }
-        }
         const itemBytes = JSON.stringify(safe).length
         // Final guard: skip items that are still too large even after all stripping.
         // This prevents a single item from blowing the SCTP frame regardless of source.

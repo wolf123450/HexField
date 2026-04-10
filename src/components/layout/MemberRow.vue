@@ -1,7 +1,7 @@
 <template>
   <div class="member-row" @click="openProfile" @contextmenu.prevent="onContextMenu">
     <div class="member-avatar-wrap">
-      <AvatarImage :hash="member.avatarHash" :src="member.avatarDataUrl" :name="member.displayName" :size="32" />
+      <AvatarImage :hash="member.avatarHash" :name="member.displayName" :size="32" />
       <StatusBadge
         :status="(member.onlineStatus as 'online'|'idle'|'dnd'|'offline') || 'offline'"
         :size="12"

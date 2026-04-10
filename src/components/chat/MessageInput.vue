@@ -23,12 +23,6 @@
             :key="att.id"
             class="attachment-chip"
           >
-            <img
-              v-if="att.mimeType.startsWith('image/') && att.inlineData"
-              :src="`data:${att.mimeType};base64,${att.inlineData}`"
-              class="chip-thumb"
-              alt=""
-            />
             <span class="chip-name">{{ att.name }}</span>
             <button class="chip-remove" type="button" @click="removeAttachment(i)">×</button>
           </div>
@@ -60,11 +54,7 @@ import { useMessagesStore } from '@/stores/messagesStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import type { Attachment } from '@/types/core'
-import { v7 as uuidv7 } from 'uuid'
 import { prepareAttachment } from '@/services/attachmentService'
-
-const MAX_INLINE_BYTES = 40 * 1024  // 40 KB — must fit in a single SCTP frame (~65 KB limit) after base64 + JSON overhead
-const MAX_IMAGE_DIMENSION = 1920      // px — downscale larger images before embed
 
 const props = defineProps<{
   channelId: string
@@ -160,113 +150,12 @@ async function onFileSelected(event: Event) {
   // Reset so the same file can be selected again
   input.value = ''
 
-  const att = await buildAttachment(file)
-  if (att) pendingAttachments.value.push(att)
+  const att = await prepareAttachment(file)
+  pendingAttachments.value.push(att)
 }
 
 function removeAttachment(index: number) {
   pendingAttachments.value.splice(index, 1)
-}
-
-async function buildAttachment(file: File): Promise<Attachment | null> {
-  const isImage = file.type.startsWith('image/')
-
-  if (isImage) {
-    // GIFs must not pass through Canvas (that would flatten animation to a single JPEG frame).
-    // Read them as raw bytes and embed as-is if they fit within the inline limit.
-    if (file.type === 'image/gif') {
-      if (file.size <= MAX_INLINE_BYTES) {
-        const inlineData = await fileToBase64(file)
-        return {
-          id:            uuidv7(),
-          name:          file.name,
-          size:          file.size,
-          mimeType:      'image/gif',
-          inlineData,
-          transferState: 'inline',
-        }
-      }
-      // GIF too large for inline — use P2P content-addressed transfer (preserves animation)
-      return prepareAttachment(file)
-    }
-
-    // Downscale if necessary, then embed as base64
-    const inlineData = await imageToBase64(file, MAX_IMAGE_DIMENSION)
-    const byteLength = Math.ceil(inlineData.length * 0.75) // approx decoded size
-
-    if (byteLength <= MAX_INLINE_BYTES) {
-      return {
-        id:            uuidv7(),
-        name:          file.name,
-        size:          file.size,
-        mimeType:      file.type,
-        inlineData,
-        transferState: 'inline',
-      }
-    }
-    // Image too large after downscale — use P2P content-addressed transfer
-    return prepareAttachment(file)
-  }
-
-  // Non-image: inline only if ≤100KB
-  if (file.size <= MAX_INLINE_BYTES) {
-    const inlineData = await fileToBase64(file)
-    return {
-      id:            uuidv7(),
-      name:          file.name,
-      size:          file.size,
-      mimeType:      file.type,
-      inlineData,
-      transferState: 'inline',
-    }
-  }
-
-  // Large non-image file — P2P content-addressed transfer
-  return prepareAttachment(file)
-}
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = reader.result as string
-      // Strip the data: prefix — we store raw base64
-      resolve(result.split(',')[1] ?? '')
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(file)
-  })
-}
-
-function imageToBase64(file: File, maxDimension: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    const objectUrl = URL.createObjectURL(file)
-    img.onload = () => {
-      URL.revokeObjectURL(objectUrl)
-      let { width, height } = img
-      if (width > maxDimension || height > maxDimension) {
-        if (width >= height) {
-          height = Math.round((height / width) * maxDimension)
-          width  = maxDimension
-        } else {
-          width  = Math.round((width / height) * maxDimension)
-          height = maxDimension
-        }
-      }
-      const canvas = document.createElement('canvas')
-      canvas.width  = width
-      canvas.height = height
-      const ctx = canvas.getContext('2d')
-      if (!ctx) { reject(new Error('No canvas context')); return }
-      ctx.drawImage(img, 0, 0, width, height)
-      // Re-encode as JPEG at 90% quality
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
-      resolve(dataUrl.split(',')[1] ?? '')
-    }
-    img.onerror = reject
-    img.src = objectUrl
-  })
 }
 
 function autoResize() {
