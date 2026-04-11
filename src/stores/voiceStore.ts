@@ -11,8 +11,8 @@ const MESH_PEER_LIMIT = 8
 export const useVoiceStore = defineStore('voice', () => {
   const session         = ref<VoiceSession | null>(null)
   const localStream     = ref<MediaStream | null>(null)
-  const screenStream    = ref<MediaStream | null>(null)
-  const screenStreams    = ref<Record<string, MediaStream>>({}) // remote screen shares keyed by userId
+  const screenShareActive = ref<boolean>(false)
+  const screenFrameUrls   = ref<Record<string, string>>({}) // asset:// URLs per peer for screen frames
   const isMuted         = ref<boolean>(false)
   const isDeafened      = ref<boolean>(false)
   const adminMuted      = ref<boolean>(false)
@@ -26,7 +26,7 @@ export const useVoiceStore = defineStore('voice', () => {
   const peerCount     = computed(() => Object.keys(peers.value).length)
   const meshWarning   = computed(() => peerCount.value >= MESH_PEER_LIMIT)
   const hasScreenShares = computed(() =>
-    !!screenStream.value || Object.keys(screenStreams.value).length > 0
+    screenShareActive.value || Object.keys(screenFrameUrls.value).length > 0
   )
 
   // Wire audioService VAD callbacks once on store creation
@@ -89,14 +89,12 @@ export const useVoiceStore = defineStore('voice', () => {
     useNetworkStore().broadcast({ type: 'voice_leave' })
 
     await webrtcService.removeAudioTracks()
-    webrtcService.removeScreenShareTrack()
+    await webrtcService.removeScreenShareTrack()
 
-    screenStream.value?.getTracks().forEach(t => t.stop())
-
-    localStream.value     = null
-    screenStream.value    = null
-    screenStreams.value    = {}
-    voiceViewActive.value = false
+    localStream.value        = null
+    screenShareActive.value  = false
+    screenFrameUrls.value    = {}
+    voiceViewActive.value    = false
     session.value         = null
     peers.value           = {}
     isMuted.value         = false
@@ -141,40 +139,28 @@ export const useVoiceStore = defineStore('voice', () => {
   // ── Screen share ──────────────────────────────────────────────────────────
 
   async function startScreenShare(): Promise<void> {
-    let stream: MediaStream
+    const { useUIStore } = await import('./uiStore')
+    const uiStore = useUIStore()
+
+    // Open source picker and wait for user selection
+    const sourceId = await uiStore.openSourcePicker()
+    if (!sourceId) return // User cancelled
 
     const { useSettingsStore } = await import('./settingsStore')
     const settings = useSettingsStore().settings
-
-    // Build getDisplayMedia video constraints from user preferences
-    const qualityMap: Record<string, { width: number; height: number }> = {
-      '360p':  { width: 640,  height: 360  },
-      '720p':  { width: 1280, height: 720  },
-      '1080p': { width: 1920, height: 1080 },
-    }
-    const dim = qualityMap[settings.videoQuality]
-    const videoConstraints: MediaTrackConstraints = dim
-      ? { width: { ideal: dim.width }, height: { ideal: dim.height }, frameRate: { ideal: settings.videoFrameRate } }
-      : { frameRate: { ideal: settings.videoFrameRate } }
 
     const bitrateMap: Record<string, number | undefined> = {
       'auto': undefined, '500kbps': 500, '1mbps': 1000, '2.5mbps': 2500, '5mbps': 5000,
     }
     const maxBitrateKbps = bitrateMap[settings.videoBitrate]
 
-    // getDisplayMedia() works on all platforms (Windows 10+, macOS 12.3+).
-    // The chromeMediaSourceId/Win32 custom-picker path was investigated and
-    // dropped — the system-native picker is adequate and Win32 enumeration
-    // (EnumWindows + PrintWindow + BitBlt) adds non-trivial complexity.
-    stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: videoConstraints, audio: false })
+    await webrtcService.addScreenShareTrack(
+      sourceId,
+      settings.videoFrameRate,
+      maxBitrateKbps,
+    )
 
-    screenStream.value = stream
-    const videoTrack = stream.getVideoTracks()[0]
-    if (videoTrack) {
-      webrtcService.addScreenShareTrack(videoTrack, maxBitrateKbps)
-      // Auto-stop when the user ends the share via browser UI
-      videoTrack.onended = () => stopScreenShare()
-    }
+    screenShareActive.value = true
 
     const { useNetworkStore } = await import('./networkStore')
     useNetworkStore().broadcast({
@@ -183,15 +169,13 @@ export const useVoiceStore = defineStore('voice', () => {
     })
   }
 
-  function stopScreenShare(): void {
-    if (!screenStream.value) return
-    webrtcService.removeScreenShareTrack()
-    screenStream.value.getTracks().forEach(t => t.stop())
-    screenStream.value = null
+  async function stopScreenShare(): Promise<void> {
+    if (!screenShareActive.value) return
+    await webrtcService.removeScreenShareTrack()
+    screenShareActive.value = false
 
-    import('./networkStore').then(({ useNetworkStore }) => {
-      useNetworkStore().broadcast({ type: 'voice_screen_share_stop' })
-    })
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'voice_screen_share_stop' })
   }
 
   // ── Peer management ───────────────────────────────────────────────────────
@@ -210,7 +194,7 @@ export const useVoiceStore = defineStore('voice', () => {
 
   function removePeer(userId: string): void {
     delete peers.value[userId]
-    delete screenStreams.value[userId]
+    delete screenFrameUrls.value[userId]
     const next = new Set(speakingPeers.value)
     next.delete(userId)
     speakingPeers.value = next
@@ -228,8 +212,8 @@ export const useVoiceStore = defineStore('voice', () => {
   return {
     session,
     localStream,
-    screenStream,
-    screenStreams,
+    screenShareActive,
+    screenFrameUrls,
     isMuted,
     isDeafened,
     adminMuted,

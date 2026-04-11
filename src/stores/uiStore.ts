@@ -159,6 +159,23 @@ export const useUIStore = defineStore("ui", () => {
     showUserProfile.value = false
   }
 
+  // ─── Source picker modal (screen share) ────────────────────────────────
+  const sourcePickerOpen    = ref(false)
+  let sourcePickerResolve: ((sourceId: string | null) => void) | null = null
+
+  function openSourcePicker(): Promise<string | null> {
+    return new Promise(resolve => {
+      sourcePickerResolve = resolve
+      sourcePickerOpen.value = true
+    })
+  }
+
+  function closeSourcePicker(sourceId: string | null = null) {
+    sourcePickerResolve?.(sourceId)
+    sourcePickerResolve = null
+    sourcePickerOpen.value = false
+  }
+
   // ─── Alert modal (requires explicit acknowledgement) ──────────────────
   const alertTitle   = ref<string>('')
   const alertMessage = ref<string>('')
@@ -228,6 +245,10 @@ export const useUIStore = defineStore("ui", () => {
     userProfileReadOnly,
     openUserProfile,
     closeUserProfile,
+    // Source picker
+    sourcePickerOpen,
+    openSourcePicker,
+    closeSourcePicker,
     // Alert modal
     alertTitle,
     alertMessage,
