@@ -153,23 +153,32 @@ export class WebRTCService {
     // ICE configuration is handled in Rust (webrtc_manager.rs).
   }
 
-  // ── Phase 2 stubs (voice / screen share) ─────────────────────────────────
-  // These are no-ops until Rust media track support is implemented.
+  // ── Media control (Rust-native audio pipeline) ─────────────────────────────
 
-  addAudioTrack(_track: MediaStreamTrack, _stream: MediaStream): void {
-    logger.warn('webrtc', 'addAudioTrack: not yet implemented in Rust backend (Phase 2)')
+  /**
+   * Start mic capture in Rust. Audio flows entirely in Rust:
+   * cpal → Opus encode → WebRTC track. No MediaStream crosses IPC.
+   */
+  async addAudioTrack(deviceId?: string): Promise<void> {
+    await invoke('media_start_mic', { deviceId: deviceId ?? null })
   }
 
-  removeAudioTracks(): void {
-    logger.warn('webrtc', 'removeAudioTracks: not yet implemented in Rust backend (Phase 2)')
+  /**
+   * Stop mic capture and remove audio tracks from all peers.
+   */
+  async removeAudioTracks(): Promise<void> {
+    await invoke('media_stop_mic')
   }
 
-  addScreenShareTrack(_track: MediaStreamTrack, _maxBitrateKbps?: number): void {
-    logger.warn('webrtc', 'addScreenShareTrack: not yet implemented in Rust backend (Phase 2)')
+  /**
+   * Screen share track — Phase B (not yet implemented in Rust backend).
+   */
+  addScreenShareTrack(_track?: MediaStreamTrack, _maxBitrateKbps?: number): void {
+    logger.warn('webrtc', 'addScreenShareTrack: not yet implemented (Phase B)')
   }
 
   removeScreenShareTrack(): void {
-    logger.warn('webrtc', 'removeScreenShareTrack: not yet implemented in Rust backend (Phase 2)')
+    logger.warn('webrtc', 'removeScreenShareTrack: not yet implemented (Phase B)')
   }
 }
 

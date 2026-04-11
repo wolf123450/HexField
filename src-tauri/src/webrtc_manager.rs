@@ -36,6 +36,14 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver;
+use webrtc::rtp_transceiver::RTCRtpTransceiver;
+use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
+use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_remote::TrackRemote;
+
+use crate::media_manager::MediaManager;
 
 // ── Event payload types ─────────────────────────────────────────────────────
 
@@ -78,6 +86,15 @@ struct DataEvent {
     payload: String,
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrackEvent {
+    user_id: String,
+    kind: String,
+    track_id: String,
+    stream_id: String,
+}
+
 // ── Per-peer state ──────────────────────────────────────────────────────────
 
 struct PeerEntry {
@@ -89,6 +106,8 @@ struct PeerEntry {
     /// Set to true before replacing this entry so its teardown callbacks don't
     /// emit `webrtc_disconnected` for the *new* connection that took its place.
     being_replaced: Arc<AtomicBool>,
+    /// Local audio track attached to this peer (None if mic not active).
+    audio_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────────
@@ -154,6 +173,7 @@ impl WebRTCManager {
         peer_id: String,
         dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
         being_replaced: Arc<AtomicBool>,
+        media_manager: Arc<MediaManager>,
         app: AppHandle,
     ) {
         // ICE candidate → relay through frontend to remote peer
@@ -216,6 +236,68 @@ impl WebRTCManager {
                 Self::wire_data_channel(d, pid2, slot, app2);
             })
         }));
+
+        // Incoming remote media track → route audio to MediaManager, log video
+        let app_track = app.clone();
+        let pid_track = peer_id.clone();
+        let media_mgr = media_manager.clone();
+        pc.on_track(Box::new(
+            move |track: Arc<TrackRemote>,
+                  _receiver: Arc<RTCRtpReceiver>,
+                  _transceiver: Arc<RTCRtpTransceiver>| {
+                let app2 = app_track.clone();
+                let pid2 = pid_track.clone();
+                let media_mgr2 = media_mgr.clone();
+                let kind = if track.kind() == RTPCodecType::Audio {
+                    "audio"
+                } else {
+                    "video"
+                };
+                let track_id = track.id().to_string();
+                let stream_id = track.stream_id().to_string();
+
+                log::info!(
+                    "[webrtc] on_track: peer={pid2} kind={kind} track_id={track_id} stream_id={stream_id}"
+                );
+
+                let _ = app2.emit(
+                    "webrtc_track",
+                    TrackEvent {
+                        user_id: pid2.clone(),
+                        kind: kind.to_string(),
+                        track_id: track_id.clone(),
+                        stream_id,
+                    },
+                );
+
+                if kind == "audio" {
+                    let app3 = app2.clone();
+                    let pid3 = pid2.clone();
+                    let track2 = track.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = media_mgr2
+                            .handle_remote_audio_track(pid3.clone(), track2, app3)
+                            .await
+                        {
+                            log::error!("[webrtc] handle_remote_audio_track failed for {pid3}: {e}");
+                        }
+                    });
+                } else {
+                    // Video tracks — Phase B (screen share): drain to keep WebRTC happy
+                    let track_clone = track.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            match track_clone.read_rtp().await {
+                                Ok((_pkt, _attr)) => {}
+                                Err(_) => break,
+                            }
+                        }
+                    });
+                }
+
+                Box::pin(async {})
+            },
+        ));
     }
 
     // ── Internal: wire on_open + on_message on a data channel ─────────────
@@ -275,7 +357,12 @@ impl WebRTCManager {
     }
 
     /// Caller side: create offer and emit `webrtc_offer` event.
-    pub async fn create_offer(&self, peer_id: &str, app: &AppHandle) -> Result<(), String> {
+    pub async fn create_offer(
+        &self,
+        peer_id: &str,
+        media_manager: &Arc<MediaManager>,
+        app: &AppHandle,
+    ) -> Result<(), String> {
         log::debug!("[webrtc] create_offer → {peer_id}");
         let pc = Self::build_pc().await?;
         let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
@@ -298,7 +385,7 @@ impl WebRTCManager {
             tokio::spawn(async move { let _ = old_pc.close().await; });
         }
 
-        Self::wire_callbacks(pc.clone(), peer_id.to_string(), dc_slot.clone(), being_replaced.clone(), app.clone());
+        Self::wire_callbacks(pc.clone(), peer_id.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone());
 
         // Caller creates the data channel; callee receives it via on_data_channel
         let dc = pc
@@ -320,6 +407,7 @@ impl WebRTCManager {
                 dc: dc_slot,
                 remote_desc_ready,
                 being_replaced,
+                audio_track: Arc::new(Mutex::new(None)),
             },
         );
 
@@ -338,6 +426,7 @@ impl WebRTCManager {
         &self,
         from: &str,
         sdp: String,
+        media_manager: &Arc<MediaManager>,
         app: &AppHandle,
     ) -> Result<(), String> {
         log::debug!("[webrtc] handle_offer from {from}");
@@ -360,7 +449,7 @@ impl WebRTCManager {
             tokio::spawn(async move { let _ = old_pc.close().await; });
         }
 
-        Self::wire_callbacks(pc.clone(), from.to_string(), dc_slot.clone(), being_replaced.clone(), app.clone());
+        Self::wire_callbacks(pc.clone(), from.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone());
 
         // Insert the peer entry early so add_ice_candidate buffers rather than
         // errors with "no peer entry".  remote_desc_ready stays false until
@@ -372,6 +461,7 @@ impl WebRTCManager {
                 dc: dc_slot,
                 remote_desc_ready: remote_desc_ready.clone(),
                 being_replaced,
+                audio_track: Arc::new(Mutex::new(None)),
             },
         );
 
@@ -507,5 +597,104 @@ impl WebRTCManager {
             }
         }
         out
+    }
+
+    /// Add a local audio track to every connected peer and trigger SDP renegotiation.
+    /// Returns the shared TrackLocalStaticSample for the mic encoder to write into.
+    pub async fn add_audio_track_to_all(
+        &self,
+        app: &AppHandle,
+    ) -> Result<Arc<TrackLocalStaticSample>, String> {
+        let track = Arc::new(TrackLocalStaticSample::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_owned(),
+                clock_rate: 48000,
+                channels: 1,
+                ..Default::default()
+            },
+            "hexfield-audio".to_owned(),
+            "hexfield-stream".to_owned(),
+        ));
+
+        let peers = self.peers.lock().await;
+        for (peer_id, entry) in peers.iter() {
+            // Add the track to this peer connection
+            let track_local: Arc<dyn TrackLocal + Send + Sync> = track.clone();
+            entry
+                .pc
+                .add_track(track_local)
+                .await
+                .map_err(|e| format!("add_track to {peer_id}: {e}"))?;
+
+            // Store a clone in the entry
+            *entry.audio_track.lock().await = Some(track.clone());
+
+            // Trigger renegotiation — create a new offer and emit it
+            let offer = entry
+                .pc
+                .create_offer(None)
+                .await
+                .map_err(|e| format!("create_offer renegotiate {peer_id}: {e}"))?;
+            entry
+                .pc
+                .set_local_description(offer.clone())
+                .await
+                .map_err(|e| format!("set_local_desc renegotiate {peer_id}: {e}"))?;
+
+            let _ = app.emit(
+                "webrtc_offer",
+                OfferEvent {
+                    to: peer_id.clone(),
+                    sdp: offer.sdp,
+                },
+            );
+        }
+
+        Ok(track)
+    }
+
+    /// Remove audio tracks from all peers and trigger SDP renegotiation.
+    pub async fn remove_audio_tracks_from_all(&self, app: &AppHandle) -> Result<(), String> {
+        let peers = self.peers.lock().await;
+        for (peer_id, entry) in peers.iter() {
+            // Clear the stored track
+            *entry.audio_track.lock().await = None;
+
+            // Find and remove any audio senders
+            let senders = entry.pc.get_senders().await;
+            for sender in senders {
+                if let Some(track) = sender.track().await {
+                    if track.kind() == RTPCodecType::Audio {
+                        entry
+                            .pc
+                            .remove_track(&sender)
+                            .await
+                            .map_err(|e| format!("remove_track from {peer_id}: {e}"))?;
+                    }
+                }
+            }
+
+            // Trigger renegotiation
+            let offer = entry
+                .pc
+                .create_offer(None)
+                .await
+                .map_err(|e| format!("create_offer renegotiate {peer_id}: {e}"))?;
+            entry
+                .pc
+                .set_local_description(offer.clone())
+                .await
+                .map_err(|e| format!("set_local_desc renegotiate {peer_id}: {e}"))?;
+
+            let _ = app.emit(
+                "webrtc_offer",
+                OfferEvent {
+                    to: peer_id.clone(),
+                    sdp: offer.sdp,
+                },
+            );
+        }
+
+        Ok(())
     }
 }

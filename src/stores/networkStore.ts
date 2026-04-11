@@ -221,6 +221,22 @@ export const useNetworkStore = defineStore('network', () => {
     // Relay Rust-native WebRTC signaling events out through the signaling transport.
     // NOTE: 'from' must be included so remote peers know who sent the signal;
     // the old browser-RTCPeerConnection implementation always set this explicitly.
+
+    // Listen for incoming media tracks from Rust WebRTC on_track callback
+    listen<{ userId: string; kind: string; trackId: string; streamId: string }>(
+      'webrtc_track',
+      async ({ payload }) => {
+        if (payload.kind === 'audio') {
+          // Audio is handled entirely in Rust (MediaManager) — just update voice UI
+          const { useVoiceStore } = await import('./voiceStore')
+          useVoiceStore().updatePeer(payload.userId, { audioEnabled: true })
+        } else if (payload.kind === 'video') {
+          // Phase B: screen share tracks — handled in future implementation
+          logger.info('network', `remote video track from ${payload.userId} (Phase B)`)
+        }
+      },
+    ).catch(e => logger.warn('network', 'webrtc_track listen failed:', e))
+
     listen<{ to: string; sdp: string }>('webrtc_offer', ({ payload }) => {
       sendSignal({ type: 'signal_offer', to: payload.to, from: localUserId, sdp: payload.sdp })
         .catch(e => logger.warn('webrtc', 'relay webrtc_offer error:', e))
@@ -1097,16 +1113,13 @@ export const useNetworkStore = defineStore('network', () => {
     await useDevicesStore().receiveAttestedDevice(device)
   }
 
-  async function handleRemoteTrack(userId: string, stream: MediaStream, track: MediaStreamTrack) {
+  async function handleRemoteTrack(userId: string, _stream: MediaStream, track: MediaStreamTrack) {
     const { useVoiceStore } = await import('./voiceStore')
     const voiceStore = useVoiceStore()
     if (!voiceStore.session) return
-    if (track.kind === 'audio') {
-      const { audioService } = await import('@/services/audioService')
-      audioService.attachRemoteStream(userId, stream)
-      voiceStore.updatePeer(userId, { audioEnabled: true })
-    } else if (track.kind === 'video') {
-      voiceStore.screenStreams[userId] = stream
+    // Audio is handled entirely in Rust (MediaManager) — only handle video here
+    if (track.kind === 'video') {
+      voiceStore.screenStreams[userId] = _stream
       voiceStore.updatePeer(userId, { screenSharing: true })
       track.onended = () => {
         delete voiceStore.screenStreams[userId]

@@ -59,6 +59,15 @@ mdns-sd            = "0.19.0"
 # UPnP IGD + NAT-PMP port forwarding
 igd-next           = { version = "0.17", features = ["aio_tokio"] }
 
+# Audio capture & playback (mic/speaker access)
+cpal               = "0.17"
+
+# Opus audio codec (encode mic → WebRTC, decode WebRTC → speaker)
+opus               = "0.3"
+
+# Byte buffer ergonomics (already a transitive dep of webrtc, but pin explicitly)
+bytes              = "1"
+
 # WebRTC (Rust-native data channels; replaces browser RTCPeerConnection on Linux)
 webrtc             = "0.17.1"
 
