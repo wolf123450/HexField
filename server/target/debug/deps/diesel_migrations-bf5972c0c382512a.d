@@ -1,9 +1,0 @@
-/mnt/d/Projects/GameChat/server/target/debug/deps/diesel_migrations-bf5972c0c382512a.d: /home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/lib.rs /home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/embedded_migrations.rs /home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/errors.rs /home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/file_based_migrations.rs /home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/migration_harness.rs
-
-/mnt/d/Projects/GameChat/server/target/debug/deps/libdiesel_migrations-bf5972c0c382512a.rmeta: /home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/lib.rs /home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/embedded_migrations.rs /home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/errors.rs /home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/file_based_migrations.rs /home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/migration_harness.rs
-
-/home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/lib.rs:
-/home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/embedded_migrations.rs:
-/home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/errors.rs:
-/home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/file_based_migrations.rs:
-/home/cday/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/diesel_migrations-2.3.1/src/migration_harness.rs:
