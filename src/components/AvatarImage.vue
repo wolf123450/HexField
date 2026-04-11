@@ -75,12 +75,18 @@ watch([resolvedSrc, isGif], ([src, gif]) => {
     return
   }
   const img = new Image()
+  img.crossOrigin = 'anonymous'
   img.onload = () => {
     const canvas = document.createElement('canvas')
     canvas.width  = img.naturalWidth
     canvas.height = img.naturalHeight
     canvas.getContext('2d')!.drawImage(img, 0, 0)
-    firstFrameUrl.value = canvas.toDataURL('image/png')
+    try {
+      firstFrameUrl.value = canvas.toDataURL('image/png')
+    } catch {
+      // asset:// images may still be tainted in some environments; fall back to animated display
+      firstFrameUrl.value = null
+    }
   }
   img.src = src
 }, { immediate: true })
