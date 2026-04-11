@@ -15,6 +15,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import type { MessageRow, MutationRow, Mutation } from '@/types/core'
+import { logger } from '@/utils/logger'
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,7 @@ export function setSendFn(fn: SendFn): void {
 // ── Initiator: start sync for a newly connected peer ─────────────────────────
 
 export async function startSync(peerId: string): Promise<void> {
+  logger.debug('sync', 'startSync with peer:', peerId)
   try {
     // Pass 0: Server-level mutations FIRST (members, channels, devices, emoji, server updates)
     await _startNegSession(peerId, '__server__', 'mutations')
@@ -90,7 +92,7 @@ export async function startSync(peerId: string): Promise<void> {
       await _startNegSession(peerId, channelId, 'mutations')
     }
   } catch (e) {
-    console.warn('[sync] startSync error:', e)
+    logger.warn('sync', 'startSync error:', e)
   }
 }
 
@@ -99,13 +101,14 @@ async function _startNegSession(
   channelId: string,
   table: SyncTable,
 ): Promise<void> {
+  logger.debug('sync', 'neg session:', channelId, table, '→', peerId)
   try {
     const msg: string = await invoke('sync_initiate', { channelId, table })
     const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     _pendingSessions.set(sessionId, { channelId, table })
     _sendToPeer(peerId, { type: 'sync_neg_init', sessionId, channelId, table, msg } satisfies SyncNegInit)
   } catch (e) {
-    console.warn(`[sync] initiate failed for ${channelId}/${table}:`, e)
+    logger.warn('sync', `initiate failed for ${channelId}/${table}:`, e)
   }
 }
 
@@ -142,7 +145,7 @@ async function _onNegInit(peerId: string, wire: SyncNegInit): Promise<void> {
     })
     _sendToPeer(peerId, { type: 'sync_neg_reply', sessionId: wire.sessionId, msg: reply } satisfies SyncNegReply)
   } catch (e) {
-    console.warn('[sync] sync_respond error:', e)
+    logger.warn('sync', 'sync_respond error:', e)
   }
 }
 
@@ -151,7 +154,7 @@ async function _onNegInit(peerId: string, wire: SyncNegInit): Promise<void> {
 async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
   const session = _pendingSessions.get(wire.sessionId)
   if (!session) {
-    console.warn('[sync] received neg_reply for unknown session', wire.sessionId)
+    logger.warn('sync', 'received neg_reply for unknown session', wire.sessionId)
     return
   }
   _pendingSessions.delete(wire.sessionId)
@@ -164,6 +167,7 @@ async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
       table,
       msg: wire.msg,
     })
+    logger.debug('sync', 'diff', channelId, table, 'have:', diff.have_ids.length, 'need:', diff.need_ids.length)
 
     // Push content we have that the peer needs
     if (diff.have_ids.length > 0) {
@@ -181,7 +185,7 @@ async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
       } satisfies SyncWant)
     }
   } catch (e) {
-    console.warn('[sync] process_response error:', e)
+    logger.warn('sync', 'process_response error:', e)
   }
 }
 
@@ -230,7 +234,7 @@ async function _pushItems(
         // Final guard: skip items that are still too large even after all stripping.
         // This prevents a single item from blowing the SCTP frame regardless of source.
         if (itemBytes > ITEM_BUDGET) {
-          console.warn('[sync] item too large to send even after stripping, skipping:', msg.id, itemBytes)
+          logger.warn('sync', 'item too large to send even after stripping, skipping:', msg.id, itemBytes)
           continue
         }
         if (batchBytes + itemBytes > ITEM_BUDGET && batch.length > 0) flush()
@@ -257,7 +261,7 @@ async function _pushItems(
       flush()
     }
   } catch (e) {
-    console.warn('[sync] push error:', e)
+    logger.warn('sync', 'push error:', e)
   }
 }
 

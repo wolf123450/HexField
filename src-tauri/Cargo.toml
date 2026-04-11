@@ -62,6 +62,11 @@ igd-next           = { version = "0.17", features = ["aio_tokio"] }
 # WebRTC (Rust-native data channels; replaces browser RTCPeerConnection on Linux)
 webrtc             = "0.17.1"
 
+# Both `webrtc`/`dtls` and `reqwest`/`hyper-rustls` pull in rustls with different
+# crypto provider features (ring vs aws-lc-rs), making auto-selection panic.
+# Depend explicitly so we can call ring::default_provider().install_default() at startup.
+rustls             = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
 # OS Keychain (Phase 3 crypto tier)
 keyring            = "3"
 

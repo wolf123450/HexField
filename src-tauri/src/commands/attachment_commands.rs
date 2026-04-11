@@ -475,47 +475,45 @@ pub fn migrate_data_urls_to_files(
     let dir = attachments_dir(&app_handle)?;
     let mut migrated: u32 = 0;
 
-    // Migrate member avatars
-    {
-        let mut stmt = conn.prepare(
-            "SELECT user_id, server_id, avatar_data_url FROM members WHERE avatar_data_url IS NOT NULL AND avatar_hash IS NULL"
-        ).map_err(|e| e.to_string())?;
-        let rows: Vec<(String, String, String)> = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        }).map_err(|e| e.to_string())?
-          .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
-
-        for (user_id, server_id, data_url) in &rows {
-            if let Some(bytes) = decode_data_url(data_url) {
-                if let Ok(hash) = save_image_to(&dir, &bytes) {
-                    let _ = conn.execute(
-                        "UPDATE members SET avatar_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
-                        rusqlite::params![hash, user_id, server_id],
-                    );
-                    migrated += 1;
+    // Migrate member avatars — column was dropped by migration 012 on fresh DBs;
+    // skip gracefully if it no longer exists.
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT user_id, server_id, avatar_data_url FROM members WHERE avatar_data_url IS NOT NULL AND avatar_hash IS NULL"
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        }).and_then(|mapped| mapped.collect::<Result<Vec<_>, _>>()) {
+            for (user_id, server_id, data_url) in &rows {
+                if let Some(bytes) = decode_data_url(data_url) {
+                    if let Ok(hash) = save_image_to(&dir, &bytes) {
+                        let _ = conn.execute(
+                            "UPDATE members SET avatar_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
+                            rusqlite::params![hash, user_id, server_id],
+                        );
+                        migrated += 1;
+                    }
                 }
             }
         }
     }
 
-    // Migrate member banners
-    {
-        let mut stmt = conn.prepare(
-            "SELECT user_id, server_id, banner_data_url FROM members WHERE banner_data_url IS NOT NULL AND banner_hash IS NULL"
-        ).map_err(|e| e.to_string())?;
-        let rows: Vec<(String, String, String)> = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        }).map_err(|e| e.to_string())?
-          .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
-
-        for (user_id, server_id, data_url) in &rows {
-            if let Some(bytes) = decode_data_url(data_url) {
-                if let Ok(hash) = save_image_to(&dir, &bytes) {
-                    let _ = conn.execute(
-                        "UPDATE members SET banner_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
-                        rusqlite::params![hash, user_id, server_id],
-                    );
-                    migrated += 1;
+    // Migrate member banners — column was dropped by migration 012 on fresh DBs;
+    // skip gracefully if it no longer exists.
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT user_id, server_id, banner_data_url FROM members WHERE banner_data_url IS NOT NULL AND banner_hash IS NULL"
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        }).and_then(|mapped| mapped.collect::<Result<Vec<_>, _>>()) {
+            for (user_id, server_id, data_url) in &rows {
+                if let Some(bytes) = decode_data_url(data_url) {
+                    if let Ok(hash) = save_image_to(&dir, &bytes) {
+                        let _ = conn.execute(
+                            "UPDATE members SET banner_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
+                            rusqlite::params![hash, user_id, server_id],
+                        );
+                        migrated += 1;
+                    }
                 }
             }
         }

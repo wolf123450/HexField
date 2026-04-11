@@ -63,8 +63,18 @@ const bio         = ref(identityStore.bio ?? '')
 watch(() => identityStore.displayName, (v) => { displayName.value = v })
 watch(() => identityStore.bio,         (v) => { bio.value = v ?? '' })
 
-function saveName() {
-  identityStore.updateDisplayName(displayName.value.trim() || 'Player')
+async function saveName() {
+  const name = displayName.value.trim() || 'Player'
+  identityStore.updateDisplayName(name)
+  const uid = identityStore.userId
+  if (uid) {
+    for (const sid of serversStore.joinedServerIds) {
+      serversStore.updateMemberProfile(sid, uid, { displayName: name })
+      serversStore.broadcastProfileMutation(sid, { displayName: name }).catch(() => {})
+    }
+  }
+  const { useNetworkStore } = await import('@/stores/networkStore')
+  useNetworkStore().broadcastProfile({ displayName: name }).catch(() => {})
 }
 
 async function saveBio() {
@@ -74,6 +84,7 @@ async function saveBio() {
   if (uid) {
     for (const sid of serversStore.joinedServerIds) {
       serversStore.updateMemberProfile(sid, uid, { bio: text })
+      serversStore.broadcastProfileMutation(sid, { bio: text }).catch(() => {})
     }
   }
   // Broadcast to connected peers (lazy import to avoid circular dep)
