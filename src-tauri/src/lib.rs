@@ -274,6 +274,10 @@ pub fn run() {
             media_set_loopback,
             media_set_input_device,
             media_set_output_device,
+            // Media (screen share)
+            media_enumerate_screens,
+            media_start_screen_share,
+            media_stop_screen_share,
             // WebRTC (Rust-native data channels)
             webrtc_init,
             webrtc_create_offer,

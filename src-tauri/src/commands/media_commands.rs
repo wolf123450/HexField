@@ -1,6 +1,6 @@
-//! Tauri commands for Rust-native audio capture and playback.
+//! Tauri commands for Rust-native audio capture, playback, and screen sharing.
 
-use crate::media_manager::AudioDeviceList;
+use crate::media_manager::{AudioDeviceList, ScreenSourceList};
 use crate::AppState;
 use tauri::{AppHandle, State};
 
@@ -106,4 +106,51 @@ pub async fn media_set_output_device(
 ) -> Result<(), String> {
     state.media_manager.set_output_device(device_name).await;
     Ok(())
+}
+
+/// List available monitors and windows for screen sharing.
+#[tauri::command]
+pub async fn media_enumerate_screens(
+    state: State<'_, AppState>,
+) -> Result<ScreenSourceList, String> {
+    Ok(state.media_manager.enumerate_screens())
+}
+
+/// Start screen sharing. Adds a video track to all peers and begins capture.
+#[tauri::command]
+pub async fn media_start_screen_share(
+    source_id: String,
+    fps: Option<u32>,
+    bitrate_kbps: Option<u32>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let video_track = state
+        .webrtc_manager
+        .add_video_track_to_all(&app)
+        .await?;
+
+    state
+        .media_manager
+        .start_screen_share(
+            &source_id,
+            video_track,
+            app,
+            fps.unwrap_or(30),
+            bitrate_kbps.unwrap_or(0),
+        )
+        .await
+}
+
+/// Stop screen sharing. Stops capture and removes video tracks from all peers.
+#[tauri::command]
+pub async fn media_stop_screen_share(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.media_manager.stop_screen_share(&app).await?;
+    state
+        .webrtc_manager
+        .remove_video_tracks_from_all(&app)
+        .await
 }

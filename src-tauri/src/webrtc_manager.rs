@@ -108,6 +108,8 @@ struct PeerEntry {
     being_replaced: Arc<AtomicBool>,
     /// Local audio track attached to this peer (None if mic not active).
     audio_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
+    /// Local video track attached to this peer (None if screen share not active).
+    video_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────────
@@ -283,15 +285,69 @@ impl WebRTCManager {
                         }
                     });
                 } else {
-                    // Video tracks — Phase B (screen share): drain to keep WebRTC happy
+                    // Video tracks — decode H.264 → JPEG → emit frame events
                     let track_clone = track.clone();
+                    let pid3 = pid2.clone();
+                    let app3 = app2.clone();
                     tokio::spawn(async move {
+                        let frame_dir = match MediaManager::frame_output_dir(&app3) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                log::error!("[webrtc] failed to get frame dir: {e}");
+                                return;
+                            }
+                        };
+                        let frame_path = frame_dir.join(format!("{pid3}.jpg"));
+                        let mut decoder = match openh264::decoder::Decoder::new() {
+                            Ok(d) => d,
+                            Err(e) => {
+                                log::error!("[webrtc] H.264 decoder init failed: {e}");
+                                return;
+                            }
+                        };
+
+                        let mut frame_number: u64 = 0;
+
                         loop {
                             match track_clone.read_rtp().await {
-                                Ok((_pkt, _attr)) => {}
-                                Err(_) => break,
+                                Ok((pkt, _attr)) => {
+                                    match MediaManager::decode_and_write_jpeg(
+                                        &mut decoder,
+                                        &pkt.payload,
+                                        &frame_path,
+                                    ) {
+                                        Ok(true) => {
+                                            frame_number += 1;
+                                            let _ = app3.emit(
+                                                "media_video_frame",
+                                                serde_json::json!({
+                                                    "userId": pid3,
+                                                    "frameNumber": frame_number,
+                                                    "path": frame_path.to_string_lossy(),
+                                                }),
+                                            );
+                                        }
+                                        Ok(false) => {
+                                            // Decoder needs more data
+                                        }
+                                        Err(e) => {
+                                            log::debug!("[webrtc] H.264 decode (transient): {e}");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    log::debug!("[webrtc] video track read ended for {pid3}: {e}");
+                                    break;
+                                }
                             }
                         }
+
+                        // Clean up frame file
+                        let _ = std::fs::remove_file(&frame_path);
+                        let _ = app3.emit(
+                            "media_video_frame_ended",
+                            serde_json::json!({ "userId": pid3 }),
+                        );
                     });
                 }
 
@@ -408,6 +464,7 @@ impl WebRTCManager {
                 remote_desc_ready,
                 being_replaced,
                 audio_track: Arc::new(Mutex::new(None)),
+                video_track: Arc::new(Mutex::new(None)),
             },
         );
 
@@ -462,6 +519,7 @@ impl WebRTCManager {
                 remote_desc_ready: remote_desc_ready.clone(),
                 being_replaced,
                 audio_track: Arc::new(Mutex::new(None)),
+                video_track: Arc::new(Mutex::new(None)),
             },
         );
 
@@ -685,6 +743,99 @@ impl WebRTCManager {
                 .set_local_description(offer.clone())
                 .await
                 .map_err(|e| format!("set_local_desc renegotiate {peer_id}: {e}"))?;
+
+            let _ = app.emit(
+                "webrtc_offer",
+                OfferEvent {
+                    to: peer_id.clone(),
+                    sdp: offer.sdp,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Add a local H.264 video track to every connected peer and trigger SDP renegotiation.
+    /// Returns the shared TrackLocalStaticSample for the capture pipeline to write into.
+    pub async fn add_video_track_to_all(
+        &self,
+        app: &AppHandle,
+    ) -> Result<Arc<TrackLocalStaticSample>, String> {
+        let track = Arc::new(TrackLocalStaticSample::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                clock_rate: 90000,
+                ..Default::default()
+            },
+            "hexfield-video".to_owned(),
+            "hexfield-screen".to_owned(),
+        ));
+
+        let peers = self.peers.lock().await;
+        for (peer_id, entry) in peers.iter() {
+            let track_local: Arc<dyn TrackLocal + Send + Sync> = track.clone();
+            entry
+                .pc
+                .add_track(track_local)
+                .await
+                .map_err(|e| format!("add_video_track to {peer_id}: {e}"))?;
+
+            *entry.video_track.lock().await = Some(track.clone());
+
+            // Trigger renegotiation
+            let offer = entry
+                .pc
+                .create_offer(None)
+                .await
+                .map_err(|e| format!("video renegotiate create_offer {peer_id}: {e}"))?;
+            entry
+                .pc
+                .set_local_description(offer.clone())
+                .await
+                .map_err(|e| format!("video renegotiate set_local {peer_id}: {e}"))?;
+
+            let _ = app.emit(
+                "webrtc_offer",
+                OfferEvent {
+                    to: peer_id.clone(),
+                    sdp: offer.sdp,
+                },
+            );
+        }
+
+        Ok(track)
+    }
+
+    /// Remove video tracks from all peers and trigger SDP renegotiation.
+    pub async fn remove_video_tracks_from_all(&self, app: &AppHandle) -> Result<(), String> {
+        let peers = self.peers.lock().await;
+        for (peer_id, entry) in peers.iter() {
+            *entry.video_track.lock().await = None;
+
+            let senders = entry.pc.get_senders().await;
+            for sender in senders {
+                if let Some(track) = sender.track().await {
+                    if track.kind() == RTPCodecType::Video {
+                        entry
+                            .pc
+                            .remove_track(&sender)
+                            .await
+                            .map_err(|e| format!("remove_video_track from {peer_id}: {e}"))?;
+                    }
+                }
+            }
+
+            let offer = entry
+                .pc
+                .create_offer(None)
+                .await
+                .map_err(|e| format!("video renegotiate after remove {peer_id}: {e}"))?;
+            entry
+                .pc
+                .set_local_description(offer.clone())
+                .await
+                .map_err(|e| format!("video set_local after remove {peer_id}: {e}"))?;
 
             let _ = app.emit(
                 "webrtc_offer",

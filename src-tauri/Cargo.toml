@@ -68,6 +68,16 @@ opus               = "0.3"
 # Byte buffer ergonomics (already a transitive dep of webrtc, but pin explicitly)
 bytes              = "1"
 
+# Screen/window capture (cross-platform: DXGI, CoreGraphics, XCB)
+xcap               = "0.9"
+
+# H.264 video codec — encode captured frames, decode received frames
+# Compiles OpenH264 from bundled source (no system deps).
+openh264           = "0.9"
+
+# Image encoding/decoding (JPEG for frame delivery to frontend via asset://)
+image              = "0.25"
+
 # WebRTC (Rust-native data channels; replaces browser RTCPeerConnection on Linux)
 webrtc             = "0.17.1"
 
