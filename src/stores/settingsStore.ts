@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
-import { logger } from "@/utils/logger";
+import { logger, type LogLevel } from "@/utils/logger";
 import { APP_STORAGE_PREFIX } from "@/appConfig";
 import type { ServerNotificationPrefs, ChannelNotificationPrefs, KeywordFilter, SoundEvent } from '@/types/core'
 
@@ -63,6 +63,7 @@ export interface UserSettings {
   videoFrameRate: 10 | 15 | 30;
   // Network
   rendezvousServerUrl: string;
+  userDiscoverability: 'public' | 'private';
   soundEnabled: boolean;
   notificationsEnabled: boolean;
   // Per-server / channel notification rules
@@ -71,6 +72,8 @@ export interface UserSettings {
   keywordFilters:           KeywordFilter[];
   // Per-event custom sound overrides (data: URLs)
   customSounds:             Partial<Record<SoundEvent, string>>;
+  // Developer
+  logLevel:                 LogLevel;
 }
 
 const STORAGE_KEY = APP_STORAGE_PREFIX + 'settings'
@@ -109,12 +112,14 @@ const defaultSettings: UserSettings = {
   videoFrameRate: 30,
   // Network
   rendezvousServerUrl: '',
+  userDiscoverability: 'public',
   soundEnabled: true,
   notificationsEnabled: true,
   serverNotificationPrefs:  {},
   channelNotificationPrefs: {},
   keywordFilters:           [],
   customSounds:             {},
+  logLevel:                 'info',
 };
 
 function loadFromStorage(): UserSettings {
@@ -153,6 +158,7 @@ export const useSettingsStore = defineStore("settings", () => {
   let _persistTimer: ReturnType<typeof setTimeout> | undefined
   watch(settings, (val) => {
     applyCSSVars(val)
+    logger.level = val.logLevel
     if (_persistTimer !== undefined) clearTimeout(_persistTimer)
     _persistTimer = setTimeout(() => {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(val))

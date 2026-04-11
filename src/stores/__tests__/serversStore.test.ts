@@ -28,7 +28,7 @@ function makeServer(id = 's-1'): Server {
   }
 }
 
-function makeMemberPayload(overrides: Partial<ServerMember & { avatarDataUrl?: string }> = {}) {
+function makeMemberPayload(overrides: Partial<ServerMember & { avatarHash?: string }> = {}) {
   return {
     userId:        'user-bob',
     serverId:      's-1',
@@ -80,7 +80,7 @@ describe('serversStore.upsertMember', () => {
     })
   })
 
-  it('applies incoming avatarDataUrl to the reactive entry', async () => {
+  it('applies incoming avatarHash to the reactive entry', async () => {
     const { useServersStore } = await import('@/stores/serversStore')
     const { invoke } = await import('@tauri-apps/api/core')
     const store = useServersStore()
@@ -88,12 +88,12 @@ describe('serversStore.upsertMember', () => {
     store.servers['s-1'] = makeServer()
     vi.mocked(invoke).mockResolvedValue(undefined)
 
-    await store.upsertMember(makeMemberPayload({ avatarDataUrl: 'data:image/png;base64,abc' }))
+    await store.upsertMember(makeMemberPayload({ avatarHash: 'abc123' }))
 
-    expect(store.members['s-1']?.['user-bob']?.avatarDataUrl).toBe('data:image/png;base64,abc')
+    expect(store.members['s-1']?.['user-bob']?.avatarHash).toBe('abc123')
   })
 
-  it('preserves existing avatarDataUrl when caller omits it', async () => {
+  it('preserves existing avatarHash when caller omits it', async () => {
     const { useServersStore } = await import('@/stores/serversStore')
     const { invoke } = await import('@tauri-apps/api/core')
     const store = useServersStore()
@@ -101,19 +101,19 @@ describe('serversStore.upsertMember', () => {
     store.servers['s-1'] = makeServer()
     vi.mocked(invoke).mockResolvedValue(undefined)
 
-    // First upsert sets the avatar
-    await store.upsertMember(makeMemberPayload({ avatarDataUrl: 'data:image/png;base64,original' }))
-    expect(store.members['s-1']?.['user-bob']?.avatarDataUrl).toBe('data:image/png;base64,original')
+    // First upsert sets the avatar hash
+    await store.upsertMember(makeMemberPayload({ avatarHash: 'hash-original' }))
+    expect(store.members['s-1']?.['user-bob']?.avatarHash).toBe('hash-original')
 
-    // Second upsert (e.g. name change) does not supply avatarDataUrl
+    // Second upsert (e.g. name change) does not supply avatarHash
     await store.upsertMember(makeMemberPayload({ displayName: 'Bobby' }))
 
-    // Avatar must be preserved
-    expect(store.members['s-1']?.['user-bob']?.avatarDataUrl).toBe('data:image/png;base64,original')
+    // Hash must be preserved
+    expect(store.members['s-1']?.['user-bob']?.avatarHash).toBe('hash-original')
     expect(store.members['s-1']?.['user-bob']?.displayName).toBe('Bobby')
   })
 
-  it('a newer upsert can overwrite avatarDataUrl with a new value', async () => {
+  it('a newer upsert can overwrite avatarHash with a new value', async () => {
     const { useServersStore } = await import('@/stores/serversStore')
     const { invoke } = await import('@tauri-apps/api/core')
     const store = useServersStore()
@@ -121,10 +121,10 @@ describe('serversStore.upsertMember', () => {
     store.servers['s-1'] = makeServer()
     vi.mocked(invoke).mockResolvedValue(undefined)
 
-    await store.upsertMember(makeMemberPayload({ avatarDataUrl: 'data:image/png;base64,old' }))
-    await store.upsertMember(makeMemberPayload({ avatarDataUrl: 'data:image/png;base64,new' }))
+    await store.upsertMember(makeMemberPayload({ avatarHash: 'hash-old' }))
+    await store.upsertMember(makeMemberPayload({ avatarHash: 'hash-new' }))
 
-    expect(store.members['s-1']?.['user-bob']?.avatarDataUrl).toBe('data:image/png;base64,new')
+    expect(store.members['s-1']?.['user-bob']?.avatarHash).toBe('hash-new')
   })
 })
 

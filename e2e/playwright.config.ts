@@ -65,6 +65,18 @@ export default defineConfig({
     //   name: 'cdp',
     //   use: { mode: 'cdp' },
     // },
+
+    // ── Integration mode (two real Tauri instances) ─────────────────────
+    // Connects to alice (CDP port 9222) and bob (CDP port 9223) which must
+    // already be running before invoking this project.
+    //   Terminal 1: npm run dev:alice
+    //   Terminal 2: npm run dev:bob
+    //   Terminal 3: npm run e2e:integration
+    {
+      name: 'integration',
+      testMatch: '**/multi-instance.spec.ts',
+      use: {},
+    },
   ],
 
   // Start the Vite dev server for browser-mode tests.

@@ -15,6 +15,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import type { MessageRow, MutationRow, Mutation } from '@/types/core'
+import { logger } from '@/utils/logger'
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,7 @@ export function setSendFn(fn: SendFn): void {
 // ── Initiator: start sync for a newly connected peer ─────────────────────────
 
 export async function startSync(peerId: string): Promise<void> {
+  logger.debug('sync', 'startSync with peer:', peerId)
   try {
     // Pass 0: Server-level mutations FIRST (members, channels, devices, emoji, server updates)
     await _startNegSession(peerId, '__server__', 'mutations')
@@ -90,7 +92,7 @@ export async function startSync(peerId: string): Promise<void> {
       await _startNegSession(peerId, channelId, 'mutations')
     }
   } catch (e) {
-    console.warn('[sync] startSync error:', e)
+    logger.warn('sync', 'startSync error:', e)
   }
 }
 
@@ -99,13 +101,14 @@ async function _startNegSession(
   channelId: string,
   table: SyncTable,
 ): Promise<void> {
+  logger.debug('sync', 'neg session:', channelId, table, '→', peerId)
   try {
     const msg: string = await invoke('sync_initiate', { channelId, table })
     const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     _pendingSessions.set(sessionId, { channelId, table })
     _sendToPeer(peerId, { type: 'sync_neg_init', sessionId, channelId, table, msg } satisfies SyncNegInit)
   } catch (e) {
-    console.warn(`[sync] initiate failed for ${channelId}/${table}:`, e)
+    logger.warn('sync', `initiate failed for ${channelId}/${table}:`, e)
   }
 }
 
@@ -142,7 +145,7 @@ async function _onNegInit(peerId: string, wire: SyncNegInit): Promise<void> {
     })
     _sendToPeer(peerId, { type: 'sync_neg_reply', sessionId: wire.sessionId, msg: reply } satisfies SyncNegReply)
   } catch (e) {
-    console.warn('[sync] sync_respond error:', e)
+    logger.warn('sync', 'sync_respond error:', e)
   }
 }
 
@@ -151,7 +154,7 @@ async function _onNegInit(peerId: string, wire: SyncNegInit): Promise<void> {
 async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
   const session = _pendingSessions.get(wire.sessionId)
   if (!session) {
-    console.warn('[sync] received neg_reply for unknown session', wire.sessionId)
+    logger.warn('sync', 'received neg_reply for unknown session', wire.sessionId)
     return
   }
   _pendingSessions.delete(wire.sessionId)
@@ -164,6 +167,7 @@ async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
       table,
       msg: wire.msg,
     })
+    logger.debug('sync', 'diff', channelId, table, 'have:', diff.have_ids.length, 'need:', diff.need_ids.length)
 
     // Push content we have that the peer needs
     if (diff.have_ids.length > 0) {
@@ -181,16 +185,24 @@ async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
       } satisfies SyncWant)
     }
   } catch (e) {
-    console.warn('[sync] process_response error:', e)
+    logger.warn('sync', 'process_response error:', e)
   }
 }
 
 // ── Push content to peer ──────────────────────────────────────────────────────
 
-// WebRTC data channels (SCTP) have a ~65 KB max message size.  A naive push of
-// a large channel history easily exceeds this.  Send in fixed-size batches so
-// every individual frame stays well under the limit.
-const SYNC_PUSH_CHUNK_SIZE = 50
+// WebRTC data channels (SCTP) have a ~65 KB max message size.  Chunk by
+// serialized byte size so every individual SCTP frame stays well under the
+// limit.  A message whose content is a base64-encoded image can easily exceed
+// this on its own (100 KB binary → ~133 KB base64); those are stripped to a
+// placeholder so the endless negentropy retry loop is broken.  New messages
+// use a 40 KB inline cap (see MessageInput.vue) so they always fit.
+const SCTP_SAFE_BYTES = 60_000
+// The sync_push JSON envelope wraps the items array and adds a fixed overhead
+// (type, sessionId, table, channelId fields ≈ 160 chars).  We subtract a
+// generous bound so the FULL wire payload always fits within SCTP_SAFE_BYTES.
+const SYNC_PUSH_OVERHEAD = 256
+const ITEM_BUDGET = SCTP_SAFE_BYTES - SYNC_PUSH_OVERHEAD // 59,744
 
 async function _pushItems(
   peerId: string,
@@ -202,19 +214,68 @@ async function _pushItems(
   try {
     if (table === 'messages') {
       const messages: MessageRow[] = await invoke('sync_get_messages', { ids })
-      for (let i = 0; i < messages.length; i += SYNC_PUSH_CHUNK_SIZE) {
-        const chunk = messages.slice(i, i + SYNC_PUSH_CHUNK_SIZE)
-        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, messages: chunk } satisfies SyncPush)
+      let batch: MessageRow[] = []
+      let batchBytes = 0
+      const flush = () => {
+        if (batch.length === 0) return
+        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, messages: batch } satisfies SyncPush)
+        batch = []
+        batchBytes = 0
       }
+      for (const msg of messages) {
+        // Strip oversized inline payloads so the SCTP frame stays under the
+        // limit and negentropy stops re-trying these rows forever.
+        let safe: MessageRow = msg
+        // Strip large data: URIs from content
+        if (msg.content?.startsWith('data:') && msg.content.length > ITEM_BUDGET) {
+          safe = { ...safe, content: '[image: too large to sync inline]' }
+        }
+        // Strip inlineData from raw_attachments entries
+        if (safe.raw_attachments) {
+          try {
+            const atts = JSON.parse(safe.raw_attachments) as Array<Record<string, unknown>>
+            const stripped = atts.map(a => {
+              if (typeof a.inlineData === 'string' && a.inlineData.length > ITEM_BUDGET) {
+                const { inlineData: _, ...rest } = a
+                return { ...rest, transferState: 'stripped' }
+              }
+              return a
+            })
+            safe = { ...safe, raw_attachments: JSON.stringify(stripped) }
+          } catch { /* leave as-is if not valid JSON */ }
+        }
+        const itemBytes = JSON.stringify(safe).length
+        // Final guard: skip items that are still too large even after all stripping.
+        // This prevents a single item from blowing the SCTP frame regardless of source.
+        if (itemBytes > ITEM_BUDGET) {
+          logger.warn('sync', 'item too large to send even after stripping, skipping:', msg.id, itemBytes)
+          continue
+        }
+        if (batchBytes + itemBytes > ITEM_BUDGET && batch.length > 0) flush()
+        batch.push(safe)
+        batchBytes += itemBytes
+      }
+      flush()
     } else {
       const mutations: MutationRow[] = await invoke('sync_get_mutations', { ids })
-      for (let i = 0; i < mutations.length; i += SYNC_PUSH_CHUNK_SIZE) {
-        const chunk = mutations.slice(i, i + SYNC_PUSH_CHUNK_SIZE)
-        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, mutations: chunk } satisfies SyncPush)
+      let batch: MutationRow[] = []
+      let batchBytes = 0
+      const flush = () => {
+        if (batch.length === 0) return
+        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, mutations: batch } satisfies SyncPush)
+        batch = []
+        batchBytes = 0
       }
+      for (const mut of mutations) {
+        const itemBytes = JSON.stringify(mut).length
+        if (batchBytes + itemBytes > ITEM_BUDGET && batch.length > 0) flush()
+        batch.push(mut)
+        batchBytes += itemBytes
+      }
+      flush()
     }
   } catch (e) {
-    console.warn('[sync] push error:', e)
+    logger.warn('sync', 'push error:', e)
   }
 }
 
@@ -271,17 +332,32 @@ async function _onPush(wire: SyncPush): Promise<void> {
           if (mutation.type === 'member_join' && mutation.newContent) {
             const payload = JSON.parse(mutation.newContent)
             if (payload.serverId && payload.userId) {
-              if (!serversStore.members[payload.serverId]) serversStore.members[payload.serverId] = {}
-              serversStore.members[payload.serverId][payload.userId] = {
-                userId: payload.userId,
-                serverId: payload.serverId,
-                displayName: payload.displayName ?? '',
-                roles: payload.roles ?? ['member'],
-                joinedAt: payload.joinedAt ?? mutation.createdAt,
-                publicSignKey: payload.publicSignKey ?? '',
-                publicDHKey: payload.publicDHKey ?? '',
-                onlineStatus: 'offline',
+              const member = {
+                userId:        payload.userId        as string,
+                serverId:      payload.serverId      as string,
+                displayName:   (payload.displayName  as string) ?? '',
+                roles:         (payload.roles        as string[]) ?? ['member'],
+                joinedAt:      (payload.joinedAt     as string) ?? mutation.createdAt,
+                publicSignKey: (payload.publicSignKey as string) ?? '',
+                publicDHKey:   (payload.publicDHKey   as string) ?? '',
+                onlineStatus:  'offline' as const,
               }
+              // Update in-memory reactive map
+              if (!serversStore.members[member.serverId]) serversStore.members[member.serverId] = {}
+              serversStore.members[member.serverId][member.userId] = member
+              // Persist to SQLite so fetchMembers can reload C after restart or server switch
+              await invoke('db_upsert_member', {
+                member: {
+                  user_id:         member.userId,
+                  server_id:       member.serverId,
+                  display_name:    member.displayName,
+                  roles:           JSON.stringify(member.roles),
+                  joined_at:       member.joinedAt,
+                  public_sign_key: member.publicSignKey,
+                  public_dh_key:   member.publicDHKey,
+                  online_status:   member.onlineStatus,
+                },
+              })
             }
           }
 

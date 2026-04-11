@@ -155,6 +155,16 @@ watch(() => uiStore.showInviteModal, async (open) => {
   } catch {
     endpoints.value = []
   }
+
+  // Fetch public WAN endpoint (requires UPnP + STUN success)
+  try {
+    const pub_ = await invoke<{ type: string; addr: string; port: number } | null>('get_public_endpoint')
+    if (pub_) {
+      endpoints.value.push({ type: pub_.type as PeerEndpoint['type'], addr: pub_.addr, port: pub_.port })
+    }
+  } catch {
+    // No public endpoint available — LAN-only invite
+  }
 })
 
 watch(inviteLink, async (link) => {
@@ -178,6 +188,35 @@ async function generateNewLink() {
     expiresInMs: selectedExpiry.value,
     maxUses,
   })
+
+  // Register invite on rendezvous server (non-critical)
+  try {
+    const { useSettingsStore } = await import('@/stores/settingsStore')
+    const { useNetworkStore } = await import('@/stores/networkStore')
+    const settingsStore = useSettingsStore()
+    const networkStore = useNetworkStore()
+    const url = settingsStore.settings.rendezvousServerUrl
+    const token = networkStore.getRendezvousToken()
+    if (url && token && inviteToken.value) {
+      await fetch(`${url}/invites`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          code: inviteToken.value,
+          server_id: server.value.id,
+          server_name: server.value.name,
+          endpoints: JSON.stringify(endpoints.value),
+          max_uses: maxUses,
+          expires_at: selectedExpiry.value
+            ? new Date(Date.now() + selectedExpiry.value).toISOString()
+            : null,
+        }),
+      })
+    }
+  } catch { /* Non-critical — invite still works P2P */ }
 }
 
 async function revokeCode(code: string) {

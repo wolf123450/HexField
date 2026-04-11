@@ -115,7 +115,6 @@ export const useServersStore = defineStore('servers', () => {
         public_sign_key: selfMember.publicSignKey,
         public_dh_key:   selfMember.publicDHKey,
         online_status:   selfMember.onlineStatus,
-        avatar_data_url: identityStore.avatarDataUrl ?? null,
       },
     })
     if (!members.value[server.id]) members.value[server.id] = {}
@@ -149,21 +148,17 @@ export const useServersStore = defineStore('servers', () => {
         publicDHKey:   r.public_dh_key,
         onlineStatus,
         // Prefer DB-persisted values; fall back to any in-memory gossip not yet flushed.
-        avatarDataUrl: r.avatar_data_url ?? existing[r.user_id]?.avatarDataUrl,
         avatarHash:    r.avatar_hash   ?? existing[r.user_id]?.avatarHash,
         bio:           r.bio           ?? existing[r.user_id]?.bio,
         bannerColor:   r.banner_color  ?? existing[r.user_id]?.bannerColor,
-        bannerDataUrl: r.banner_data_url ?? existing[r.user_id]?.bannerDataUrl,
         bannerHash:    r.banner_hash   ?? existing[r.user_id]?.bannerHash,
       }
     }
     // Hydrate own member record with current identity data (source of truth for name/avatar/bio/banner).
     if (uid && map[uid]) {
       map[uid].displayName   = identityStore.displayName
-      map[uid].avatarDataUrl = identityStore.avatarDataUrl
       if (identityStore.bio)          map[uid].bio          = identityStore.bio
       if (identityStore.bannerColor)  map[uid].bannerColor  = identityStore.bannerColor
-      if (identityStore.bannerDataUrl) map[uid].bannerDataUrl = identityStore.bannerDataUrl
     }
     members.value[serverId] = map
   }
@@ -189,22 +184,18 @@ export const useServersStore = defineStore('servers', () => {
     userId: string,
     payload: {
       displayName?: string
-      avatarDataUrl?: string | null
       avatarHash?: string | null
       bio?: string | null
       bannerColor?: string | null
-      bannerDataUrl?: string | null
       bannerHash?: string | null
     },
   ) {
     const m = members.value[serverId]?.[userId]
     if (!m) return
     if (payload.displayName   !== undefined) m.displayName   = payload.displayName
-    if (payload.avatarDataUrl !== undefined) m.avatarDataUrl = payload.avatarDataUrl
     if (payload.avatarHash    !== undefined) m.avatarHash    = payload.avatarHash ?? undefined
     if (payload.bio           !== undefined) m.bio           = payload.bio
     if (payload.bannerColor   !== undefined) m.bannerColor   = payload.bannerColor
-    if (payload.bannerDataUrl !== undefined) m.bannerDataUrl = payload.bannerDataUrl
     if (payload.bannerHash    !== undefined) m.bannerHash    = payload.bannerHash ?? undefined
     // Persist the updated member record to DB so bios/banners survive restarts
     invoke('db_upsert_member', {
@@ -217,11 +208,9 @@ export const useServersStore = defineStore('servers', () => {
         public_sign_key:  m.publicSignKey,
         public_dh_key:    m.publicDHKey,
         online_status:    m.onlineStatus,
-        avatar_data_url:  m.avatarDataUrl ?? null,
         avatar_hash:      m.avatarHash    ?? null,
         bio:              m.bio           ?? null,
         banner_color:     m.bannerColor   ?? null,
-        banner_data_url:  m.bannerDataUrl ?? null,
         banner_hash:      m.bannerHash    ?? null,
       },
     }).catch(() => {}) // fire-and-forget; in-memory state is already updated
@@ -940,10 +929,10 @@ export const useServersStore = defineStore('servers', () => {
     roles: string[]
     joinedAt: string
     onlineStatus: string
-    avatarDataUrl?: string | null
+    avatarHash?: string | null
     bio?: string | null
     bannerColor?: string | null
-    bannerDataUrl?: string | null
+    bannerHash?: string | null
   }) {
     if (!servers.value[m.serverId]) return // Unknown server — reject silently
     // Preserve existing profile fields if caller doesn't supply them
@@ -958,10 +947,8 @@ export const useServersStore = defineStore('servers', () => {
         public_sign_key:  m.publicSignKey,
         public_dh_key:    m.publicDHKey,
         online_status:    m.onlineStatus,
-        avatar_data_url:  m.avatarDataUrl !== undefined ? m.avatarDataUrl : (existing?.avatarDataUrl ?? null),
         bio:              m.bio           !== undefined ? m.bio           : (existing?.bio ?? null),
         banner_color:     m.bannerColor   !== undefined ? m.bannerColor   : (existing?.bannerColor ?? null),
-        banner_data_url:  m.bannerDataUrl !== undefined ? m.bannerDataUrl : (existing?.bannerDataUrl ?? null),
       },
     })
     if (!members.value[m.serverId]) members.value[m.serverId] = {}
@@ -974,10 +961,10 @@ export const useServersStore = defineStore('servers', () => {
       roles:         m.roles,
       joinedAt:      m.joinedAt,
       onlineStatus:  m.onlineStatus as ServerMember['onlineStatus'],
-      avatarDataUrl: m.avatarDataUrl !== undefined ? m.avatarDataUrl : existing?.avatarDataUrl,
+      avatarHash:    m.avatarHash    ?? existing?.avatarHash,
       bio:           m.bio           !== undefined ? m.bio           : existing?.bio,
       bannerColor:   m.bannerColor   !== undefined ? m.bannerColor   : existing?.bannerColor,
-      bannerDataUrl: m.bannerDataUrl !== undefined ? m.bannerDataUrl : existing?.bannerDataUrl,
+      bannerHash:    m.bannerHash    ?? existing?.bannerHash,
     }
   }
 

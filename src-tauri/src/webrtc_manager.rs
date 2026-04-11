@@ -86,6 +86,9 @@ struct PeerEntry {
     dc: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     /// Becomes true once set_remote_description has completed; guards ICE application.
     remote_desc_ready: Arc<AtomicBool>,
+    /// Set to true before replacing this entry so its teardown callbacks don't
+    /// emit `webrtc_disconnected` for the *new* connection that took its place.
+    being_replaced: Arc<AtomicBool>,
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────────
@@ -150,6 +153,7 @@ impl WebRTCManager {
         pc: Arc<RTCPeerConnection>,
         peer_id: String,
         dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+        being_replaced: Arc<AtomicBool>,
         app: AppHandle,
     ) {
         // ICE candidate → relay through frontend to remote peer
@@ -178,17 +182,24 @@ impl WebRTCManager {
         // Connection state → emit disconnect when terminal state reached
         let app_state = app.clone();
         let pid_state = peer_id.clone();
+        let being_replaced_ref = being_replaced.clone();
         pc.on_peer_connection_state_change(Box::new(move |s| {
             let app2 = app_state.clone();
             let pid2 = pid_state.clone();
+            let being_replaced2 = being_replaced_ref.clone();
             Box::pin(async move {
+                log::debug!("[webrtc] peer state {s:?} for {pid2}");
                 if matches!(
                     s,
                     RTCPeerConnectionState::Failed
                         | RTCPeerConnectionState::Disconnected
                         | RTCPeerConnectionState::Closed
                 ) {
-                    let _ = app2.emit("webrtc_disconnected", DisconnectedEvent { user_id: pid2 });
+                    // Skip emitting disconnect if this entry has been superseded by a
+                    // newer connection — otherwise the new peer entry gets destroyed.
+                    if !being_replaced2.load(Ordering::Acquire) {
+                        let _ = app2.emit("webrtc_disconnected", DisconnectedEvent { user_id: pid2 });
+                    }
                 }
             })
         }));
@@ -227,6 +238,7 @@ impl WebRTCManager {
             let app2 = app_open.clone();
             Box::pin(async move {
                 *slot2.lock().await = Some(dc2);
+                log::debug!("[webrtc] DC opened for {pid2}");
                 let _ = app2.emit("webrtc_connected", ConnectedEvent { user_id: pid2 });
             })
         }));
@@ -264,10 +276,29 @@ impl WebRTCManager {
 
     /// Caller side: create offer and emit `webrtc_offer` event.
     pub async fn create_offer(&self, peer_id: &str, app: &AppHandle) -> Result<(), String> {
+        log::debug!("[webrtc] create_offer → {peer_id}");
         let pc = Self::build_pc().await?;
         let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
         let remote_desc_ready = Arc::new(AtomicBool::new(false));
-        Self::wire_callbacks(pc.clone(), peer_id.to_string(), dc_slot.clone(), app.clone());
+        let being_replaced = Arc::new(AtomicBool::new(false));
+
+        // Mark any existing entry as being_replaced and close its PC so that:
+        //   a) its on_peer_connection_state_change(Closed) doesn't emit webrtc_disconnected
+        //   b) its data channel never opens and never fires a spurious webrtc_connected
+        //      (which would cause waitForPeer to resolve while sendToPeer still uses this
+        //       new PC whose DC slot is still None, silently dropping the first message).
+        let old_pc_to_close: Option<Arc<RTCPeerConnection>> = {
+            let peers = self.peers.lock().await;
+            peers.get(peer_id).map(|old| {
+                old.being_replaced.store(true, Ordering::Release);
+                old.pc.clone()
+            })
+        };
+        if let Some(old_pc) = old_pc_to_close {
+            tokio::spawn(async move { let _ = old_pc.close().await; });
+        }
+
+        Self::wire_callbacks(pc.clone(), peer_id.to_string(), dc_slot.clone(), being_replaced.clone(), app.clone());
 
         // Caller creates the data channel; callee receives it via on_data_channel
         let dc = pc
@@ -288,6 +319,7 @@ impl WebRTCManager {
                 pc,
                 dc: dc_slot,
                 remote_desc_ready,
+                being_replaced,
             },
         );
 
@@ -308,10 +340,27 @@ impl WebRTCManager {
         sdp: String,
         app: &AppHandle,
     ) -> Result<(), String> {
+        log::debug!("[webrtc] handle_offer from {from}");
         let pc = Self::build_pc().await?;
         let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
         let remote_desc_ready = Arc::new(AtomicBool::new(false));
-        Self::wire_callbacks(pc.clone(), from.to_string(), dc_slot.clone(), app.clone());
+        let being_replaced = Arc::new(AtomicBool::new(false));
+
+        // Mark any existing entry as being_replaced and close its PC (same reasoning as
+        // create_offer: prevents the old DC from opening and firing a spurious
+        // webrtc_connected that races with the new connection's DC readiness).
+        let old_pc_to_close: Option<Arc<RTCPeerConnection>> = {
+            let peers = self.peers.lock().await;
+            peers.get(from).map(|old| {
+                old.being_replaced.store(true, Ordering::Release);
+                old.pc.clone()
+            })
+        };
+        if let Some(old_pc) = old_pc_to_close {
+            tokio::spawn(async move { let _ = old_pc.close().await; });
+        }
+
+        Self::wire_callbacks(pc.clone(), from.to_string(), dc_slot.clone(), being_replaced.clone(), app.clone());
 
         // Insert the peer entry early so add_ice_candidate buffers rather than
         // errors with "no peer entry".  remote_desc_ready stays false until
@@ -322,6 +371,7 @@ impl WebRTCManager {
                 pc: pc.clone(),
                 dc: dc_slot,
                 remote_desc_ready: remote_desc_ready.clone(),
+                being_replaced,
             },
         );
 

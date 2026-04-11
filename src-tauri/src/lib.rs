@@ -10,6 +10,8 @@ mod db;
 mod commands;
 #[cfg(not(mobile))]
 mod lan;
+#[cfg(not(mobile))]
+mod upnp;
 mod webrtc_manager;
 
 use commands::archive_commands::*;
@@ -35,10 +37,21 @@ pub struct AppState {
     pub local_user_id: Arc<Mutex<String>>,
     /// Rust-native WebRTC peer connections (data channels; Phase 1).
     pub webrtc_manager: Arc<webrtc_manager::WebRTCManager>,
+    /// External port from UPnP mapping (0 = no mapping). Desktop only.
+    #[cfg(not(mobile))]
+    pub upnp_external_port: Arc<AtomicU16>,
+    /// Public IP discovered via STUN or UPnP gateway. Desktop only.
+    #[cfg(not(mobile))]
+    pub public_ip: Arc<Mutex<Option<String>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Both webrtc/dtls (ring) and reqwest/hyper-rustls (aws-lc-rs) pull in rustls with
+    // different crypto-provider features.  Install ring as the process-level provider
+    // before anything starts so rustls doesn't panic with "ambiguous CryptoProvider".
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // `mut` is required when building on Linux (tauri-pilot plugin), unused on other platforms.
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
@@ -50,7 +63,10 @@ pub fn run() {
                     ),
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
                 ])
-                .level(log::LevelFilter::Info)
+                .level(std::env::var("HEXFIELD_LOG")
+                    .ok()
+                    .and_then(|v| v.parse::<log::LevelFilter>().ok())
+                    .unwrap_or(log::LevelFilter::Info))
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
@@ -58,8 +74,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_deep_link::init());
+        .plugin(tauri_plugin_notification::init());
+
+    // tauri-plugin-deep-link: handles hexfield:// URL scheme for invite joins.
+    // Skipped when HEXFIELD_MULTI_INSTANCE=1 so multiple named dev instances can
+    // run simultaneously — the plugin creates a named pipe for single-instance
+    // enforcement that causes any second instance to immediately exit.
+    if std::env::var("HEXFIELD_MULTI_INSTANCE").as_deref() != Ok("1") {
+        builder = builder.plugin(tauri_plugin_deep_link::init());
+    }
 
     // tauri-pilot: interactive testing CLI for AI agents (Linux + debug builds only).
     // Not compiled on macOS/Windows (uses Unix sockets; cross-platform support planned upstream).
@@ -88,14 +111,35 @@ pub fn run() {
                 #[cfg(not(mobile))]
                 local_user_id: Arc::new(Mutex::new(String::new())),
                 webrtc_manager: Arc::new(webrtc_manager::WebRTCManager::new()),
+                #[cfg(not(mobile))]
+                upnp_external_port: Arc::new(AtomicU16::new(0)),
+                #[cfg(not(mobile))]
+                public_ip: Arc::new(Mutex::new(None)),
             });
 
-            // Set the window taskbar/title-bar icon.  The conf schema does not
-            // support a per-window `icon` field, so we do it here at runtime.
-            if let Some(window) = app.get_webview_window("main") {
-                const ICON: Image<'_> = tauri::include_image!("./icons/icon.ico");
-                let _ = window.set_icon(ICON);
+            // Create the main window programmatically so we can set a per-instance
+            // WebView2 data directory when HEXFIELD_DATA_DIR is set.  Without this,
+            // a second instance on Windows fails with ERROR_INVALID_STATE because
+            // WebView2 locks the user data folder exclusively.
+            let mut win_builder = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App(std::path::PathBuf::from("index.html")),
+            )
+            .title("HexField")
+            .inner_size(1280.0, 800.0)
+            .min_inner_size(900.0, 600.0)
+            .decorations(false);
+
+            if let Ok(data_dir) = std::env::var("HEXFIELD_DATA_DIR") {
+                if !data_dir.is_empty() {
+                    win_builder = win_builder.data_directory(std::path::PathBuf::from(data_dir));
+                }
             }
+
+            let window = win_builder.build().expect("Failed to create main window");
+            const ICON: Image<'_> = tauri::include_image!("./icons/icon.ico");
+            let _ = window.set_icon(ICON);
 
             Ok(())
         })
@@ -121,6 +165,7 @@ pub fn run() {
             db_load_emoji,
             db_save_emoji,
             get_emoji_image,
+            get_emoji_image_path,
             store_emoji_image,
             // Devices
             db_load_devices,
@@ -152,7 +197,7 @@ pub fn run() {
             get_attachment_path,
             has_attachment,
             save_image,
-            load_image_data_url,
+            get_image_info,
             get_chunk_count,
             save_attachment,
             save_attachment_chunk,
@@ -164,6 +209,7 @@ pub fn run() {
             get_attachment_storage_bytes,
             enforce_storage_limit,
             migrate_data_urls_to_files,
+            migrate_attachment_inline_data,
             // OS Keychain
             keychain_save,
             keychain_load,
@@ -195,6 +241,15 @@ pub fn run() {
             lan_get_local_addrs,
             #[cfg(not(mobile))]
             lan_get_connected_peers,
+            // UPnP/NAT-PMP port forwarding (desktop only)
+            #[cfg(not(mobile))]
+            upnp_forward_port,
+            #[cfg(not(mobile))]
+            upnp_remove_mapping,
+            #[cfg(not(mobile))]
+            get_public_endpoint,
+            #[cfg(not(mobile))]
+            set_public_ip,
             // Sync (negentropy set reconciliation)
             sync_initiate,
             sync_respond,

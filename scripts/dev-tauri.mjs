@@ -75,6 +75,21 @@ if (namespace) {
 
   env.HEXFIELD_DATA_DIR = dataDir
 
+  // Skip the deep-link plugin's single-instance named pipe so a second
+  // (named) instance doesn't exit immediately after detecting the first.
+  env.HEXFIELD_MULTI_INSTANCE = '1'
+
+  // Enable CDP remote debugging on a fixed port per named instance so that
+  // Playwright can connect without needing to instrument the build.
+  // alice=9222, bob=9223, charlie=9224 (only set on Windows; WebKit on
+  // macOS/Linux does not expose a CDP endpoint).
+  const CDP_PORTS = { alice: 9222, bob: 9223, charlie: 9224 }
+  if (process.platform === 'win32' && namespace in CDP_PORTS) {
+    const port = CDP_PORTS[namespace]
+    env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${port}`
+    console.log(`[dev:tauri] CDP debug port: ${port}`)
+  }
+
   console.log(`[dev:tauri] Namespace : ${namespace}`)
   console.log(`[dev:tauri] Data dir  : ${dataDir}`)
 } else {

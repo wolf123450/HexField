@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
+  convertFileSrc: vi.fn((p: string) => `asset://localhost/${p}`),
 }))
 
 import { resolveImageHash, clearImageCache } from '../imageCache'
@@ -16,16 +17,16 @@ describe('imageCache', () => {
   })
 
   it('calls invoke on first resolve and caches the result', async () => {
-    mockedInvoke.mockResolvedValueOnce('data:image/png;base64,abc123')
+    mockedInvoke.mockResolvedValueOnce({ path: '/images/deadbeef.png', mime_type: 'image/png' })
 
     const result1 = await resolveImageHash('deadbeef')
-    expect(result1).toBe('data:image/png;base64,abc123')
-    expect(mockedInvoke).toHaveBeenCalledWith('load_image_data_url', { contentHash: 'deadbeef' })
+    expect(result1).toEqual({ url: 'asset://localhost//images/deadbeef.png', mimeType: 'image/png' })
+    expect(mockedInvoke).toHaveBeenCalledWith('get_image_info', { contentHash: 'deadbeef' })
 
     // Second call should NOT invoke again
     mockedInvoke.mockClear()
     const result2 = await resolveImageHash('deadbeef')
-    expect(result2).toBe('data:image/png;base64,abc123')
+    expect(result2).toEqual({ url: 'asset://localhost//images/deadbeef.png', mimeType: 'image/png' })
     expect(mockedInvoke).not.toHaveBeenCalled()
   })
 
@@ -43,15 +44,15 @@ describe('imageCache', () => {
   })
 
   it('clearImageCache resets the cache', async () => {
-    mockedInvoke.mockResolvedValue('data:image/png;base64,abc123')
+    mockedInvoke.mockResolvedValueOnce({ path: '/images/deadbeef.png', mime_type: 'image/png' })
     await resolveImageHash('deadbeef')
 
     clearImageCache()
     mockedInvoke.mockClear()
-    mockedInvoke.mockResolvedValue('data:image/png;base64,xyz789')
+    mockedInvoke.mockResolvedValueOnce({ path: '/images/deadbeef2.png', mime_type: 'image/png' })
 
     const result = await resolveImageHash('deadbeef')
-    expect(result).toBe('data:image/png;base64,xyz789')
+    expect(result).toEqual({ url: 'asset://localhost//images/deadbeef2.png', mimeType: 'image/png' })
     expect(mockedInvoke).toHaveBeenCalledTimes(1)
   })
 })

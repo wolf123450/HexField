@@ -25,7 +25,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { resolveImageHash } from '@/utils/imageCache'
+import { resolveImageHash, type ImageEntry } from '@/utils/imageCache'
 
 const props = withDefaults(defineProps<{
   /** base64 data URL or remote URL; null/undefined shows initials */
@@ -46,18 +46,22 @@ const props = withDefaults(defineProps<{
   animate: false,
 })
 
-const hashResolvedSrc = ref<string | null>(null)
+const hashResolvedEntry = ref<ImageEntry | null>(null)
 
 watch(() => props.hash, async (newHash) => {
   if (newHash) {
-    hashResolvedSrc.value = await resolveImageHash(newHash)
+    hashResolvedEntry.value = await resolveImageHash(newHash)
   } else {
-    hashResolvedSrc.value = null
+    hashResolvedEntry.value = null
   }
 }, { immediate: true })
 
-const resolvedSrc = computed(() => hashResolvedSrc.value || props.src || null)
-const isGif = computed(() => resolvedSrc.value?.startsWith('data:image/gif') ?? false)
+const resolvedSrc = computed(() => hashResolvedEntry.value?.url ?? props.src ?? null)
+const resolvedMimeType = computed(() => hashResolvedEntry.value?.mimeType ?? '')
+const isGif = computed(() =>
+  resolvedMimeType.value === 'image/gif' ||
+  (props.src?.startsWith('data:image/gif') ?? false)
+)
 const gifPlaying = ref(props.animate)
 
 watch(() => props.animate, v => { gifPlaying.value = v })
@@ -65,18 +69,24 @@ watch(() => props.animate, v => { gifPlaying.value = v })
 // Capture the first frame of a GIF as a static PNG so the non-hover state
 // shows a meaningful thumbnail instead of a transparent/coloured placeholder.
 const firstFrameUrl = ref<string | null>(null)
-watch(resolvedSrc, (src) => {
-  if (!src?.startsWith('data:image/gif')) {
+watch([resolvedSrc, isGif], ([src, gif]) => {
+  if (!src || !gif) {
     firstFrameUrl.value = null
     return
   }
   const img = new Image()
+  img.crossOrigin = 'anonymous'
   img.onload = () => {
     const canvas = document.createElement('canvas')
     canvas.width  = img.naturalWidth
     canvas.height = img.naturalHeight
     canvas.getContext('2d')!.drawImage(img, 0, 0)
-    firstFrameUrl.value = canvas.toDataURL('image/png')
+    try {
+      firstFrameUrl.value = canvas.toDataURL('image/png')
+    } catch {
+      // asset:// images may still be tainted in some environments; fall back to animated display
+      firstFrameUrl.value = null
+    }
   }
   img.src = src
 }, { immediate: true })

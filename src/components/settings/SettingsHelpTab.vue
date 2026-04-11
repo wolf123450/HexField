@@ -18,6 +18,21 @@
     </div>
 
     <div class="help-section">
+      <h3 class="help-section-title">Logging</h3>
+      <p class="setting-hint">Controls log verbosity in the browser console and log file.</p>
+      <div class="setting-row">
+        <label class="setting-label">Log level</label>
+        <select class="setting-select" v-model="settingsStore.settings.logLevel">
+          <option value="debug">Debug — ICE, signaling, sync detail</option>
+          <option value="info">Info — connections, joins, errors (recommended)</option>
+          <option value="warn">Warn — warnings and errors only</option>
+          <option value="error">Error — errors only</option>
+          <option value="silent">Silent — no logging</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="help-section">
       <h3 class="help-section-title">Developer</h3>
       <p class="setting-hint">Open the browser developer tools for debugging.</p>
       <button class="btn-sm help-btn" @click="openDevTools">
@@ -31,11 +46,13 @@
 import { ref } from 'vue'
 import { mdiUpdate } from '@mdi/js'
 import { useUIStore } from '@/stores/uiStore'
+import { useSettingsStore } from '@/stores/settingsStore'
 import { version as appVersion } from '../../../package.json'
 import { checkForUpdate, downloadAndInstallUpdate } from '@/utils/updateService'
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 const uiStore = useUIStore()
+const settingsStore = useSettingsStore()
 
 const updateChecking = ref(false)
 

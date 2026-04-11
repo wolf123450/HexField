@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
 import type { CustomEmoji, Mutation } from '@/types/core'
 import { APP_STORAGE_PREFIX } from '@/appConfig'
@@ -47,11 +47,10 @@ export const useEmojiStore = defineStore('emoji', () => {
   async function getEmojiImage(emojiId: string, serverId: string): Promise<string> {
     if (imageCache.value[emojiId]) return imageCache.value[emojiId]
 
-    const bytes = await invoke<number[]>('get_emoji_image', { emojiId, serverId })
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(bytes)))
-    const dataUrl = `data:image/webp;base64,${base64}`
-    imageCache.value[emojiId] = dataUrl
-    return dataUrl
+    const path = await invoke<string>('get_emoji_image_path', { emojiId, serverId })
+    const url = convertFileSrc(path)
+    imageCache.value[emojiId] = url
+    return url
   }
 
   function useEmoji(emojiId: string) {
@@ -100,8 +99,8 @@ export const useEmojiStore = defineStore('emoji', () => {
     if (!custom.value[serverId]) custom.value[serverId] = {}
     custom.value[serverId][id] = emojiMeta
 
-    const dataUrl = `data:image/webp;base64,${btoa(String.fromCharCode(...new Uint8Array(imageBytes)))}`
-    imageCache.value[id] = dataUrl
+    const emojiPath = await invoke<string>('get_emoji_image_path', { emojiId: id, serverId })
+    imageCache.value[id] = convertFileSrc(emojiPath)
 
     // Create mutation so emoji syncs via negentropy
     const { useMessagesStore } = await import('./messagesStore')
@@ -134,8 +133,8 @@ export const useEmojiStore = defineStore('emoji', () => {
 
   async function storeEmojiImage(emojiId: string, serverId: string, imageBytes: number[]): Promise<void> {
     await invoke('store_emoji_image', { emojiId, serverId, imageBytes })
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(imageBytes)))
-    imageCache.value[emojiId] = `data:image/webp;base64,${base64}`
+    const path = await invoke<string>('get_emoji_image_path', { emojiId, serverId })
+    imageCache.value[emojiId] = convertFileSrc(path)
   }
 
   async function removeEmoji(serverId: string, emojiId: string): Promise<void> {

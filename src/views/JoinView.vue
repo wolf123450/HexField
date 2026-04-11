@@ -62,7 +62,11 @@ onMounted(async () => {
     if (!connected) throw new Error('Could not reach the server owner. Make sure you\'re on the same network.')
 
     statusMsg.value = 'Establishing encrypted connection…'
-    await networkStore.connectToPeer(invite.userId)
+    // If mDNS has already connected us to this peer (same-machine scenario),
+    // skip creating a new WebRTC offer — reuse the existing connection.
+    if (!networkStore.connectedPeers.includes(invite.userId)) {
+      await networkStore.connectToPeer(invite.userId)
+    }
     await networkStore.waitForPeer(invite.userId, 15000)
 
     statusMsg.value = `Requesting server info for "${invite.serverName}"…`

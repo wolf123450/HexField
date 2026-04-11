@@ -66,6 +66,12 @@ export const { test, expect } = createTauriTest({
     lan_stop: () => undefined,
     lan_get_connected_peers: () => [],
 
+    // UPnP port forwarding (non-fatal when unavailable)
+    upnp_forward_port: () => { throw new Error('UPnP unavailable in test') },
+    upnp_remove_mapping: () => undefined,
+    get_public_endpoint: () => null,
+    set_public_ip: () => undefined,
+
     // Sync / attachment stubs
     db_load_sync_checkpoint: () => null,
     db_save_sync_checkpoint: () => undefined,

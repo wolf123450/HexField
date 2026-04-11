@@ -29,7 +29,7 @@ describe('AvatarImage', () => {
   })
 
   it('resolves hash via imageCache and renders img', async () => {
-    mockedResolve.mockResolvedValueOnce('data:image/png;base64,resolved')
+    mockedResolve.mockResolvedValueOnce({ url: 'data:image/png;base64,resolved', mimeType: 'image/png' })
 
     const wrapper = mount(AvatarImage, {
       props: { hash: 'deadbeef', name: 'Hash User' },
@@ -57,7 +57,7 @@ describe('AvatarImage', () => {
   })
 
   it('prefers hash over src when both provided', async () => {
-    mockedResolve.mockResolvedValueOnce('data:image/png;base64,from-hash')
+    mockedResolve.mockResolvedValueOnce({ url: 'data:image/png;base64,from-hash', mimeType: 'image/png' })
 
     const wrapper = mount(AvatarImage, {
       props: { src: 'data:image/png;base64,from-src', hash: 'abc', name: 'T' },

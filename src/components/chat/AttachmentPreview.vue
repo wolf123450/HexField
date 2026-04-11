@@ -1,27 +1,7 @@
 <template>
   <div class="attachment-preview" :class="`state-${attachment.transferState}`">
-    <!-- ── Complete: inline base64 image ──────────────────────────────── -->
-    <template v-if="attachment.transferState === 'inline' && attachment.inlineData">
-      <img
-        v-if="attachment.mimeType.startsWith('image/')"
-        :src="`data:${attachment.mimeType};base64,${attachment.inlineData}`"
-        class="preview-image"
-        :alt="attachment.name"
-        loading="lazy"
-        @click="openLightbox"
-      />
-      <div v-else class="file-chip">
-        <AppIcon :path="mdiFile" :size="18" />
-        <span class="file-name">{{ attachment.name }}</span>
-        <span class="file-size">{{ formatSize(attachment.size) }}</span>
-        <a :download="attachment.name" :href="`data:${attachment.mimeType};base64,${attachment.inlineData}`" class="dl-btn">
-          <AppIcon :path="mdiDownload" :size="16" />
-        </a>
-      </div>
-    </template>
-
     <!-- ── Complete: P2P (blob URL available) ─────────────────────────── -->
-    <template v-else-if="attachment.transferState === 'complete' && blobUrl">
+    <template v-if="attachment.transferState === 'complete' && blobUrl">
       <img
         v-if="attachment.mimeType.startsWith('image/')"
         :src="blobUrl"
@@ -172,9 +152,7 @@ onBeforeUnmount(() => {
 // ── Lightbox ──────────────────────────────────────────────────────────────────
 
 function openLightbox() {
-  if (props.attachment.inlineData) {
-    lightboxSrc.value = `data:${props.attachment.mimeType};base64,${props.attachment.inlineData}`
-  } else if (blobUrl.value) {
+  if (blobUrl.value) {
     lightboxSrc.value = blobUrl.value
   }
   lightboxOpen.value = true
