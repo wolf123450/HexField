@@ -627,8 +627,8 @@ pub fn db_load_members(state: State<AppState>, server_id: String) -> Result<Vec<
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT user_id, server_id, display_name, roles, joined_at,
-         public_sign_key, public_dh_key, online_status, avatar_data_url,
-         bio, banner_color, banner_data_url, avatar_hash, banner_hash
+         public_sign_key, public_dh_key, online_status,
+         bio, banner_color, avatar_hash, banner_hash
          FROM members WHERE server_id = ?1"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&server_id], |row| {
@@ -641,12 +641,10 @@ pub fn db_load_members(state: State<AppState>, server_id: String) -> Result<Vec<
             public_sign_key:  row.get(5)?,
             public_dh_key:    row.get(6)?,
             online_status:    row.get(7)?,
-            avatar_data_url:  row.get(8)?,
-            bio:              row.get(9)?,
-            banner_color:     row.get(10)?,
-            banner_data_url:  row.get(11)?,
-            avatar_hash:      row.get(12)?,
-            banner_hash:      row.get(13)?,
+            bio:              row.get(8)?,
+            banner_color:     row.get(9)?,
+            avatar_hash:      row.get(10)?,
+            banner_hash:      row.get(11)?,
         })
     }).map_err(|e| e.to_string())?
     .collect::<Result<Vec<_>, _>>()
@@ -659,12 +657,12 @@ pub fn db_upsert_member(state: State<AppState>, member: MemberRow) -> Result<(),
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT OR REPLACE INTO members
-         (user_id, server_id, display_name, roles, joined_at, public_sign_key, public_dh_key, online_status, avatar_data_url, bio, banner_color, banner_data_url, avatar_hash, banner_hash)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+         (user_id, server_id, display_name, roles, joined_at, public_sign_key, public_dh_key, online_status, bio, banner_color, avatar_hash, banner_hash)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         rusqlite::params![
             member.user_id, member.server_id, member.display_name, member.roles,
             member.joined_at, member.public_sign_key, member.public_dh_key, member.online_status,
-            member.avatar_data_url, member.bio, member.banner_color, member.banner_data_url,
+            member.bio, member.banner_color,
             member.avatar_hash, member.banner_hash,
         ],
     ).map_err(|e| e.to_string())?;
@@ -738,6 +736,24 @@ pub fn get_emoji_image(
         .map_err(|e| e.to_string())?;
     let file_path = app_dir.join("emoji").join(&server_id).join(format!("{}.webp", emoji_id));
     std::fs::read(file_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_emoji_image_path(
+    app_handle: tauri::AppHandle,
+    emoji_id: String,
+    server_id: String,
+) -> Result<String, String> {
+    use tauri::Manager;
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    let file_path = app_dir
+        .join("emoji")
+        .join(&server_id)
+        .join(format!("{}.webp", emoji_id));
+    Ok(file_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -1404,13 +1420,13 @@ mod tests {
         conn.execute(
             "INSERT OR REPLACE INTO members
              (user_id, server_id, display_name, roles, joined_at,
-              public_sign_key, public_dh_key, online_status, avatar_data_url,
-              bio, banner_color, banner_data_url, avatar_hash, banner_hash)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+              public_sign_key, public_dh_key, online_status,
+              bio, banner_color, avatar_hash, banner_hash)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             rusqlite::params![
                 m.user_id, m.server_id, m.display_name, m.roles,
                 m.joined_at, m.public_sign_key, m.public_dh_key, m.online_status,
-                m.avatar_data_url, m.bio, m.banner_color, m.banner_data_url,
+                m.bio, m.banner_color,
                 m.avatar_hash, m.banner_hash,
             ],
         ).unwrap();
@@ -1419,8 +1435,8 @@ mod tests {
     fn load_member(conn: &Connection, user_id: &str, server_id: &str) -> Option<MemberRow> {
         conn.query_row(
             "SELECT user_id, server_id, display_name, roles, joined_at,
-             public_sign_key, public_dh_key, online_status, avatar_data_url,
-             bio, banner_color, banner_data_url, avatar_hash, banner_hash
+             public_sign_key, public_dh_key, online_status,
+             bio, banner_color, avatar_hash, banner_hash
              FROM members WHERE user_id = ?1 AND server_id = ?2",
             [user_id, server_id],
             |row| Ok(MemberRow {
@@ -1432,12 +1448,10 @@ mod tests {
                 public_sign_key: row.get(5)?,
                 public_dh_key:   row.get(6)?,
                 online_status:   row.get(7)?,
-                avatar_data_url: row.get(8)?,
-                bio:             row.get(9)?,
-                banner_color:    row.get(10)?,
-                banner_data_url: row.get(11)?,
-                avatar_hash:     row.get(12)?,
-                banner_hash:     row.get(13)?,
+                bio:             row.get(8)?,
+                banner_color:    row.get(9)?,
+                avatar_hash:     row.get(10)?,
+                banner_hash:     row.get(11)?,
             }),
         ).ok()
     }
@@ -1593,10 +1607,8 @@ mod tests {
             public_sign_key: "sign-pub".to_string(),
             public_dh_key:   "dh-pub".to_string(),
             online_status:   "online".to_string(),
-            avatar_data_url: None,
             bio:             None,
             banner_color:    None,
-            banner_data_url: None,
             avatar_hash:     None,
             banner_hash:     None,
         };
@@ -1743,10 +1755,8 @@ mod tests {
             public_sign_key: "original-sign-key".to_string(),
             public_dh_key:   "original-dh-key".to_string(),
             online_status:   "online".to_string(),
-            avatar_data_url: None,
             bio:             None,
             banner_color:    None,
-            banner_data_url: None,
             avatar_hash:     None,
             banner_hash:     None,
         };
@@ -1962,10 +1972,8 @@ mod tests {
             public_sign_key: "pk".into(),
             public_dh_key: "dk".into(),
             online_status: "offline".into(),
-            avatar_data_url: None,
             bio: None,
             banner_color: None,
-            banner_data_url: None,
             avatar_hash: None,
             banner_hash: None,
         });

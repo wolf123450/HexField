@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS rate_limit_bans;
+DROP TABLE IF EXISTS invites;
+DROP TABLE IF EXISTS server_members;
+DROP TABLE IF EXISTS servers;
+DROP TABLE IF EXISTS users;

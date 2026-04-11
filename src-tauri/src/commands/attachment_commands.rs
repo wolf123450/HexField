@@ -3,7 +3,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use tauri::Manager;
 use crate::AppState;
 
-pub(crate) const CHUNK_SIZE: usize = 256 * 1024; // 256 KB
+pub(crate) const CHUNK_SIZE: usize = 16 * 1024; // 16 KB — must match JS; small enough that JSON-serialized number[] fits SCTP max msg size
 
 //  Path helpers 
 
@@ -428,14 +428,7 @@ pub(crate) fn save_image_to(dir: &PathBuf, data: &[u8]) -> Result<String, String
     Ok(hash)
 }
 
-/// Load an attachment by hash, detect MIME, and return a `data:` URL.
-pub(crate) fn load_image_data_url_from(dir: &PathBuf, content_hash: &str) -> Result<String, String> {
-    let path = bin_path(dir, content_hash);
-    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let mime = detect_image_mime(&data);
-    let encoded = B64.encode(&data);
-    Ok(format!("data:{};base64,{}", mime, encoded))
-}
+
 
 //  Image Tauri commands 
 
@@ -446,11 +439,24 @@ pub fn save_image(app_handle: tauri::AppHandle, data: Vec<u8>) -> Result<String,
     save_image_to(&dir, &data)
 }
 
-/// Load an image by content hash and return it as a data: URL.
+/// Return the filesystem path and MIME type for an image attachment.
+/// The frontend can pass the path to `convertFileSrc` to get an asset:// URL.
 #[tauri::command]
-pub fn load_image_data_url(app_handle: tauri::AppHandle, content_hash: String) -> Result<String, String> {
+pub fn get_image_info(
+    app_handle: tauri::AppHandle,
+    content_hash: String,
+) -> Result<crate::db::types::ImageInfo, String> {
     let dir = attachments_dir(&app_handle)?;
-    load_image_data_url_from(&dir, &content_hash)
+    let path = bin_path(&dir, &content_hash);
+    let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let mut magic = [0u8; 12];
+    use std::io::Read;
+    let _ = f.read(&mut magic);
+    let mime = detect_image_mime(&magic);
+    Ok(crate::db::types::ImageInfo {
+        path:      path.to_string_lossy().to_string(),
+        mime_type: mime.to_string(),
+    })
 }
 
 /// Decode a `data:<mime>;base64,<content>` URL into raw bytes.
@@ -469,47 +475,45 @@ pub fn migrate_data_urls_to_files(
     let dir = attachments_dir(&app_handle)?;
     let mut migrated: u32 = 0;
 
-    // Migrate member avatars
-    {
-        let mut stmt = conn.prepare(
-            "SELECT user_id, server_id, avatar_data_url FROM members WHERE avatar_data_url IS NOT NULL AND avatar_hash IS NULL"
-        ).map_err(|e| e.to_string())?;
-        let rows: Vec<(String, String, String)> = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        }).map_err(|e| e.to_string())?
-          .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
-
-        for (user_id, server_id, data_url) in &rows {
-            if let Some(bytes) = decode_data_url(data_url) {
-                if let Ok(hash) = save_image_to(&dir, &bytes) {
-                    let _ = conn.execute(
-                        "UPDATE members SET avatar_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
-                        rusqlite::params![hash, user_id, server_id],
-                    );
-                    migrated += 1;
+    // Migrate member avatars — column was dropped by migration 012 on fresh DBs;
+    // skip gracefully if it no longer exists.
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT user_id, server_id, avatar_data_url FROM members WHERE avatar_data_url IS NOT NULL AND avatar_hash IS NULL"
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        }).and_then(|mapped| mapped.collect::<Result<Vec<_>, _>>()) {
+            for (user_id, server_id, data_url) in &rows {
+                if let Some(bytes) = decode_data_url(data_url) {
+                    if let Ok(hash) = save_image_to(&dir, &bytes) {
+                        let _ = conn.execute(
+                            "UPDATE members SET avatar_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
+                            rusqlite::params![hash, user_id, server_id],
+                        );
+                        migrated += 1;
+                    }
                 }
             }
         }
     }
 
-    // Migrate member banners
-    {
-        let mut stmt = conn.prepare(
-            "SELECT user_id, server_id, banner_data_url FROM members WHERE banner_data_url IS NOT NULL AND banner_hash IS NULL"
-        ).map_err(|e| e.to_string())?;
-        let rows: Vec<(String, String, String)> = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        }).map_err(|e| e.to_string())?
-          .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
-
-        for (user_id, server_id, data_url) in &rows {
-            if let Some(bytes) = decode_data_url(data_url) {
-                if let Ok(hash) = save_image_to(&dir, &bytes) {
-                    let _ = conn.execute(
-                        "UPDATE members SET banner_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
-                        rusqlite::params![hash, user_id, server_id],
-                    );
-                    migrated += 1;
+    // Migrate member banners — column was dropped by migration 012 on fresh DBs;
+    // skip gracefully if it no longer exists.
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT user_id, server_id, banner_data_url FROM members WHERE banner_data_url IS NOT NULL AND banner_hash IS NULL"
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        }).and_then(|mapped| mapped.collect::<Result<Vec<_>, _>>()) {
+            for (user_id, server_id, data_url) in &rows {
+                if let Some(bytes) = decode_data_url(data_url) {
+                    if let Ok(hash) = save_image_to(&dir, &bytes) {
+                        let _ = conn.execute(
+                            "UPDATE members SET banner_hash = ?1 WHERE user_id = ?2 AND server_id = ?3",
+                            rusqlite::params![hash, user_id, server_id],
+                        );
+                        migrated += 1;
+                    }
                 }
             }
         }
@@ -538,6 +542,81 @@ pub fn migrate_data_urls_to_files(
                     migrated += 1;
                 }
             }
+        }
+    }
+
+    Ok(migrated)
+}
+
+/// One-time migration: find every message whose `raw_attachments` JSON blob contains
+/// an `inlineData` field, base64-decode the bytes, save them to the CAS store,
+/// and replace `inlineData` with `contentHash`/`chunkSize`/`transferState: "complete"`.
+/// Returns the number of attachment records converted.
+#[tauri::command]
+pub fn migrate_attachment_inline_data(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<u32, String> {
+    let dir = attachments_dir(&app_handle)?;
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    // Collect rows that might have inline data — avoid holding stmt borrow across loop
+    let rows: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, raw_attachments FROM messages \
+             WHERE raw_attachments IS NOT NULL AND raw_attachments LIKE '%inlineData%'"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+
+    let mut migrated: u32 = 0;
+
+    for (msg_id, raw_atts) in &rows {
+        let Ok(mut atts) = serde_json::from_str::<Vec<serde_json::Value>>(raw_atts) else {
+            continue;
+        };
+        let mut changed = false;
+
+        for att in &mut atts {
+            let Some(inline_b64) = att.get("inlineData").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            match B64.decode(inline_b64.as_bytes()) {
+                Ok(bytes) => match save_image_to(&dir, &bytes) {
+                    Ok(hash) => {
+                        let obj = att.as_object_mut().unwrap();
+                        obj.remove("inlineData");
+                        obj.insert("contentHash".to_string(),
+                            serde_json::Value::String(format!("blake3:{}", hash)));
+                        obj.insert("chunkSize".to_string(),
+                            serde_json::Value::Number(serde_json::Number::from(CHUNK_SIZE)));
+                        obj.insert("transferState".to_string(),
+                            serde_json::Value::String("complete".to_string()));
+                        changed = true;
+                        migrated += 1;
+                    }
+                    Err(e) => {
+                        log::warn!("[migrate_attachment_inline_data] save failed for msg {}: {}", msg_id, e);
+                    }
+                },
+                Err(_) => {
+                    // Corrupted base64 — drop the field so it stops retrying
+                    att.as_object_mut().map(|m| m.remove("inlineData"));
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            let new_raw = serde_json::to_string(&atts).map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE messages SET raw_attachments = ?1 WHERE id = ?2",
+                rusqlite::params![new_raw, msg_id],
+            ).map_err(|e| e.to_string())?;
         }
     }
 
@@ -852,8 +931,10 @@ mod tests {
         let mut data = vec![0x89, 0x50, 0x4E, 0x47]; // PNG magic
         data.extend_from_slice(b"rest of png");
         let hash = save_image_to(&dir.path().to_path_buf(), &data).unwrap();
-        let data_url = load_image_data_url_from(&dir.path().to_path_buf(), &hash).unwrap();
-        assert!(data_url.starts_with("data:image/png;base64,"));
+        let path = bin_path(&dir.path().to_path_buf(), &hash);
+        assert!(path.exists());
+        let stored = std::fs::read(&path).unwrap();
+        assert_eq!(detect_image_mime(&stored), "image/png");
     }
 
     #[test]
@@ -862,14 +943,27 @@ mod tests {
         let mut data = b"GIF89a".to_vec();
         data.extend_from_slice(b"rest of gif");
         let hash = save_image_to(&dir.path().to_path_buf(), &data).unwrap();
-        let data_url = load_image_data_url_from(&dir.path().to_path_buf(), &hash).unwrap();
-        assert!(data_url.starts_with("data:image/gif;base64,"));
+        let path = bin_path(&dir.path().to_path_buf(), &hash);
+        assert!(path.exists());
+        let stored = std::fs::read(&path).unwrap();
+        assert_eq!(detect_image_mime(&stored), "image/gif");
     }
 
     #[test]
     fn test_load_image_not_found() {
         let dir = tempfile::tempdir().unwrap();
-        let result = load_image_data_url_from(&dir.path().to_path_buf(), "nonexistent");
-        assert!(result.is_err());
+        let path = bin_path(&dir.path().to_path_buf(), "nonexistent");
+        assert!(!path.exists());
+    }
+
+    //  9. get_image_info: bin_path constructs the correct path 
+
+    #[test]
+    fn test_get_image_info_returns_path_and_mime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hash = "deadbeef".to_string();
+        let dir = tmp.path().to_path_buf();
+        let expected = dir.join("de").join("deadbeef.bin");
+        assert_eq!(bin_path(&dir, &hash), expected);
     }
 }

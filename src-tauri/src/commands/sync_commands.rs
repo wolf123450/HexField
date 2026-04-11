@@ -74,16 +74,21 @@ fn load_items(
     channel_id: &str,
     table: &SyncTable,
 ) -> Result<Vec<(u64, Id)>, String> {
-    // Look up history_starts_at for this channel's server (may be NULL)
-    let history_starts_at: Option<String> = conn
-        .query_row(
+    // Look up history_starts_at for this channel's server (may be NULL).
+    // The '__server__' channel holds member_join, channel_create, etc. — these
+    // must always sync regardless of rebaseline so new joiners see all members.
+    let history_starts_at: Option<String> = if channel_id == "__server__" {
+        None
+    } else {
+        conn.query_row(
             "SELECT s.history_starts_at FROM servers s
              JOIN channels c ON c.server_id = s.id
              WHERE c.id = ?1",
             [channel_id],
             |r| r.get(0),
         )
-        .unwrap_or(None);
+        .unwrap_or(None)
+    };
 
     let ids: Vec<String> = match (&table, &history_starts_at) {
         (SyncTable::Messages, Some(hist)) => {

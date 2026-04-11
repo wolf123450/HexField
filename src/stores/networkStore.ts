@@ -20,6 +20,7 @@ import {
   isValidProfileUpdate,
   isValidVoiceJoin,
 } from '@/utils/peerValidator'
+import { logger } from '@/utils/logger'
 
 export type SignalingState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -47,6 +48,11 @@ export const useNetworkStore = defineStore('network', () => {
   /** Snapshot of custom TURN servers from settingsStore — refreshed on init. */
   let _cachedCustomTURN: RTCIceServer[] = []
 
+  /** Rendezvous server auth token (userId after verified challenge). */
+  let _rendezvousToken: string | null = null
+  /** TURN credentials obtained from rendezvous server. */
+  let _turnCredentials: { urls: string[]; username: string; credential: string } | null = null
+
   // ── Rate limiter ───────────────────────────────────────────────────────────
   // Limit inbound data-channel messages per peer to prevent flooding.
   // Set high enough to accommodate burst sync traffic (negentropy + push chunks)
@@ -64,7 +70,7 @@ export const useNetworkStore = defineStore('network', () => {
     }
     entry.count++
     if (entry.count > RATE_LIMIT) {
-      console.warn(`[network] rate limit exceeded for peer ${userId}`)
+      logger.warn('network', `rate limit exceeded for peer ${userId}`)
       return true
     }
     return false
@@ -168,15 +174,16 @@ export const useNetworkStore = defineStore('network', () => {
         if (!connectedPeers.value.includes(userId)) {
           connectedPeers.value = [...connectedPeers.value, userId]
         }
+        logger.info('network', 'peer connected:', userId)
         // Gossip identity first — member keys must be queued on the data channel
         // before startSync sends sync_neg_init, so the remote decrypts our messages
         // in the right order (SCTP preserves send order).
-        gossipOwnDevice(userId).catch(e => console.warn('[network] gossipOwnDevice error:', e))
-        gossipOwnPresence(userId).catch(e => console.warn('[network] gossipOwnPresence error:', e))
+        gossipOwnDevice(userId).catch(e => logger.warn('network', 'gossipOwnDevice error:', e))
+        gossipOwnPresence(userId).catch(e => logger.warn('network', 'gossipOwnPresence error:', e))
         // Record heartbeat baseline so the watchdog doesn't immediately time this peer out.
         lastHeartbeatFrom.set(userId, Date.now())
         // Start history reconciliation with newly connected peer
-        startSync(userId).catch(e => console.warn('[network] sync start error:', e))
+        startSync(userId).catch(e => logger.warn('network', 'sync start error:', e))
       },
       (userId) => {
         // Destroy the stale PeerState so reconnections start fresh.
@@ -185,6 +192,7 @@ export const useNetworkStore = defineStore('network', () => {
         // m-line ordering because the new remote session has no prior history.
         webrtcService.destroyPeer(userId)
         connectedPeers.value = connectedPeers.value.filter(id => id !== userId)
+        logger.info('network', 'peer disconnected:', userId)
         lastHeartbeatFrom.delete(userId)
         peerMessageCounts.delete(userId)
         // Clear any pending typing indicator for this peer
@@ -215,13 +223,13 @@ export const useNetworkStore = defineStore('network', () => {
     // the old browser-RTCPeerConnection implementation always set this explicitly.
     listen<{ to: string; sdp: string }>('webrtc_offer', ({ payload }) => {
       sendSignal({ type: 'signal_offer', to: payload.to, from: localUserId, sdp: payload.sdp })
-        .catch(e => console.warn('[webrtc] relay webrtc_offer error:', e))
-    }).catch(e => console.warn('[webrtc] webrtc_offer listen failed:', e))
+        .catch(e => logger.warn('webrtc', 'relay webrtc_offer error:', e))
+    }).catch(e => logger.warn('webrtc', 'webrtc_offer listen failed:', e))
 
     listen<{ to: string; sdp: string }>('webrtc_answer', ({ payload }) => {
       sendSignal({ type: 'signal_answer', to: payload.to, from: localUserId, sdp: payload.sdp })
-        .catch(e => console.warn('[webrtc] relay webrtc_answer error:', e))
-    }).catch(e => console.warn('[webrtc] webrtc_answer listen failed:', e))
+        .catch(e => logger.warn('webrtc', 'relay webrtc_answer error:', e))
+    }).catch(e => logger.warn('webrtc', 'webrtc_answer listen failed:', e))
 
     listen<{ to: string; candidate: string; sdpMid: string | null; sdpMlineIndex: number | null }>(
       'webrtc_ice', ({ payload }) => {
@@ -230,9 +238,9 @@ export const useNetworkStore = defineStore('network', () => {
           to: payload.to,
           from: localUserId,
           candidate: { candidate: payload.candidate, sdpMid: payload.sdpMid, sdpMLineIndex: payload.sdpMlineIndex },
-        }).catch(e => console.warn('[webrtc] relay webrtc_ice error:', e))
+        }).catch(e => logger.warn('webrtc', 'relay webrtc_ice error:', e))
       },
-    ).catch(e => console.warn('[webrtc] webrtc_ice listen failed:', e))
+    ).catch(e => logger.warn('webrtc', 'webrtc_ice listen failed:', e))
 
     startHeartbeat()
 
@@ -252,10 +260,14 @@ export const useNetworkStore = defineStore('network', () => {
       if (type !== 'symmetric') {
         const { querySTUN } = await import('@/utils/natDetection')
         const addr = await querySTUN('stun.l.google.com:19302')
-        if (addr) ownPublicAddr.value = addr
+        if (addr) {
+          ownPublicAddr.value = addr
+          // Store public IP in Rust AppState for UPnP endpoint generation
+          invoke('set_public_ip', { ip: addr.ip }).catch(() => {})
+        }
       }
-      console.debug(`[network] NAT type: ${type}`)
-    }).catch(e => console.warn('[network] NAT detection error:', e))
+      logger.debug('network', `NAT type: ${type}`)
+    }).catch(e => logger.warn('network', 'NAT detection error:', e))
 
     // Inject a per-peer ICE config builder so relay peers and custom TURN
     // servers are automatically used for new connections.
@@ -266,6 +278,78 @@ export const useNetworkStore = defineStore('network', () => {
     }).catch(() => { /* ignore in tests */ })
 
     webrtcService.setICEConfigBuilder(buildICEConfig)
+
+    // Auto-connect to rendezvous server if configured
+    connectToRendezvous(localUserId).catch(e =>
+      logger.warn('network', 'Rendezvous connection failed:', e),
+    )
+  }
+
+  /**
+   * Challenge-response authenticate with the rendezvous server and open a
+   * WebSocket for signal relay + presence.  Non-fatal — failures are logged.
+   */
+  async function connectToRendezvous(localUserId: string) {
+    const { useSettingsStore } = await import('./settingsStore')
+    const { useIdentityStore } = await import('./identityStore')
+    const settingsStore = useSettingsStore()
+    const identityStore = useIdentityStore()
+    const rendezvousUrl = settingsStore.settings.rendezvousServerUrl
+    if (!rendezvousUrl) return
+
+    // 1. Request challenge nonce
+    const challengeResp = await fetch(`${rendezvousUrl}/auth/challenge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_id: localUserId,
+        public_sign_key: identityStore.publicSignKey ?? '',
+        public_dh_key: identityStore.publicDHKey ?? '',
+        display_name: identityStore.displayName,
+      }),
+    })
+    if (!challengeResp.ok) throw new Error('Challenge request failed')
+    const { challenge } = await challengeResp.json()
+
+    // 2. Sign challenge with Ed25519 key
+    const signature = cryptoService.sign(new TextEncoder().encode(challenge))
+
+    // 3. Verify signature with server — receive bearer token
+    const verifyResp = await fetch(`${rendezvousUrl}/auth/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_id: localUserId,
+        public_sign_key: identityStore.publicSignKey ?? '',
+        public_dh_key: identityStore.publicDHKey ?? '',
+        display_name: identityStore.displayName,
+        signature,
+      }),
+    })
+    if (!verifyResp.ok) throw new Error('Auth verify failed')
+    const { token } = await verifyResp.json()
+    _rendezvousToken = token
+    logger.info('network', 'Authenticated with rendezvous server')
+
+    // 4. Connect WebSocket through the WS signaling relay
+    const wsScheme = rendezvousUrl.startsWith('https') ? 'wss' : 'ws'
+    const wsBase = rendezvousUrl.replace(/^https?/, wsScheme)
+    const wsUrl = `${wsBase}/ws?token=${encodeURIComponent(token)}&public_sign_key=${encodeURIComponent(identityStore.publicSignKey ?? '')}`
+    await signalingService.connect(wsUrl)
+    logger.info('network', 'Connected to rendezvous WS')
+
+    // 5. Fetch TURN credentials (non-fatal)
+    try {
+      const turnResp = await fetch(`${rendezvousUrl}/turn/credentials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: localUserId }),
+      })
+      if (turnResp.ok) {
+        _turnCredentials = await turnResp.json()
+        logger.info('network', 'TURN credentials obtained')
+      }
+    } catch (e) { logger.warn('network', 'TURN fetch failed:', e) }
   }
 
   /**
@@ -299,6 +383,15 @@ export const useNetworkStore = defineStore('network', () => {
       base.push(..._cachedCustomTURN)
     }
 
+    // Rendezvous-provided TURN credentials (from coturn shared-secret scheme).
+    if (_turnCredentials) {
+      base.push({
+        urls:       _turnCredentials.urls,
+        username:   _turnCredentials.username,
+        credential: _turnCredentials.credential,
+      })
+    }
+
     return base
   }
 
@@ -324,6 +417,8 @@ export const useNetworkStore = defineStore('network', () => {
     reconnectAttempt.value = 0
     webrtcService.destroyAll()
     connectedPeers.value = []
+    // Remove UPnP port mapping (non-fatal)
+    invoke('upnp_remove_mapping').catch(() => {})
     await signalingService.disconnect()
   }
 
@@ -353,6 +448,7 @@ export const useNetworkStore = defineStore('network', () => {
    * Initiate a WebRTC connection to a specific peer.
    */
   async function connectToPeer(userId: string) {
+    logger.debug('network', 'createOffer →', userId)
     await webrtcService.createOffer(userId)
   }
 
@@ -398,20 +494,21 @@ export const useNetworkStore = defineStore('network', () => {
     if (asObj['__sig']) {
       const senderKey = cryptoService.verifyJsonSignature(asObj)
       if (!senderKey) {
-        console.warn('[network] signal from', from, 'has invalid signature — dropped')
+        logger.warn('network', 'signal from', from, 'has invalid signature — dropped')
         return
       }
     }
 
+    logger.debug('network', 'signal rx:', payload.type, 'from:', from)
     switch (payload.type) {
       case 'signal_offer':
-        webrtcService.handleOffer(from, payload.sdp as string).catch(e => console.warn('[webrtc] signal_offer unhandled:', e))
+        webrtcService.handleOffer(from, payload.sdp as string).catch(e => logger.warn('webrtc', 'signal_offer unhandled:', e))
         break
       case 'signal_answer':
-        webrtcService.handleAnswer(from, payload.sdp as string).catch(e => console.warn('[webrtc] signal_answer unhandled:', e))
+        webrtcService.handleAnswer(from, payload.sdp as string).catch(e => logger.warn('webrtc', 'signal_answer unhandled:', e))
         break
       case 'signal_ice':
-        webrtcService.handleIceCandidate(from, payload.candidate as RTCIceCandidateInit).catch(e => console.warn('[webrtc] signal_ice unhandled:', e))
+        webrtcService.handleIceCandidate(from, payload.candidate as RTCIceCandidateInit).catch(e => logger.warn('webrtc', 'signal_ice unhandled:', e))
         break
       default:
         // Other signaling messages (presence, relay, etc.) can be dispatched here
@@ -428,18 +525,18 @@ export const useNetworkStore = defineStore('network', () => {
 
     switch (msg.type) {
       case 'chat_message':
-        if (!isValidChatMessage(msg)) { console.warn('[network] invalid chat_message from', userId); return }
+        if (!isValidChatMessage(msg)) { logger.warn('network', 'invalid chat_message from', userId); return }
         handleChatMessage(userId, msg)
         break
       case 'typing_start':
-        if (!isValidTypingStart(msg)) { console.warn('[network] invalid typing_start from', userId); return }
+        if (!isValidTypingStart(msg)) { logger.warn('network', 'invalid typing_start from', userId); return }
         handleTypingStart(userId, msg.channelId as string)
         break
       case 'typing_stop':
         handleTypingStopEvent(userId)
         break
       case 'mutation':
-        if (!isValidMutation(msg)) { console.warn('[network] invalid mutation from', userId); return }
+        if (!isValidMutation(msg)) { logger.warn('network', 'invalid mutation from', userId); return }
         handleMutationMessage(msg)
         break
       case 'emoji_image_request':
@@ -458,11 +555,11 @@ export const useNetworkStore = defineStore('network', () => {
         handleDeviceAttest(msg)
         break
       case 'presence_update':
-        if (!isValidPresenceUpdate(msg)) { console.warn('[network] invalid presence_update from', userId); return }
+        if (!isValidPresenceUpdate(msg)) { logger.warn('network', 'invalid presence_update from', userId); return }
         handlePresenceUpdate(userId, msg)
         break
       case 'profile_update':
-        if (!isValidProfileUpdate(msg)) { console.warn('[network] invalid profile_update from', userId); return }
+        if (!isValidProfileUpdate(msg)) { logger.warn('network', 'invalid profile_update from', userId); return }
         handleProfileUpdate(userId, msg)
         break
       case 'profile_request':
@@ -470,11 +567,11 @@ export const useNetworkStore = defineStore('network', () => {
         break
       case 'server_avatar_update':
         handleServerAvatarUpdate(msg).catch(e =>
-          console.warn('[network] server_avatar_update error:', e)
+          logger.warn('network', 'server_avatar_update error:', e)
         )
         break
       case 'voice_join':
-        if (!isValidVoiceJoin(msg)) { console.warn('[network] invalid voice_join from', userId); return }
+        if (!isValidVoiceJoin(msg)) { logger.warn('network', 'invalid voice_join from', userId); return }
         handleVoiceJoin(userId, msg)
         break
       case 'voice_leave':
@@ -491,17 +588,17 @@ export const useNetworkStore = defineStore('network', () => {
       case 'sync_push':
       case 'sync_want':
         handleSyncMessage(userId, msg as unknown as SyncWireMessage).catch(e =>
-          console.warn('[network] sync message error:', e)
+          logger.warn('network', 'sync message error:', e)
         )
         break
       case 'server_join_request':
         handleServerJoinRequest(userId, msg).catch(e =>
-          console.warn('[network] server_join_request error:', e)
+          logger.warn('network', 'server_join_request error:', e)
         )
         break
       case 'attachment_want':
         handleAttachmentWant(userId, msg).catch(e =>
-          console.warn('[network] attachment_want error:', e)
+          logger.warn('network', 'attachment_want error:', e)
         )
         break
       case 'attachment_have':
@@ -509,12 +606,12 @@ export const useNetworkStore = defineStore('network', () => {
         break
       case 'attachment_chunk_request':
         handleAttachmentChunkRequest(userId, msg).catch(e =>
-          console.warn('[network] attachment_chunk_request error:', e)
+          logger.warn('network', 'attachment_chunk_request error:', e)
         )
         break
       case 'attachment_chunk':
         handleAttachmentChunk(msg).catch(e =>
-          console.warn('[network] attachment_chunk error:', e)
+          logger.warn('network', 'attachment_chunk error:', e)
         )
         break
       case 'server_manifest':
@@ -524,7 +621,7 @@ export const useNetworkStore = defineStore('network', () => {
         handleServerJoinDenied(msg)
         break
       default:
-        console.debug('[network] unhandled data message type:', msg.type)
+        logger.debug('network', 'unhandled data message type:', msg.type)
     }
   }
 
@@ -975,7 +1072,7 @@ export const useNetworkStore = defineStore('network', () => {
     const devicesStore = useDevicesStore()
     const linkToken    = msg.linkToken as string
     if (!devicesStore.isLinkTokenValid(linkToken)) {
-      console.warn('[network] device_link_request: invalid or expired link token')
+      logger.warn('network', 'device_link_request: invalid or expired link token')
       return
     }
     devicesStore.pendingLinkRequest = {
@@ -1142,6 +1239,7 @@ export const useNetworkStore = defineStore('network', () => {
     inviteToken: string,
     timeoutMs = 20000,
   ): Promise<ServerManifest> {
+    logger.info('network', 'requesting manifest from', peerId, 'server:', serverId)
     // Include our identity so the owner can upsert us as a member immediately.
     const { useIdentityStore } = await import('./identityStore')
     const identityStore = useIdentityStore()
@@ -1157,14 +1255,27 @@ export const useNetworkStore = defineStore('network', () => {
         reject:  (err)      => { clearTimeout(timer); reject(err)      },
       }
 
-      sendToPeer(peerId, {
+      const payload = {
         type:          'server_join_request',
         inviteToken,
         serverId,
         displayName:   identityStore.displayName,
         publicSignKey: identityStore.publicSignKey ?? '',
         publicDHKey:   identityStore.publicDHKey   ?? '',
-      })
+      }
+
+      // sendToPeer returns false if the data channel is not yet open in Rust (e.g. a
+      // second WebRTC offer replaced the first before its DC opened, leaving the new
+      // PC's DC slot temporarily null). Retry every 500 ms so the request isn't
+      // silently dropped during the brief window when the DC handshake is finishing.
+      const trySend = () => {
+        if (!_pendingServerJoin) return   // already resolved or rejected
+        if (!sendToPeer(peerId, payload)) {
+          logger.debug('network', 'manifest DC not ready — retry for', peerId)
+          setTimeout(trySend, 500)
+        }
+      }
+      trySend()
     })
   }
 
@@ -1187,6 +1298,7 @@ export const useNetworkStore = defineStore('network', () => {
 
     const tokenStatus = await serversStore.validateInviteToken(token, serverId)
     if (tokenStatus !== 'ok') {
+      logger.warn('network', 'join denied:', tokenStatus, 'from:', fromUserId)
       const reasonMap: Record<string, string> = {
         not_found:        'Invalid or expired invite token',
         invite_expired:   'This invite link has expired',
@@ -1253,6 +1365,7 @@ export const useNetworkStore = defineStore('network', () => {
     }
 
     sendToPeer(fromUserId, { type: 'server_manifest', manifest })
+    logger.info('network', 'manifest sent to:', fromUserId, 'server:', serverId)
   }
 
   /** Received by the joiner — resolve the pending join promise. */
@@ -1265,6 +1378,7 @@ export const useNetworkStore = defineStore('network', () => {
     }
     _pendingServerJoin?.resolve(manifest)
     _pendingServerJoin = null
+    logger.info('network', 'manifest received for server:', manifest.server?.id)
   }
 
   /** Received by the joiner when the admin denies (or defers) the join request. */
@@ -1299,6 +1413,7 @@ export const useNetworkStore = defineStore('network', () => {
     localUserId: string,
   ) {
     if (connectedPeers.value.includes(userId)) return
+    logger.info('network', 'mDNS peer discovered:', userId, `${addr}:${port}`)
 
     try {
       await invoke('lan_connect_peer', { userId, addr, port })
@@ -1308,7 +1423,7 @@ export const useNetworkStore = defineStore('network', () => {
         await connectToPeer(userId)
       }
     } catch (e) {
-      console.warn('[network] LAN auto-connect failed:', e)
+      logger.warn('network', 'LAN auto-connect failed:', e)
     }
   }
 
@@ -1320,8 +1435,11 @@ export const useNetworkStore = defineStore('network', () => {
    */
   function resyncPeer(peerId: string) {
     if (!connectedPeers.value.includes(peerId)) return
-    startSync(peerId).catch(e => console.warn('[network] resync error:', e))
+    startSync(peerId).catch(e => logger.warn('network', 'resync error:', e))
   }
+
+  function getRendezvousToken() { return _rendezvousToken }
+  function getTurnCredentials() { return _turnCredentials }
 
   return {
     signalingState,
@@ -1352,5 +1470,7 @@ export const useNetworkStore = defineStore('network', () => {
     broadcastServerAvatar,
     broadcastAttachmentWant,
     resyncPeer,
+    getRendezvousToken,
+    getTurnCredentials,
   }
 })

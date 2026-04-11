@@ -115,7 +115,7 @@
             :class="{ speaking: voiceStore.speakingPeers.has(peer.userId) }"
           >
             <div class="av-ring" />
-            <AvatarImage :hash="serversStore.members[serverId]?.[peer.userId]?.avatarHash ?? null" :src="serversStore.members[serverId]?.[peer.userId]?.avatarDataUrl ?? null" :name="peerName(peer.userId)" :size="64" class="av-avatar" />
+            <AvatarImage :hash="serversStore.members[serverId]?.[peer.userId]?.avatarHash ?? null" :name="peerName(peer.userId)" :size="64" class="av-avatar" />
             <div class="tile-overlay">
               <span class="tile-label">{{ peerName(peer.userId) }}</span>
             </div>

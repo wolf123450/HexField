@@ -36,11 +36,9 @@ export interface ServerMember {
   publicSignKey:   string
   publicDHKey:     string
   onlineStatus:    OnlineStatus
-  avatarDataUrl?:  string | null
   avatarHash?:     string
   bio?:            string | null
   bannerColor?:    string | null
-  bannerDataUrl?:  string | null
   bannerHash?:     string
 }
 
@@ -119,10 +117,9 @@ export interface Attachment {
   size:            number
   mimeType:        string
   url?:            string
-  inlineData?:     string        // base64 for Phase 1 ≤100KB inline
   contentHash?:    string        // blake3: for Phase 5b P2P
   chunkSize?:      number        // CHUNK_SIZE used for this file (default 256 KB)
-  transferState:   'pending' | 'transferring' | 'complete' | 'failed' | 'inline'
+  transferState:   'pending' | 'transferring' | 'complete' | 'failed'
 }
 
 // ── Reactions ──────────────────────────────────────────────────────────────────

@@ -78,7 +78,14 @@ onMounted(async () => {
     // After a webview refresh the Rust process keeps running with existing LAN WS
     // connections, so we retrieve already-known peers and re-initiate WebRTC to them.
     invoke('lan_start', { userId: identityStore.userId })
-      .then(() => invoke<string[]>('lan_get_connected_peers'))
+      .then(() => {
+        // Attempt UPnP/NAT-PMP port forwarding for cross-network reachability
+        invoke<number>('upnp_forward_port')
+          .then(extPort => console.log(`[network] UPnP forwarded external port ${extPort}`))
+          .catch(e => console.warn('[network] UPnP forwarding unavailable:', e))
+
+        return invoke<string[]>('lan_get_connected_peers')
+      })
       .then((knownPeers) => {
         for (const peerId of knownPeers) {
           if (!networkStore.connectedPeers.includes(peerId)) {

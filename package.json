@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "dev:tauri": "node scripts/dev-tauri.mjs",
+    "dev:alice": "node scripts/dev-tauri.mjs alice",
+    "dev:bob": "node scripts/dev-tauri.mjs bob",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
@@ -14,10 +16,18 @@
     "e2e": "playwright test --config e2e/playwright.config.ts",
     "e2e:browser": "playwright test --project=browser --config e2e/playwright.config.ts",
     "e2e:tauri": "playwright test --project=tauri --config e2e/playwright.config.ts",
-    "inspectDbs": "node scripts/inspect-dbs.mjs"
+    "e2e:integration": "playwright test --project=integration --config e2e/playwright.config.ts",
+    "e2e:fresh": "node scripts/e2e-integration.mjs",
+    "inspectDbs": "node scripts/inspect-dbs.mjs",
+    "reset:db": "node scripts/reset-db.mjs",
+    "server:dev": "cd server && cargo run",
+    "server:build": "cd server && cargo build --release",
+    "server:check": "cd server && cargo check",
+    "server:test": "cd server && cargo test"
   },
   "dependencies": {
     "@mdi/js": "^7.4.47",
+    "@rollup/rollup-linux-x64-gnu": "^4.60.1",
     "@tanstack/virtual-core": "^3.0.0",
     "@tanstack/vue-virtual": "^3.13.23",
     "@tauri-apps/api": "^2.10.1",

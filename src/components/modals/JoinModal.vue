@@ -117,9 +117,11 @@ async function join() {
       throw new Error('Invite has no endpoints. Ask the server owner to regenerate the invite while their app is open.')
     }
 
-    // -- 3. WebRTC offer
+    // -- 3. WebRTC offer (skip if already connected — avoids disrupting mDNS connection)
     joiningLabel.value = 'Establishing secure connection…'
-    await networkStore.connectToPeer(invite.userId)
+    if (!networkStore.connectedPeers.includes(invite.userId)) {
+      await networkStore.connectToPeer(invite.userId)
+    }
     await networkStore.waitForPeer(invite.userId, 15000)
 
     // -- 4. Request the full server manifest over the data channel

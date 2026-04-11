@@ -11,6 +11,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { logger } from '@/utils/logger'
 
 export type DataChannelMessageHandler = (userId: string, data: unknown) => void
 export type RemoteTrackHandler = (userId: string, stream: MediaStream, track: MediaStreamTrack) => void
@@ -45,7 +46,7 @@ export class WebRTCService {
     this._onDataMessage = onDataMessage
     this._onPeerConnected = onPeerConnected ?? null
     this._onPeerDisconnected = onPeerDisconnected ?? null
-    this._doInit(localUserId).catch(e => console.warn('[webrtc] init error:', e))
+    this._doInit(localUserId).catch(e => logger.warn('webrtc', 'init error:', e))
   }
 
   private async _doInit(localUserId: string): Promise<void> {
@@ -79,7 +80,7 @@ export class WebRTCService {
           const parsed: unknown = JSON.parse(payload.payload)
           this._onDataMessage?.(payload.from, parsed)
         } catch (e) {
-          console.error('[webrtc] failed to parse incoming data:', e)
+          logger.warn('webrtc', 'failed to parse incoming data:', e)
         }
       }),
     )
@@ -114,7 +115,7 @@ export class WebRTCService {
     if (!this._connected.has(userId)) return false
     const payload = JSON.stringify(data)
     invoke<boolean>('webrtc_send', { peerId: userId, data: payload }).catch(e =>
-      console.warn('[webrtc] send failed:', e),
+      logger.warn('webrtc', 'send failed:', e),
     )
     return true
   }
@@ -123,7 +124,7 @@ export class WebRTCService {
     const payload = JSON.stringify(data)
     for (const id of this._connected) {
       invoke('webrtc_send', { peerId: id, data: payload }).catch(e =>
-        console.warn('[webrtc] broadcast to', id, 'failed:', e),
+        logger.warn('webrtc', 'broadcast to', id, 'failed:', e),
       )
     }
   }
@@ -131,13 +132,13 @@ export class WebRTCService {
   destroyPeer(userId: string): void {
     this._connected.delete(userId)
     invoke('webrtc_close_peer', { peerId: userId }).catch(e =>
-      console.warn('[webrtc] close_peer failed:', e),
+      logger.warn('webrtc', 'close_peer failed:', e),
     )
   }
 
   destroyAll(): void {
     this._connected.clear()
-    invoke('webrtc_destroy_all').catch(e => console.warn('[webrtc] destroy_all failed:', e))
+    invoke('webrtc_destroy_all').catch(e => logger.warn('webrtc', 'destroy_all failed:', e))
   }
 
   getConnectedPeers(): string[] {
@@ -156,19 +157,19 @@ export class WebRTCService {
   // These are no-ops until Rust media track support is implemented.
 
   addAudioTrack(_track: MediaStreamTrack, _stream: MediaStream): void {
-    console.warn('[webrtc] addAudioTrack: not yet implemented in Rust backend (Phase 2)')
+    logger.warn('webrtc', 'addAudioTrack: not yet implemented in Rust backend (Phase 2)')
   }
 
   removeAudioTracks(): void {
-    console.warn('[webrtc] removeAudioTracks: not yet implemented in Rust backend (Phase 2)')
+    logger.warn('webrtc', 'removeAudioTracks: not yet implemented in Rust backend (Phase 2)')
   }
 
   addScreenShareTrack(_track: MediaStreamTrack, _maxBitrateKbps?: number): void {
-    console.warn('[webrtc] addScreenShareTrack: not yet implemented in Rust backend (Phase 2)')
+    logger.warn('webrtc', 'addScreenShareTrack: not yet implemented in Rust backend (Phase 2)')
   }
 
   removeScreenShareTrack(): void {
-    console.warn('[webrtc] removeScreenShareTrack: not yet implemented in Rust backend (Phase 2)')
+    logger.warn('webrtc', 'removeScreenShareTrack: not yet implemented in Rust backend (Phase 2)')
   }
 }
 

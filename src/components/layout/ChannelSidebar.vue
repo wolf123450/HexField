@@ -97,7 +97,7 @@
         >
           <div class="vp-avatar-wrap">
             <div class="vp-speaking-ring" />
-            <AvatarImage :hash="serversStore.members[serversStore.activeServerId ?? '']?.[uid]?.avatarHash ?? null" :src="serversStore.members[serversStore.activeServerId ?? '']?.[uid]?.avatarDataUrl ?? null" :name="peerDisplayName(uid)" :size="24" />
+            <AvatarImage :hash="serversStore.members[serversStore.activeServerId ?? '']?.[uid]?.avatarHash ?? null" :name="peerDisplayName(uid)" :size="24" />
             <div v-if="voiceStore.peers[uid] && !voiceStore.peers[uid].audioEnabled" class="vp-mute">
               <AppIcon :path="mdiMicrophoneOff" :size="8" />
             </div>

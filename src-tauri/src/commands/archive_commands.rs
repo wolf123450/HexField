@@ -146,8 +146,8 @@ pub fn db_export_archive(
     // Members
     let mut stmt = conn
         .prepare("SELECT user_id, server_id, display_name, roles, joined_at,
-                  public_sign_key, public_dh_key, online_status, avatar_data_url,
-                  bio, banner_color, banner_data_url, avatar_hash, banner_hash
+                  public_sign_key, public_dh_key, online_status,
+                  bio, banner_color, avatar_hash, banner_hash
                   FROM members WHERE server_id = ?1")
         .map_err(|e| e.to_string())?;
     let members: Vec<MemberRow> = stmt
@@ -161,12 +161,10 @@ pub fn db_export_archive(
                 public_sign_key: r.get(5)?,
                 public_dh_key:   r.get(6)?,
                 online_status:   r.get(7)?,
-                avatar_data_url: r.get(8)?,
-                bio:             r.get(9)?,
-                banner_color:    r.get(10)?,
-                banner_data_url: r.get(11)?,
-                avatar_hash:     r.get(12)?,
-                banner_hash:     r.get(13)?,
+                bio:             r.get(8)?,
+                banner_color:    r.get(9)?,
+                avatar_hash:     r.get(10)?,
+                banner_hash:     r.get(11)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -280,11 +278,11 @@ pub fn db_import_archive(
         conn.execute(
             "INSERT OR IGNORE INTO members
              (user_id, server_id, display_name, roles, joined_at,
-              public_sign_key, public_dh_key, online_status, avatar_data_url)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+              public_sign_key, public_dh_key, online_status)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             rusqlite::params![
                 mem.user_id, mem.server_id, mem.display_name, mem.roles, mem.joined_at,
-                mem.public_sign_key, mem.public_dh_key, mem.online_status, mem.avatar_data_url,
+                mem.public_sign_key, mem.public_dh_key, mem.online_status,
             ],
         ).map_err(|e| e.to_string())?;
     }
