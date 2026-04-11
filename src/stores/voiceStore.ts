@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import type { VoiceSession, Peer } from '@/types/core'
 import { audioService } from '@/services/audioService'
 import { webrtcService } from '@/services/webrtcService'
@@ -44,31 +45,15 @@ export const useVoiceStore = defineStore('voice', () => {
 
     const { useSettingsStore } = await import('./settingsStore')
     const settingsStore = useSettingsStore()
-    const deviceId = settingsStore.settings.inputDeviceId
-    const ns       = settingsStore.settings.noiseSuppression
+    const deviceId = settingsStore.settings.inputDeviceId || undefined
 
-    const audioConstraints: MediaTrackConstraints = {
-      noiseSuppression:  ns,
-      echoCancellation:  ns,
-      autoGainControl:   ns,
-    }
-    if (deviceId) audioConstraints.deviceId = { exact: deviceId }
+    // Start mic capture in Rust — audio flows entirely in Rust
+    // (cpal → Opus → WebRTC track). No MediaStream in JS.
+    await webrtcService.addAudioTrack(deviceId)
 
-    const constraints: MediaStreamConstraints = { audio: audioConstraints, video: false }
-    const stream = await navigator.mediaDevices.getUserMedia(constraints)
-
-    localStream.value = stream
     isMuted.value     = false
-    isDeafened.value  = false
-    adminMuted.value  = false
-    audioService.setLocalStream(stream)
-    audioService.setLocalMuted(false)
-    audioService.setDeafened(false)
-
-    // Add audio tracks to all existing WebRTC peer connections
-    for (const track of stream.getAudioTracks()) {
-      webrtcService.addAudioTrack(track, stream)
-    }
+    isDeafened.value   = false
+    adminMuted.value   = false
 
     voiceViewActive.value = true
     session.value = {
@@ -103,13 +88,10 @@ export const useVoiceStore = defineStore('voice', () => {
     const { useNetworkStore } = await import('./networkStore')
     useNetworkStore().broadcast({ type: 'voice_leave' })
 
-    webrtcService.removeAudioTracks()
+    await webrtcService.removeAudioTracks()
     webrtcService.removeScreenShareTrack()
 
-    localStream.value?.getTracks().forEach(t => t.stop())
     screenStream.value?.getTracks().forEach(t => t.stop())
-    audioService.detachAll()
-    audioService.setLocalStream(null as unknown as MediaStream)
 
     localStream.value     = null
     screenStream.value    = null
@@ -125,37 +107,35 @@ export const useVoiceStore = defineStore('voice', () => {
     // Don't wipe peerVoiceChannels on leave — peers may still be in voice
   }
 
-  // ── Mute / Deafen ─────────────────────────────────────────────────────────
-
-  function toggleMute(): void {
+  async function toggleMute(): Promise<void> {
     if (adminMuted.value) return  // Can't unmute while admin-muted
     isMuted.value = !isMuted.value
-    audioService.setLocalMuted(isMuted.value)
+    await invoke('media_set_muted', { muted: isMuted.value })
   }
 
   function setAdminMuted(muted: boolean): void {
     adminMuted.value = muted
     if (muted) {
       isMuted.value = true
-      audioService.setLocalMuted(true)
+      invoke('media_set_muted', { muted: true }).catch(() => {})
     }
   }
 
-  function toggleDeafen(): void {
+  async function toggleDeafen(): Promise<void> {
     isDeafened.value = !isDeafened.value
-    audioService.setDeafened(isDeafened.value)
+    await invoke('media_set_deafened', { deafened: isDeafened.value })
     if (isDeafened.value && !isMuted.value) {
       isMuted.value = true
-      audioService.setLocalMuted(true)
+      await invoke('media_set_muted', { muted: true })
     } else if (!isDeafened.value) {
       isMuted.value = false
-      audioService.setLocalMuted(false)
+      await invoke('media_set_muted', { muted: false })
     }
   }
 
-  function toggleLoopback(): void {
+  async function toggleLoopback(): Promise<void> {
     loopbackEnabled.value = !loopbackEnabled.value
-    audioService.setLoopback(loopbackEnabled.value)
+    await invoke('media_set_loopback', { enabled: loopbackEnabled.value })
   }
 
   // ── Screen share ──────────────────────────────────────────────────────────

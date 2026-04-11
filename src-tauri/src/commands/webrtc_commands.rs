@@ -23,7 +23,7 @@ pub async fn webrtc_create_offer(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.webrtc_manager.create_offer(&peer_id, &app).await
+    state.webrtc_manager.create_offer(&peer_id, &state.media_manager, &app).await
 }
 
 /// Accept an incoming offer from `from`. Emits `webrtc_answer` event.
@@ -34,7 +34,7 @@ pub async fn webrtc_handle_offer(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.webrtc_manager.handle_offer(&from, sdp, &app).await
+    state.webrtc_manager.handle_offer(&from, sdp, &state.media_manager, &app).await
 }
 
 /// Process an answer received from `from` (must have an existing peer entry).

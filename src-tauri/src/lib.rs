@@ -12,12 +12,14 @@ mod commands;
 mod lan;
 #[cfg(not(mobile))]
 mod upnp;
+mod media_manager;
 mod webrtc_manager;
 
 use commands::archive_commands::*;
 use commands::attachment_commands::*;
 use commands::db_commands::*;
 use commands::keychain_commands::*;
+use commands::media_commands::*;
 use commands::signal_commands::*;
 use commands::sync_commands::*;
 use commands::webrtc_commands::*;
@@ -37,6 +39,8 @@ pub struct AppState {
     pub local_user_id: Arc<Mutex<String>>,
     /// Rust-native WebRTC peer connections (data channels; Phase 1).
     pub webrtc_manager: Arc<webrtc_manager::WebRTCManager>,
+    /// Rust-native audio capture, playback, and media tracks.
+    pub media_manager: Arc<media_manager::MediaManager>,
     /// External port from UPnP mapping (0 = no mapping). Desktop only.
     #[cfg(not(mobile))]
     pub upnp_external_port: Arc<AtomicU16>,
@@ -111,6 +115,7 @@ pub fn run() {
                 #[cfg(not(mobile))]
                 local_user_id: Arc::new(Mutex::new(String::new())),
                 webrtc_manager: Arc::new(webrtc_manager::WebRTCManager::new()),
+                media_manager: Arc::new(media_manager::MediaManager::new()),
                 #[cfg(not(mobile))]
                 upnp_external_port: Arc::new(AtomicU16::new(0)),
                 #[cfg(not(mobile))]
@@ -259,6 +264,16 @@ pub fn run() {
             sync_save_messages,
             sync_save_mutations,
             sync_list_channels,
+            // Media (Rust-native audio)
+            media_enumerate_devices,
+            media_start_mic,
+            media_stop_mic,
+            media_set_muted,
+            media_set_deafened,
+            media_set_peer_volume,
+            media_set_loopback,
+            media_set_input_device,
+            media_set_output_device,
             // WebRTC (Rust-native data channels)
             webrtc_init,
             webrtc_create_offer,
