@@ -302,6 +302,8 @@
   - [x] `buildICEConfig` includes relay candidates when NAT type is symmetric
   - [x] Relay peer advertisement is included in gossip message schema
 
+**Phase 5c Rollup:** All checkpoint items complete. Symmetric NAT testing deferred to QA/integration phase (real NAT environment required; cannot be unit-tested). Rendezvous server framework deployed with Diesel 2 ORM; route handlers ready for implementation in Superpowers phase.
+
 ---
 
 ## Phase 6 — Polish & Hardening
@@ -456,11 +458,74 @@
 
 ---
 
-## Superpowers — Extended Feature Specs
+## Superpowers — Extended Feature Specs & Infrastructure
 
-> Full specs live in [`docs/superpowers/specs/`](superpowers/specs/).  
+> Extended feature specifications, infrastructure improvements, and operational enhancements beyond the core Phase 1–8 roadmap. Full specs and implementation plans live in [`docs/superpowers/`](superpowers/).
 > Each spec documents data model, wire protocol, UI changes, implementation phases, and open questions.  
-> Start here before touching any feature area below.
+> Each infrastructure plan includes detailed checkpoint breakdowns for implementation.
+
+### Infrastructure Plans
+
+| Plan | Feature Area | Status | File |
+|---|---|---|---|
+| Diesel ORM Migration | Client app: raw SQL → Diesel ORM (src-tauri/) | Not started | [`docs/superpowers/plans/2026-04-09-diesel-migration.md`](superpowers/plans/2026-04-09-diesel-migration.md) |
+| Rendezvous Server | Full implementation of `hexfield-server` with auth, discovery, relay, TURN | Partial (framework done) | [`docs/superpowers/plans/2026-04-09-rendezvous-server.md`](superpowers/plans/2026-04-09-rendezvous-server.md) |
+| UPnP Port Forwarding | Auto-forward LAN signal port, discover public IP, embed endpoints in invites | Partial (module started) | [`docs/superpowers/plans/2026-04-09-upnp-public-endpoint.md`](superpowers/plans/2026-04-09-upnp-public-endpoint.md) |
+| Image Asset Protocol | Replace data URLs with asset:// protocol, drop deprecated DB columns, optimize image serving | Not started | [`docs/superpowers/plans/2026-04-10-image-asset-protocol.md`](superpowers/plans/2026-04-10-image-asset-protocol.md) |
+| Rust-Native Audio (Phase A) | Pure Rust voice chat: cpal mic capture → Opus → WebRTC tracks; Opus decode → cpal speaker; Rust VAD | Not started | [`docs/superpowers/plans/2026-04-11-rust-native-audio.md`](superpowers/plans/2026-04-11-rust-native-audio.md) |
+| Rust-Native Screen Share (Phase B) | Pure Rust screen share: xcap capture → VP8 → WebRTC; VP8 decode → JPEG → asset:// delivery; source picker UI | Not started | [`docs/superpowers/plans/2026-04-11-rust-native-screen-share.md`](superpowers/plans/2026-04-11-rust-native-screen-share.md) |
+| Device Enumeration UI (Phase C) | Rust-backed device enum, mid-call switching, per-peer volume, hot-plug detection, browser audio API removal | Not started | [`docs/superpowers/plans/2026-04-11-device-enumeration-ui.md`](superpowers/plans/2026-04-11-device-enumeration-ui.md) |
+
+### Rust-Native Media — Phase Roadmap
+
+Restoring voice/screen share after the Rust WebRTC rewrite (commit `568c57f`) left media track methods as no-op stubs. Audio never touches JS — capture, encode, decode, playback, and VAD all happen in Rust. Screen share Phase B will follow the same pattern for video.
+
+#### Phase A — Rust-Native Audio (Voice Chat)
+
+> Plan: [`docs/superpowers/plans/2026-04-11-rust-native-audio.md`](superpowers/plans/2026-04-11-rust-native-audio.md)
+
+- [ ] Add `cpal`, `opus`, `bytes` dependencies to `Cargo.toml`
+- [ ] Create `media_manager.rs` skeleton + audio device enumeration
+- [ ] Add `on_track()` callback to `WebRTCManager` for incoming media tracks
+- [ ] Add `add_audio_track_to_all()` / `remove_audio_tracks_from_all()` with SDP renegotiation
+- [ ] Mic capture pipeline: cpal → Opus encode → `TrackLocalStaticSample::write_sample()`
+- [ ] Remote audio playback: `TrackRemote::read_rtp()` → Opus decode → cpal output stream
+- [ ] Create Tauri commands: `media_start_mic`, `media_stop_mic`, `media_set_muted`, `media_set_deafened`, `media_set_peer_volume`, `media_set_loopback`, `media_enumerate_devices`, `media_set_input_device`, `media_set_output_device`
+- [ ] Replace `webrtcService.ts` no-op stubs with `invoke()` calls to Rust
+- [ ] Update `voiceStore.ts`: replace `getUserMedia()` with `invoke('media_start_mic')`, wire mute/deafen to Rust
+- [ ] Refactor `audioService.ts`: remove JS audio processing, keep as event-driven VAD UI layer
+- [ ] Update `networkStore.ts`: wire `webrtc_track` events, remove JS audio track handling
+- [ ] E2E integration test: two-instance voice chat verification
+
+#### Phase B — Rust-Native Screen Share
+
+> Plan: [`docs/superpowers/plans/2026-04-11-rust-native-screen-share.md`](superpowers/plans/2026-04-11-rust-native-screen-share.md)
+
+- [ ] Add `xcap`, `libvpx-sys`, `image` dependencies to `Cargo.toml`
+- [ ] Screen/window source enumeration with thumbnails + `media_enumerate_screens` command
+- [ ] Add `add_video_track_to_all()` / `remove_video_tracks_from_all()` to `WebRTCManager`
+- [ ] VP8 encode/decode helpers with BGRA ↔ I420 color space conversion
+- [ ] Screen capture pipeline: `xcap::VideoRecorder` → VP8 encode → `TrackLocalStaticSample::write_sample()`
+- [ ] Video receive pipeline: `TrackRemote` → `SampleBuilder` → VP8 decode → JPEG → asset:// delivery
+- [ ] Tauri commands: `media_start_screen_share`, `media_stop_screen_share`, `media_enumerate_screens`
+- [ ] Source picker modal UI (`SourcePickerModal.vue`) with monitor/window tabs and thumbnails
+- [ ] Replace `voiceStore.startScreenShare()` `getDisplayMedia()` with source picker + `invoke('media_start_screen_share')`
+- [ ] Update `VoiceContentPane.vue`: replace `<video :srcObject>` with `<img :src>` via asset:// frame URLs
+- [ ] E2E integration: two-instance screen share verification
+
+#### Phase C — Device Enumeration UI
+
+> Plan: [`docs/superpowers/plans/2026-04-11-device-enumeration-ui.md`](superpowers/plans/2026-04-11-device-enumeration-ui.md)
+
+- [ ] Device change polling in `MediaManager`: 3-second `cpal` poll loop, `media_devices_changed` Tauri event, `device_lists_differ` helper
+- [ ] Update `SettingsVoiceTab.vue`: replace `navigator.mediaDevices.enumerateDevices()` with `invoke('media_enumerate_devices')`, listen for hot-plug events
+- [ ] Device validation on voice join: verify saved device exists, fallback to default with user notification
+- [ ] Mid-call device quick-switch in `VoiceBar.vue`: dropdown popover with input/output sections
+- [ ] Per-peer volume slider in voice tiles: 0–200% range, `invoke('media_set_peer_volume')`, hover-to-show UI
+- [ ] Remove all browser audio API usage: audit + cleanup pass (no `getUserMedia`, `enumerateDevices`, `setSinkId`)
+- [ ] E2E integration: device enumeration and switching verification
+
+### Feature Enhancement Specs
 
 | Spec | Feature Area | Status |
 |---|---|---|
