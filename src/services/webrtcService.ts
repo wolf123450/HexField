@@ -171,14 +171,18 @@ export class WebRTCService {
   }
 
   /**
-   * Screen share track — Phase B (not yet implemented in Rust backend).
+   * Start screen share via Rust xcap capture + openh264 encode + WebRTC video track.
    */
-  addScreenShareTrack(_track?: MediaStreamTrack, _maxBitrateKbps?: number): void {
-    logger.warn('webrtc', 'addScreenShareTrack: not yet implemented (Phase B)')
+  async addScreenShareTrack(sourceId: string, fps?: number, bitrateKbps?: number): Promise<void> {
+    await invoke('media_start_screen_share', {
+      sourceId,
+      fps: fps ?? 30,
+      bitrateKbps: bitrateKbps ?? 0,
+    })
   }
 
-  removeScreenShareTrack(): void {
-    logger.warn('webrtc', 'removeScreenShareTrack: not yet implemented (Phase B)')
+  async removeScreenShareTrack(): Promise<void> {
+    await invoke('media_stop_screen_share')
   }
 }
 

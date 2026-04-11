@@ -230,12 +230,33 @@ export const useNetworkStore = defineStore('network', () => {
           // Audio is handled entirely in Rust (MediaManager) — just update voice UI
           const { useVoiceStore } = await import('./voiceStore')
           useVoiceStore().updatePeer(payload.userId, { audioEnabled: true })
-        } else if (payload.kind === 'video') {
-          // Phase B: screen share tracks — handled in future implementation
-          logger.info('network', `remote video track from ${payload.userId} (Phase B)`)
         }
+        // Video tracks are decoded in Rust — frames arrive via media_video_frame event
       },
     ).catch(e => logger.warn('network', 'webrtc_track listen failed:', e))
+
+    // Incoming decoded video frames from Rust screen share pipeline
+    listen<{ userId: string; frameNumber: number; path: string }>(
+      'media_video_frame',
+      async ({ payload }) => {
+        const { convertFileSrc } = await import('@tauri-apps/api/core')
+        const { useVoiceStore } = await import('./voiceStore')
+        const voiceStore = useVoiceStore()
+        const url = convertFileSrc(payload.path) + `?v=${payload.frameNumber}`
+        voiceStore.screenFrameUrls[payload.userId] = url
+        voiceStore.updatePeer(payload.userId, { screenSharing: true })
+      },
+    ).catch(e => logger.warn('network', 'media_video_frame listen failed:', e))
+
+    listen<{ userId: string }>(
+      'media_screen_share_stopped',
+      async ({ payload }) => {
+        const { useVoiceStore } = await import('./voiceStore')
+        const voiceStore = useVoiceStore()
+        delete voiceStore.screenFrameUrls[payload.userId]
+        voiceStore.updatePeer(payload.userId, { screenSharing: false })
+      },
+    ).catch(e => logger.warn('network', 'media_screen_share_stopped listen failed:', e))
 
     listen<{ to: string; sdp: string }>('webrtc_offer', ({ payload }) => {
       sendSignal({ type: 'signal_offer', to: payload.to, from: localUserId, sdp: payload.sdp })
@@ -1117,14 +1138,10 @@ export const useNetworkStore = defineStore('network', () => {
     const { useVoiceStore } = await import('./voiceStore')
     const voiceStore = useVoiceStore()
     if (!voiceStore.session) return
-    // Audio is handled entirely in Rust (MediaManager) — only handle video here
+    // Audio is handled entirely in Rust (MediaManager).
+    // Video screen share frames arrive via media_video_frame events — no JS-side MediaStream needed.
     if (track.kind === 'video') {
-      voiceStore.screenStreams[userId] = _stream
       voiceStore.updatePeer(userId, { screenSharing: true })
-      track.onended = () => {
-        delete voiceStore.screenStreams[userId]
-        voiceStore.updatePeer(userId, { screenSharing: false })
-      }
     }
   }
 
@@ -1185,7 +1202,9 @@ export const useNetworkStore = defineStore('network', () => {
 
   async function handleVoiceScreenShareStop(userId: string) {
     const { useVoiceStore } = await import('./voiceStore')
-    useVoiceStore().updatePeer(userId, { screenSharing: false })
+    const voiceStore = useVoiceStore()
+    delete voiceStore.screenFrameUrls[userId]
+    voiceStore.updatePeer(userId, { screenSharing: false })
   }
 
   async function handleVoicePeerDisconnect(userId: string) {

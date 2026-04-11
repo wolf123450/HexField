@@ -16,6 +16,7 @@
     @close="uiStore.showJoinCapsuleModal = false"
   />
   <AlertModal />
+  <SourcePickerModal v-if="uiStore.sourcePickerOpen" />
 </template>
 
 <script setup lang="ts">
@@ -33,6 +34,7 @@ import UserProfileModal from '@/components/modals/UserProfileModal.vue'
 import ServerSettingsModal from '@/components/modals/ServerSettingsModal.vue'
 import JoinCapsuleModal from '@/components/modals/JoinCapsuleModal.vue'
 import AlertModal from '@/components/modals/AlertModal.vue'
+import SourcePickerModal from '@/components/modals/SourcePickerModal.vue'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useIdentityStore } from '@/stores/identityStore'

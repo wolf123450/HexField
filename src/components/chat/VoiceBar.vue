@@ -63,8 +63,8 @@
         <button
           v-if="!isMobile"
           class="ctrl-btn"
-          :class="{ active: !!voiceStore.screenStream }"
-          :title="voiceStore.screenStream ? 'Stop share' : 'Share screen'"
+          :class="{ active: voiceStore.screenShareActive }"
+          :title="voiceStore.screenShareActive ? 'Stop share' : 'Share screen'"
           @click="toggleScreenShare"
         >
           <AppIcon :path="mdiMonitorShare" :size="18" />
@@ -110,8 +110,8 @@ const channelName = computed(() => {
 })
 
 async function toggleScreenShare() {
-  if (voiceStore.screenStream) {
-    voiceStore.stopScreenShare()
+  if (voiceStore.screenShareActive) {
+    await voiceStore.stopScreenShare()
   } else {
     try {
       await voiceStore.startScreenShare()
