@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@mdi/js": "^7.4.47",
+    "@rollup/rollup-linux-x64-gnu": "^4.60.1",
     "@tanstack/virtual-core": "^3.0.0",
     "@tanstack/vue-virtual": "^3.13.23",
     "@tauri-apps/api": "^2.10.1",

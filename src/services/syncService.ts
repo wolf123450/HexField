@@ -225,10 +225,24 @@ async function _pushItems(
       for (const msg of messages) {
         // Strip oversized inline payloads so the SCTP frame stays under the
         // limit and negentropy stops re-trying these rows forever.
-        // Images are stored in raw_attachments[*].inlineData (base64), not content.
         let safe: MessageRow = msg
+        // Strip large data: URIs from content
         if (msg.content?.startsWith('data:') && msg.content.length > ITEM_BUDGET) {
           safe = { ...safe, content: '[image: too large to sync inline]' }
+        }
+        // Strip inlineData from raw_attachments entries
+        if (safe.raw_attachments) {
+          try {
+            const atts = JSON.parse(safe.raw_attachments) as Array<Record<string, unknown>>
+            const stripped = atts.map(a => {
+              if (typeof a.inlineData === 'string' && a.inlineData.length > ITEM_BUDGET) {
+                const { inlineData: _, ...rest } = a
+                return { ...rest, transferState: 'stripped' }
+              }
+              return a
+            })
+            safe = { ...safe, raw_attachments: JSON.stringify(stripped) }
+          } catch { /* leave as-is if not valid JSON */ }
         }
         const itemBytes = JSON.stringify(safe).length
         // Final guard: skip items that are still too large even after all stripping.
