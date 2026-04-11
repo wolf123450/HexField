@@ -931,8 +931,10 @@ mod tests {
         let mut data = vec![0x89, 0x50, 0x4E, 0x47]; // PNG magic
         data.extend_from_slice(b"rest of png");
         let hash = save_image_to(&dir.path().to_path_buf(), &data).unwrap();
-        let data_url = load_image_data_url_from(&dir.path().to_path_buf(), &hash).unwrap();
-        assert!(data_url.starts_with("data:image/png;base64,"));
+        let path = bin_path(&dir.path().to_path_buf(), &hash);
+        assert!(path.exists());
+        let stored = std::fs::read(&path).unwrap();
+        assert_eq!(detect_image_mime(&stored), "image/png");
     }
 
     #[test]
@@ -941,15 +943,17 @@ mod tests {
         let mut data = b"GIF89a".to_vec();
         data.extend_from_slice(b"rest of gif");
         let hash = save_image_to(&dir.path().to_path_buf(), &data).unwrap();
-        let data_url = load_image_data_url_from(&dir.path().to_path_buf(), &hash).unwrap();
-        assert!(data_url.starts_with("data:image/gif;base64,"));
+        let path = bin_path(&dir.path().to_path_buf(), &hash);
+        assert!(path.exists());
+        let stored = std::fs::read(&path).unwrap();
+        assert_eq!(detect_image_mime(&stored), "image/gif");
     }
 
     #[test]
     fn test_load_image_not_found() {
         let dir = tempfile::tempdir().unwrap();
-        let result = load_image_data_url_from(&dir.path().to_path_buf(), "nonexistent");
-        assert!(result.is_err());
+        let path = bin_path(&dir.path().to_path_buf(), "nonexistent");
+        assert!(!path.exists());
     }
 
     //  9. get_image_info: bin_path constructs the correct path 
