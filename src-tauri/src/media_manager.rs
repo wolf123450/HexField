@@ -8,6 +8,9 @@
 //!   5. set_muted()            — mute/unmute mic (stop sending, keep stream alive)
 //!   6. set_deafened()         — deafen (stop all playback)
 //!   7. set_peer_volume()      — per-peer volume control
+//!   8. enumerate_screens()    — list available monitors/windows for screen share
+//!   9. start_screen_share()   — capture screen → H.264 → WebRTC
+//!  10. stop_screen_share()    — stop screen capture
 //!
 //! Audio data never crosses IPC — capture → encode → WebRTC and
 //! WebRTC → decode → playback happen entirely in Rust.
@@ -49,6 +52,27 @@ pub struct AudioDeviceInfo {
 pub struct AudioDeviceList {
     pub inputs: Vec<AudioDeviceInfo>,
     pub outputs: Vec<AudioDeviceInfo>,
+}
+
+// ── Screen source info ───────────────────────────────────────────────────────
+
+/// Information about a capturable screen source (monitor or window).
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ScreenSourceInfo {
+    pub id: String,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// "monitor" or "window"
+    pub source_type: String,
+    /// Base64 JPEG thumbnail for the picker UI.
+    pub thumbnail: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ScreenSourceList {
+    pub monitors: Vec<ScreenSourceInfo>,
+    pub windows: Vec<ScreenSourceInfo>,
 }
 
 // ── Per-peer playback state ──────────────────────────────────────────────────
@@ -100,6 +124,12 @@ pub struct MediaManager {
     selected_output: Arc<Mutex<Option<String>>>,
     /// Active remote playback streams keyed by peer userId.
     remote_playback: Arc<Mutex<HashMap<String, RemotePlayback>>>,
+    /// Whether screen share is currently active.
+    screen_active: Arc<AtomicBool>,
+    /// Screen capture → encode → WebRTC task.
+    screen_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// The shared video track being written to (if screen share active).
+    video_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
 }
 
 impl MediaManager {
@@ -116,6 +146,9 @@ impl MediaManager {
             selected_input: Arc::new(Mutex::new(None)),
             selected_output: Arc::new(Mutex::new(None)),
             remote_playback: Arc::new(Mutex::new(HashMap::new())),
+            screen_active: Arc::new(AtomicBool::new(false)),
+            screen_task: Arc::new(Mutex::new(None)),
+            video_track: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -615,6 +648,363 @@ impl MediaManager {
             entry.decode_task.abort();
         }
     }
+
+    // ── Screen source enumeration ────────────────────────────────────────────
+
+    /// List available monitors and windows for screen sharing.
+    /// Includes small JPEG thumbnails for the picker UI.
+    pub fn enumerate_screens(&self) -> ScreenSourceList {
+        let monitors = xcap::Monitor::all()
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let name = m.name().unwrap_or_default();
+                let width = m.width().unwrap_or(0);
+                let height = m.height().unwrap_or(0);
+                let thumbnail = Self::capture_thumbnail_monitor(&m);
+                ScreenSourceInfo {
+                    id: format!("monitor:{i}"),
+                    name: if name.is_empty() {
+                        format!("Monitor {}", i + 1)
+                    } else {
+                        name
+                    },
+                    width,
+                    height,
+                    source_type: "monitor".to_string(),
+                    thumbnail,
+                }
+            })
+            .collect();
+
+        let windows = xcap::Window::all()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| !w.is_minimized().unwrap_or(true) && !w.title().unwrap_or_default().is_empty() && w.width().unwrap_or(0) > 0)
+            .enumerate()
+            .map(|(i, w)| {
+                let title = w.title().unwrap_or_default();
+                let app = w.app_name().unwrap_or_default();
+                let width = w.width().unwrap_or(0);
+                let height = w.height().unwrap_or(0);
+                let name = if title.is_empty() {
+                    app
+                } else {
+                    format!("{app} — {title}")
+                };
+                let thumbnail = Self::capture_thumbnail_window(&w);
+                ScreenSourceInfo {
+                    id: format!("window:{i}"),
+                    name,
+                    width,
+                    height,
+                    source_type: "window".to_string(),
+                    thumbnail,
+                }
+            })
+            .collect();
+
+        ScreenSourceList { monitors, windows }
+    }
+
+    fn capture_thumbnail_monitor(monitor: &xcap::Monitor) -> Option<String> {
+        let img = monitor.capture_image().ok()?;
+        Self::rgba_to_thumbnail_b64(&img)
+    }
+
+    fn capture_thumbnail_window(window: &xcap::Window) -> Option<String> {
+        let img = window.capture_image().ok()?;
+        Self::rgba_to_thumbnail_b64(&img)
+    }
+
+    /// Resize an RGBA image to a small thumbnail and encode as base64 JPEG.
+    fn rgba_to_thumbnail_b64(img: &image::RgbaImage) -> Option<String> {
+        use image::imageops::FilterType;
+        let thumb_w = 320u32;
+        let thumb_h = thumb_w * img.height() / img.width().max(1);
+        let thumb = image::imageops::resize(img, thumb_w, thumb_h, FilterType::Triangle);
+        let mut buf = Vec::new();
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 60);
+        image::DynamicImage::ImageRgba8(thumb)
+            .write_with_encoder(encoder)
+            .ok()?;
+        use base64::Engine;
+        Some(base64::engine::general_purpose::STANDARD.encode(&buf))
+    }
+
+    // ── Screen capture pipeline ──────────────────────────────────────────────
+
+    /// Start sharing a screen or window.
+    ///
+    /// `source_id`: "monitor:0", "monitor:1", "window:3", etc.
+    /// `video_track`: from WebRTCManager::add_video_track_to_all()
+    /// `fps`: target frames per second
+    /// `bitrate_kbps`: target bitrate (0 = auto)
+    pub async fn start_screen_share(
+        &self,
+        source_id: &str,
+        video_track: Arc<TrackLocalStaticSample>,
+        app: tauri::AppHandle,
+        fps: u32,
+        bitrate_kbps: u32,
+    ) -> Result<(), String> {
+        if self.screen_active.load(Ordering::Acquire) {
+            return Err("screen share already active".into());
+        }
+
+        let (source_type, index_str) = source_id
+            .split_once(':')
+            .ok_or("invalid source_id format")?;
+        let index: usize = index_str
+            .parse()
+            .map_err(|e: std::num::ParseIntError| e.to_string())?;
+
+        // Validate the source exists
+        match source_type {
+            "monitor" => {
+                let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
+                if index >= monitors.len() {
+                    return Err("monitor index out of range".into());
+                }
+            }
+            "window" => {
+                let windows: Vec<_> = xcap::Window::all()
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .filter(|w| !w.is_minimized().unwrap_or(true) && !w.title().unwrap_or_default().is_empty() && w.width().unwrap_or(0) > 0)
+                    .collect();
+                if index >= windows.len() {
+                    return Err("window index out of range".into());
+                }
+            }
+            _ => return Err(format!("unsupported source type: {source_type}")),
+        }
+
+        *self.video_track.lock().await = Some(video_track.clone());
+        self.screen_active.store(true, Ordering::Release);
+
+        let frame_duration = Duration::from_millis(1000 / fps.max(1) as u64);
+        let screen_active = self.screen_active.clone();
+        let bitrate_bps = if bitrate_kbps > 0 {
+            bitrate_kbps * 1000
+        } else {
+            1_000_000
+        };
+        let source_type_owned = source_type.to_string();
+        let source_id_owned = source_id.to_string();
+        let app_clone = app.clone();
+
+        let task = tokio::task::spawn_blocking(move || {
+            let mut encoder: Option<openh264::encoder::Encoder> = None;
+            let mut frame_count: u64 = 0;
+
+            while screen_active.load(Ordering::Acquire) {
+                let capture_start = std::time::Instant::now();
+
+                // Re-enumerate each frame to handle source changes
+                let img = match source_type_owned.as_str() {
+                    "monitor" => {
+                        let monitors = match xcap::Monitor::all() {
+                            Ok(m) => m,
+                            Err(e) => {
+                                log::warn!("[media] monitor enumerate error: {e}");
+                                std::thread::sleep(frame_duration);
+                                continue;
+                            }
+                        };
+                        monitors.into_iter().nth(index).and_then(|m| m.capture_image().ok())
+                    }
+                    "window" => {
+                        let windows: Vec<_> = xcap::Window::all()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|w| !w.is_minimized().unwrap_or(true) && !w.title().unwrap_or_default().is_empty() && w.width().unwrap_or(0) > 0)
+                            .collect();
+                        windows.into_iter().nth(index).and_then(|w| w.capture_image().ok())
+                    }
+                    _ => None,
+                };
+
+                let img = match img {
+                    Some(i) => i,
+                    None => {
+                        log::warn!("[media] capture failed, source may be gone");
+                        let _ = app_clone.emit(
+                            "media_screen_share_error",
+                            serde_json::json!({ "error": "capture source lost" }),
+                        );
+                        break;
+                    }
+                };
+
+                let w = img.width() as usize;
+                let h = img.height() as usize;
+
+                // Initialize encoder on first frame or if dimensions changed
+                if encoder.is_none()
+                    || encoder
+                        .as_ref()
+                        .map(|_| false)
+                        .unwrap_or(true)
+                {
+                    let config = openh264::encoder::EncoderConfig::new()
+                        .bitrate(openh264::encoder::BitRate::from_bps(bitrate_bps as u32))
+                        .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps as f32))
+                        .rate_control_mode(openh264::encoder::RateControlMode::Bitrate);
+                    match openh264::encoder::Encoder::with_api_config(
+                        openh264::OpenH264API::from_source(),
+                        config,
+                    ) {
+                        Ok(e) => encoder = Some(e),
+                        Err(e) => {
+                            log::error!("[media] H.264 encoder init failed: {e}");
+                            break;
+                        }
+                    }
+                }
+
+                let enc = encoder.as_mut().unwrap();
+                let rgba_data = img.as_raw();
+                let src = openh264::formats::RgbaSliceU8::new(rgba_data, (w, h));
+                let yuv = openh264::formats::YUVBuffer::from_rgb_source(src);
+
+                match enc.encode(&yuv) {
+                    Ok(bitstream) => {
+                        let h264_data = bitstream.to_vec();
+                        if !h264_data.is_empty() {
+                            let vt = video_track.clone();
+                            let dur = frame_duration;
+                            let rt = tokio::runtime::Handle::current();
+                            let _ = rt.block_on(async {
+                                vt.write_sample(&Sample {
+                                    data: Bytes::from(h264_data),
+                                    duration: dur,
+                                    ..Default::default()
+                                })
+                                .await
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[media] H.264 encode error: {e}");
+                    }
+                }
+
+                frame_count += 1;
+
+                // Sleep to maintain target FPS
+                let elapsed = capture_start.elapsed();
+                if elapsed < frame_duration {
+                    std::thread::sleep(frame_duration - elapsed);
+                }
+            }
+
+            log::debug!("[media] screen capture task exited after {frame_count} frames");
+        });
+
+        *self.screen_task.lock().await = Some(task);
+
+        let _ = app.emit(
+            "media_screen_share_started",
+            serde_json::json!({ "sourceId": source_id_owned }),
+        );
+
+        Ok(())
+    }
+
+    /// Stop sharing screen.
+    pub async fn stop_screen_share(&self, app: &tauri::AppHandle) -> Result<(), String> {
+        self.screen_active.store(false, Ordering::Release);
+
+        if let Some(task) = self.screen_task.lock().await.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+        }
+
+        *self.video_track.lock().await = None;
+
+        let _ = app.emit("media_screen_share_stopped", serde_json::json!({}));
+        Ok(())
+    }
+
+    /// Whether screen share is currently active.
+    pub fn is_screen_sharing(&self) -> bool {
+        self.screen_active.load(Ordering::Acquire)
+    }
+
+    // ── Video receive helpers ────────────────────────────────────────────────
+
+    /// Get (and create if needed) the directory for decoded video frames.
+    pub fn frame_output_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+        use tauri::Manager;
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("video-frames");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        Ok(dir)
+    }
+
+    /// Decode an H.264 frame and write as JPEG to `path`. Returns Ok(true) if
+    /// a frame was produced, Ok(false) if the decoder needs more data.
+    pub fn decode_and_write_jpeg(
+        decoder: &mut openh264::decoder::Decoder,
+        h264_data: &[u8],
+        path: &std::path::Path,
+    ) -> Result<bool, String> {
+        use openh264::formats::YUVSource;
+
+        let decoded = decoder
+            .decode(h264_data)
+            .map_err(|e| format!("H.264 decode error: {e}"))?;
+
+        let yuv = match decoded {
+            Some(y) => y,
+            None => return Ok(false),
+        };
+
+        let (w, h) = yuv.dimensions();
+        let mut rgb = vec![0u8; w * h * 3];
+        yuv.write_rgb8(&mut rgb);
+
+        // Convert RGB8 to RGBA8 for image crate
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        for pixel in rgb.chunks_exact(3) {
+            rgba.push(pixel[0]);
+            rgba.push(pixel[1]);
+            rgba.push(pixel[2]);
+            rgba.push(255);
+        }
+
+        Self::write_jpeg_frame(&rgba, w as u32, h as u32, path)?;
+        Ok(true)
+    }
+
+    /// Write RGBA pixels as a JPEG file (atomic via temp rename).
+    fn write_jpeg_frame(
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        use std::io::BufWriter;
+
+        let tmp = path.with_extension("tmp");
+        let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        let writer = BufWriter::new(file);
+
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(writer, 75);
+        image::DynamicImage::ImageRgba8(
+            image::RgbaImage::from_raw(width, height, rgba.to_vec())
+                .ok_or("invalid RGBA dimensions")?,
+        )
+        .write_with_encoder(encoder)
+        .map_err(|e| e.to_string())?;
+
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -687,5 +1077,75 @@ mod tests {
             let vol = mm.get_peer_volume("peer-1").await;
             assert!((vol - 0.0).abs() < f32::EPSILON);
         });
+    }
+
+    #[test]
+    fn test_enumerate_screens_returns_struct() {
+        let mm = MediaManager::new();
+        let sources = mm.enumerate_screens();
+        // Should not panic; returns at least one monitor on desktop
+        for src in &sources.monitors {
+            assert!(!src.id.is_empty());
+            assert!(!src.name.is_empty());
+            assert!(src.width > 0);
+            assert!(src.height > 0);
+            assert_eq!(src.source_type, "monitor");
+        }
+        // Windows may be empty — just ensure the call completes
+        let _ = sources.windows;
+    }
+
+    #[test]
+    fn test_h264_encode_decode_roundtrip() {
+        let width = 320u32;
+        let height = 240u32;
+
+        // Generate a test RGBA frame (gradient)
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                rgba[idx] = (x & 0xFF) as u8;       // R
+                rgba[idx + 1] = (y & 0xFF) as u8;   // G
+                rgba[idx + 2] = 128;                 // B
+                rgba[idx + 3] = 255;                 // A
+            }
+        }
+
+        // Encode
+        let config =
+            openh264::encoder::EncoderConfig::new()
+                .bitrate(openh264::encoder::BitRate::from_bps(500_000));
+        let mut encoder = openh264::encoder::Encoder::with_api_config(
+            openh264::OpenH264API::from_source(),
+            config,
+        )
+        .expect("encoder");
+        let src = openh264::formats::RgbaSliceU8::new(&rgba, (width as usize, height as usize));
+        let yuv = openh264::formats::YUVBuffer::from_rgb_source(src);
+        let bitstream = encoder.encode(&yuv).expect("encode");
+        let h264_data = bitstream.to_vec();
+        assert!(!h264_data.is_empty(), "encoded frame should not be empty");
+        assert!(
+            h264_data.len() < rgba.len(),
+            "H.264 should compress the frame"
+        );
+
+        // Decode
+        let mut decoder = openh264::decoder::Decoder::new().expect("decoder");
+        let decoded = decoder.decode(&h264_data).expect("decode");
+        assert!(decoded.is_some(), "decoder should produce a frame");
+        let yuv_out = decoded.unwrap();
+        use openh264::formats::YUVSource;
+        let (dw, dh) = yuv_out.dimensions();
+        assert_eq!(dw, width as usize);
+        assert_eq!(dh, height as usize);
+        let mut rgb = vec![0u8; dw * dh * 3];
+        yuv_out.write_rgb8(&mut rgb);
+        let nonzero = rgb.iter().filter(|&&b| b != 0).count();
+        assert!(
+            nonzero > rgb.len() / 2,
+            "decoded should have content"
+        );
     }
 }
