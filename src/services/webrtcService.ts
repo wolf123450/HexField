@@ -14,7 +14,6 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { logger } from '@/utils/logger'
 
 export type DataChannelMessageHandler = (userId: string, data: unknown) => void
-export type RemoteTrackHandler = (userId: string, stream: MediaStream, track: MediaStreamTrack) => void
 
 interface WebRtcConnEvent    { userId: string }
 interface WebRtcDataEvent    { from: string; payload: string }
@@ -41,7 +40,6 @@ export class WebRTCService {
     onDataMessage: DataChannelMessageHandler,
     onPeerConnected?: (userId: string) => void,
     onPeerDisconnected?: (userId: string) => void,
-    _onRemoteTrack?: RemoteTrackHandler,
   ): void {
     this._onDataMessage = onDataMessage
     this._onPeerConnected = onPeerConnected ?? null

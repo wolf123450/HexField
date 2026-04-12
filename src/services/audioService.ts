@@ -41,15 +41,7 @@ class AudioServiceUI {
     this.unlistenVad = null
   }
 
-  // ── Legacy API — no-ops (Rust handles everything) ────────────────────────
-
-  setLocalStream(_stream: MediaStream): void { /* no-op */ }
-  setLocalMuted(_muted: boolean): void { /* Rust: media_set_muted */ }
-  setDeafened(_deafened: boolean): void { /* Rust: media_set_deafened */ }
-  attachRemoteStream(_userId: string, _stream: MediaStream): void { /* Rust handles */ }
-  detachRemoteStream(_userId: string): void { /* Rust handles */ }
-  detachAll(): void { /* Rust: stop_all_remote_playback */ }
-  setLoopback(_enabled: boolean): void { /* Rust: media_set_loopback */ }
+  // ── Peer volume / device control ──────────────────────────────────────
 
   setPeerVolume(userId: string, volume: number): void {
     invoke('media_set_peer_volume', { peerId: userId, volume: Math.max(0, volume) }).catch(() => {})
