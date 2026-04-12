@@ -206,7 +206,6 @@ export const useNetworkStore = defineStore('network', () => {
         // Clean up voice state if the peer disconnects
         handleVoicePeerDisconnect(userId)
       },
-      handleRemoteTrack,
     )
 
     // Listen for mDNS-discovered peers (auto-connect on same LAN).
@@ -1132,17 +1131,6 @@ export const useNetworkStore = defineStore('network', () => {
     if (!device) return
     const { useDevicesStore } = await import('./devicesStore')
     await useDevicesStore().receiveAttestedDevice(device)
-  }
-
-  async function handleRemoteTrack(userId: string, _stream: MediaStream, track: MediaStreamTrack) {
-    const { useVoiceStore } = await import('./voiceStore')
-    const voiceStore = useVoiceStore()
-    if (!voiceStore.session) return
-    // Audio is handled entirely in Rust (MediaManager).
-    // Video screen share frames arrive via media_video_frame events — no JS-side MediaStream needed.
-    if (track.kind === 'video') {
-      voiceStore.updatePeer(userId, { screenSharing: true })
-    }
   }
 
   async function handleVoiceJoin(userId: string, msg: Record<string, unknown>) {

@@ -42,7 +42,7 @@ const VAD_SILENCE_FRAMES: u32 = 15;
 
 // ── Device info ──────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
 pub struct AudioDeviceInfo {
     pub id: String,
     pub name: String,
@@ -130,6 +130,8 @@ pub struct MediaManager {
     screen_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// The shared video track being written to (if screen share active).
     video_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
+    /// Background device-change watcher task.
+    device_watcher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl MediaManager {
@@ -149,6 +151,7 @@ impl MediaManager {
             screen_active: Arc::new(AtomicBool::new(false)),
             screen_task: Arc::new(Mutex::new(None)),
             video_track: Arc::new(Mutex::new(None)),
+            device_watcher: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -156,6 +159,11 @@ impl MediaManager {
 
     /// List available audio input and output devices.
     pub fn enumerate_devices(&self) -> AudioDeviceList {
+        Self::enumerate_devices_inner()
+    }
+
+    /// Static helper so the device watcher can call without &self.
+    fn enumerate_devices_inner() -> AudioDeviceList {
         let host = cpal::default_host();
 
         let inputs = host
@@ -189,6 +197,41 @@ impl MediaManager {
             .unwrap_or_default();
 
         AudioDeviceList { inputs, outputs }
+    }
+
+    // ── Device change watcher ────────────────────────────────────────────────
+
+    /// Start a background task that polls device lists every 3 seconds and
+    /// emits a `media_devices_changed` Tauri event when the list changes.
+    pub fn start_device_watcher(&self, app: tauri::AppHandle) {
+        let watcher = self.device_watcher.clone();
+        let handle = tokio::spawn(async move {
+            let mut prev = Self::enumerate_devices_inner();
+            loop {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let curr = Self::enumerate_devices_inner();
+                if device_lists_differ(&prev, &curr) {
+                    let _ = app.emit("media_devices_changed", &curr);
+                    prev = curr;
+                } else {
+                    prev = curr;
+                }
+            }
+        });
+        // Store watcher handle synchronously (block_on is fine at startup)
+        let watcher_clone = watcher.clone();
+        tokio::spawn(async move {
+            let mut guard = watcher_clone.lock().await;
+            *guard = Some(handle);
+        });
+    }
+
+    /// Stop the device watcher background task.
+    pub async fn stop_device_watcher(&self) {
+        let mut guard = self.device_watcher.lock().await;
+        if let Some(handle) = guard.take() {
+            handle.abort();
+        }
     }
 
     // ── Mic capture pipeline ─────────────────────────────────────────────────
@@ -1007,6 +1050,18 @@ impl MediaManager {
     }
 }
 
+// ── Device list comparison ───────────────────────────────────────────────────
+
+/// Compare two device lists by their ID sets (order-insensitive).
+fn device_lists_differ(a: &AudioDeviceList, b: &AudioDeviceList) -> bool {
+    use std::collections::HashSet;
+    let a_in: HashSet<&str> = a.inputs.iter().map(|d| d.id.as_str()).collect();
+    let b_in: HashSet<&str> = b.inputs.iter().map(|d| d.id.as_str()).collect();
+    let a_out: HashSet<&str> = a.outputs.iter().map(|d| d.id.as_str()).collect();
+    let b_out: HashSet<&str> = b.outputs.iter().map(|d| d.id.as_str()).collect();
+    a_in != b_in || a_out != b_out
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1147,5 +1202,28 @@ mod tests {
             nonzero > rgb.len() / 2,
             "decoded should have content"
         );
+    }
+
+    #[test]
+    fn test_device_list_diff_detects_changes() {
+        let a = AudioDeviceList {
+            inputs: vec![AudioDeviceInfo { id: "mic1".into(), name: "Mic 1".into() }],
+            outputs: vec![AudioDeviceInfo { id: "spk1".into(), name: "Speaker 1".into() }],
+        };
+        let b = AudioDeviceList {
+            inputs: vec![
+                AudioDeviceInfo { id: "mic1".into(), name: "Mic 1".into() },
+                AudioDeviceInfo { id: "mic2".into(), name: "Mic 2".into() },
+            ],
+            outputs: vec![AudioDeviceInfo { id: "spk1".into(), name: "Speaker 1".into() }],
+        };
+        assert!(device_lists_differ(&a, &b));
+    }
+
+    #[test]
+    fn test_device_list_diff_empty_equal() {
+        let a = AudioDeviceList { inputs: vec![], outputs: vec![] };
+        let b = AudioDeviceList { inputs: vec![], outputs: vec![] };
+        assert!(!device_lists_differ(&a, &b));
     }
 }

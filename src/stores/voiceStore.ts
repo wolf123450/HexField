@@ -10,7 +10,6 @@ const MESH_PEER_LIMIT = 8
 
 export const useVoiceStore = defineStore('voice', () => {
   const session         = ref<VoiceSession | null>(null)
-  const localStream     = ref<MediaStream | null>(null)
   const screenShareActive = ref<boolean>(false)
   const screenFrameUrls   = ref<Record<string, string>>({}) // asset:// URLs per peer for screen frames
   const isMuted         = ref<boolean>(false)
@@ -20,6 +19,7 @@ export const useVoiceStore = defineStore('voice', () => {
   const voiceViewActive = ref<boolean>(false) // false = minimised → show text channel
   const peers              = ref<Record<string, Peer>>({})
   const speakingPeers      = ref<Set<string>>(new Set())
+  const peerVolumes        = ref<Record<string, number>>({})
   // Tracks which voice channel each remote peer is currently in (even if we are not in the channel)
   const peerVoiceChannels  = ref<Record<string, string>>({})
 
@@ -45,7 +45,24 @@ export const useVoiceStore = defineStore('voice', () => {
 
     const { useSettingsStore } = await import('./settingsStore')
     const settingsStore = useSettingsStore()
-    const deviceId = settingsStore.settings.inputDeviceId || undefined
+    let deviceId: string | undefined = settingsStore.settings.inputDeviceId || undefined
+
+    // Validate saved input device still exists
+    if (deviceId) {
+      try {
+        const list = await invoke<{ inputs: { id: string }[] }>('media_enumerate_devices')
+        const found = list.inputs.some(d => d.id === deviceId)
+        if (!found) {
+          deviceId = undefined
+          settingsStore.updateSetting('inputDeviceId', '')
+          const { useNotificationStore } = await import('./notificationStore')
+          useNotificationStore().notify({
+            type:      'join_self',
+            titleText: 'Saved input device not found \u2014 using default',
+          }).catch(() => {})
+        }
+      } catch { /* enumerate failed — proceed with saved device */ }
+    }
 
     // Start mic capture in Rust — audio flows entirely in Rust
     // (cpal → Opus → WebRTC track). No MediaStream in JS.
@@ -91,7 +108,6 @@ export const useVoiceStore = defineStore('voice', () => {
     await webrtcService.removeAudioTracks()
     await webrtcService.removeScreenShareTrack()
 
-    localStream.value        = null
     screenShareActive.value  = false
     screenFrameUrls.value    = {}
     voiceViewActive.value    = false
@@ -198,7 +214,6 @@ export const useVoiceStore = defineStore('voice', () => {
     const next = new Set(speakingPeers.value)
     next.delete(userId)
     speakingPeers.value = next
-    audioService.detachRemoteStream(userId)
   }
 
   function setPeerVoiceChannel(userId: string, channelId: string): void {
@@ -209,9 +224,17 @@ export const useVoiceStore = defineStore('voice', () => {
     delete peerVoiceChannels.value[userId]
   }
 
+  function getPeerVolume(userId: string): number {
+    return peerVolumes.value[userId] ?? 100
+  }
+
+  async function setPeerVolume(userId: string, volume: number): Promise<void> {
+    peerVolumes.value[userId] = volume
+    audioService.setPeerVolume(userId, volume / 100)
+  }
+
   return {
     session,
-    localStream,
     screenShareActive,
     screenFrameUrls,
     isMuted,
@@ -222,6 +245,7 @@ export const useVoiceStore = defineStore('voice', () => {
     peers,
     speakingPeers,
     peerVoiceChannels,
+    peerVolumes,
     peerCount,
     meshWarning,
     hasScreenShares,
@@ -238,6 +262,8 @@ export const useVoiceStore = defineStore('voice', () => {
     setPeerSpeaking,
     updatePeer,
     removePeer,
+    getPeerVolume,
+    setPeerVolume,
   }
 })
 

@@ -146,6 +146,10 @@ pub fn run() {
             const ICON: Image<'_> = tauri::include_image!("./icons/icon.ico");
             let _ = window.set_icon(ICON);
 
+            // Start polling for audio device changes (hot-plug detection)
+            let state: tauri::State<AppState> = app.state();
+            state.media_manager.start_device_watcher(app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

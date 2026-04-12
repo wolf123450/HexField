@@ -101,11 +101,24 @@
             :key="peer.userId"
             class="video-tile avatar-tile"
             :class="{ speaking: voiceStore.speakingPeers.has(peer.userId) }"
+            @mouseenter="hoveredPeer = peer.userId"
+            @mouseleave="hoveredPeer = null"
           >
             <div class="av-ring" />
             <AvatarImage :hash="serversStore.members[serverId]?.[peer.userId]?.avatarHash ?? null" :name="peerName(peer.userId)" :size="64" class="av-avatar" />
             <div class="tile-overlay">
               <span class="tile-label">{{ peerName(peer.userId) }}</span>
+            </div>
+            <div v-if="hoveredPeer === peer.userId" class="volume-control">
+              <input
+                type="range"
+                class="volume-slider"
+                min="0"
+                max="200"
+                :value="voiceStore.getPeerVolume(peer.userId)"
+                @input="voiceStore.setPeerVolume(peer.userId, Number(($event.target as HTMLInputElement).value))"
+              />
+              <span class="volume-label">{{ voiceStore.getPeerVolume(peer.userId) }}%</span>
             </div>
           </div>
         </template>
@@ -157,6 +170,7 @@ const identityStore = useIdentityStore()
 const chatOpen     = ref(false)
 const hideNonVideo = ref(false)
 const focusedId    = ref<string | null>(null)
+const hoveredPeer  = ref<string | null>(null)
 const hiddenStreams = reactive(new Set<string>())
 
 const channelId = computed(() => voiceStore.session?.channelId ?? null)
@@ -446,5 +460,33 @@ function peerName(userId: string): string {
   flex-direction: column;
   overflow: hidden;
   background: var(--bg-primary);
+}
+
+.volume-control {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: rgba(0, 0, 0, 0.75);
+  border-radius: var(--radius-sm);
+  z-index: 2;
+}
+
+.volume-slider {
+  flex: 1;
+  height: 4px;
+  accent-color: var(--accent-color);
+  cursor: pointer;
+}
+
+.volume-label {
+  font-size: 10px;
+  color: #fff;
+  min-width: 32px;
+  text-align: right;
 }
 </style>
