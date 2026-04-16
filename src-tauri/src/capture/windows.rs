@@ -333,6 +333,28 @@ struct EncoderFrame {
     force_keyframe: bool,
 }
 
+fn write_jpeg_quality(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+    quality: u8,
+) -> Result<(), String> {
+    use std::io::BufWriter;
+    let tmp = path.with_extension("tmp");
+    let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let writer = BufWriter::new(file);
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(writer, quality);
+    image::DynamicImage::ImageRgba8(
+        image::RgbaImage::from_raw(width, height, rgba.to_vec())
+            .ok_or("invalid RGBA dimensions")?,
+    )
+    .write_with_encoder(encoder)
+    .map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn spawn_encoder_thread(
     label: &str,
     dst_w: usize,
@@ -421,19 +443,32 @@ fn spawn_encoder_thread(
                     Err(e) => log::warn!("[media-{label}] encode error: {e}"),
                 }
 
-                // Preview from low tier only, every 2nd frame
-                if label == "720p" && frame.frame_number % 2 == 0 {
+                // Preview (low tier only, every 3rd frame for ~20fps visual update at 60fps)
+                if label == "720p" && frame.frame_number % 3 == 0 {
                     if let Some(ref dir) = preview_dir {
                         let preview_path = dir.join("self.jpg");
+                        // Convert YUV420 → RGB for color preview (BT.709 inverse)
                         let mut rgba_preview = vec![255u8; dst_w * dst_h * 4];
-                        for (i, &yv) in y_plane.iter().enumerate() {
-                            let di = i * 4;
-                            rgba_preview[di] = yv;
-                            rgba_preview[di + 1] = yv;
-                            rgba_preview[di + 2] = yv;
+                        for py in 0..dst_h {
+                            for px in 0..dst_w {
+                                let yi = py * dst_w + px;
+                                let ci = (py / 2) * (dst_w / 2) + (px / 2);
+                                let y_val = y_plane[yi] as f32;
+                                let u_val = u_plane[ci] as f32 - 128.0;
+                                let v_val = v_plane[ci] as f32 - 128.0;
+                                // BT.709 inverse
+                                let r = (y_val + 1.5748 * v_val).clamp(0.0, 255.0) as u8;
+                                let g = (y_val - 0.1873 * u_val - 0.4681 * v_val).clamp(0.0, 255.0) as u8;
+                                let b = (y_val + 1.8556 * u_val).clamp(0.0, 255.0) as u8;
+                                let di = (py * dst_w + px) * 4;
+                                rgba_preview[di] = r;
+                                rgba_preview[di + 1] = g;
+                                rgba_preview[di + 2] = b;
+                                // alpha already 255
+                            }
                         }
-                        let _ = crate::media_manager::MediaManager::write_jpeg_frame(
-                            &rgba_preview, dst_w as u32, dst_h as u32, &preview_path,
+                        let _ = write_jpeg_quality(
+                            &rgba_preview, dst_w as u32, dst_h as u32, &preview_path, 85,
                         );
                         let _ = app.emit("media_video_frame", serde_json::json!({
                             "userId": "self",
