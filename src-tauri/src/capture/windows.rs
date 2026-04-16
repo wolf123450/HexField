@@ -325,6 +325,354 @@ pub(crate) fn bgra_to_yuv420_bt709_downscale(
     (y_plane, u_plane, v_plane)
 }
 
+/// Fused BGRA→YUV420 BT.709 with bilinear downscaling.
+pub(crate) fn bgra_to_yuv420_bt709_downscale_bilinear(
+    bgra: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let uv_w = dst_w / 2;
+    let uv_h = dst_h / 2;
+    let mut y_plane = vec![0u8; dst_w * dst_h];
+    let mut u_plane = vec![0u8; uv_w * uv_h];
+    let mut v_plane = vec![0u8; uv_w * uv_h];
+    let src_stride = src_w * 4;
+
+    let x_ratio = ((src_w as u64 - 1) << 16) / dst_w as u64;
+    let y_ratio = ((src_h as u64 - 1) << 16) / dst_h as u64;
+
+    #[inline(always)]
+    fn sample_bilinear(bgra: &[u8], src_stride: usize, src_w: usize, src_h: usize,
+                       sx_fp: u64, sy_fp: u64) -> (i32, i32, i32) {
+        let x0 = (sx_fp >> 16) as usize;
+        let y0 = (sy_fp >> 16) as usize;
+        let x1 = (x0 + 1).min(src_w - 1);
+        let y1 = (y0 + 1).min(src_h - 1);
+        let fx = (sx_fp & 0xFFFF) as i32;
+        let fy = (sy_fp & 0xFFFF) as i32;
+        let ifx = 65536 - fx;
+        let ify = 65536 - fy;
+
+        let p00 = y0 * src_stride + x0 * 4;
+        let p10 = y0 * src_stride + x1 * 4;
+        let p01 = y1 * src_stride + x0 * 4;
+        let p11 = y1 * src_stride + x1 * 4;
+
+        let interp = |ch: usize| -> i32 {
+            let top = ifx * bgra[p00 + ch] as i32 + fx * bgra[p10 + ch] as i32;
+            let bot = ifx * bgra[p01 + ch] as i32 + fx * bgra[p11 + ch] as i32;
+            (ify * (top >> 8) + fy * (bot >> 8)) >> 24
+        };
+
+        (interp(2), interp(1), interp(0)) // r, g, b (BGRA layout)
+    }
+
+    // Luma plane
+    for dst_row in 0..dst_h {
+        let sy = dst_row as u64 * y_ratio;
+        let row_base = dst_row * dst_w;
+        for dst_col in 0..dst_w {
+            let sx = dst_col as u64 * x_ratio;
+            let (r, g, b) = sample_bilinear(bgra, src_stride, src_w, src_h, sx, sy);
+            let y = ((YR * r + YG * g + YB * b + 32768) >> 16).clamp(0, 255);
+            y_plane[row_base + dst_col] = y as u8;
+        }
+    }
+
+    // Chroma planes
+    for uv_row in 0..uv_h {
+        for uv_col in 0..uv_w {
+            let mut sum_r: i32 = 0;
+            let mut sum_g: i32 = 0;
+            let mut sum_b: i32 = 0;
+            for dy in 0..2u64 {
+                let dst_row = uv_row as u64 * 2 + dy;
+                let sy = dst_row * y_ratio;
+                for dx in 0..2u64 {
+                    let dst_col = uv_col as u64 * 2 + dx;
+                    let sx = dst_col * x_ratio;
+                    let (r, g, b) = sample_bilinear(bgra, src_stride, src_w, src_h, sx, sy);
+                    sum_r += r;
+                    sum_g += g;
+                    sum_b += b;
+                }
+            }
+            let avg_r = sum_r / 4;
+            let avg_g = sum_g / 4;
+            let avg_b = sum_b / 4;
+            let u = ((UR * avg_r + UG * avg_g + UB * avg_b + 32768) >> 16) + 128;
+            let v = ((VR * avg_r + VG * avg_g + VB * avg_b + 32768) >> 16) + 128;
+            let idx = uv_row * uv_w + uv_col;
+            u_plane[idx] = u.clamp(0, 255) as u8;
+            v_plane[idx] = v.clamp(0, 255) as u8;
+        }
+    }
+
+    (y_plane, u_plane, v_plane)
+}
+
+/// Fused BGRA→YUV420 BT.709 with bicubic (Catmull-Rom) downscaling.
+pub(crate) fn bgra_to_yuv420_bt709_downscale_bicubic(
+    bgra: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let uv_w = dst_w / 2;
+    let uv_h = dst_h / 2;
+    let mut y_plane = vec![0u8; dst_w * dst_h];
+    let mut u_plane = vec![0u8; uv_w * uv_h];
+    let mut v_plane = vec![0u8; uv_w * uv_h];
+    let src_stride = src_w * 4;
+
+    // Catmull-Rom weight (a = -0.5), input t is 16.16 fixed-point absolute distance
+    // Returns weight * 4096 (fixed-point 12-bit)
+    #[inline(always)]
+    fn catmull_rom_fp(t: i32) -> i32 {
+        let t = t.unsigned_abs() as i32;
+        if t <= 65536 {
+            let tn = t as i64;
+            let t2 = (tn * tn) >> 16;
+            let t3 = (t2 * tn) >> 16;
+            let w = ((6144 * t3 - 10240 * t2) >> 16) + 4096;
+            w as i32
+        } else if t <= 131072 {
+            let tn = t as i64;
+            let t2 = (tn * tn) >> 16;
+            let t3 = (t2 * tn) >> 16;
+            let w = ((-2048 * t3 + 10240 * t2 - 16384 * tn) >> 16) + 8192;
+            w as i32
+        } else {
+            0
+        }
+    }
+
+    #[inline(always)]
+    fn sample_bicubic(bgra: &[u8], src_stride: usize, src_w: usize, src_h: usize,
+                      sx_fp: u64, sy_fp: u64) -> (i32, i32, i32) {
+        let ix = (sx_fp >> 16) as i32;
+        let iy = (sy_fp >> 16) as i32;
+        let fx = (sx_fp & 0xFFFF) as i32;
+        let fy = (sy_fp & 0xFFFF) as i32;
+
+        let mut sum_r: i64 = 0;
+        let mut sum_g: i64 = 0;
+        let mut sum_b: i64 = 0;
+        let mut sum_w: i64 = 0;
+
+        for j in -1i32..=2 {
+            let sy = (iy + j).clamp(0, src_h as i32 - 1) as usize;
+            let wy = catmull_rom_fp((j * 65536 - fy).unsigned_abs() as i32) as i64;
+            let row_off = sy * src_stride;
+            for i in -1i32..=2 {
+                let sx = (ix + i).clamp(0, src_w as i32 - 1) as usize;
+                let wx = catmull_rom_fp((i * 65536 - fx).unsigned_abs() as i32) as i64;
+                let w = wx * wy;
+                let px = row_off + sx * 4;
+                sum_b += w * bgra[px] as i64;
+                sum_g += w * bgra[px + 1] as i64;
+                sum_r += w * bgra[px + 2] as i64;
+                sum_w += w;
+            }
+        }
+
+        if sum_w == 0 {
+            return (0, 0, 0);
+        }
+        let r = (sum_r / sum_w).clamp(0, 255) as i32;
+        let g = (sum_g / sum_w).clamp(0, 255) as i32;
+        let b = (sum_b / sum_w).clamp(0, 255) as i32;
+        (r, g, b)
+    }
+
+    let x_ratio = ((src_w as u64 - 1) << 16) / dst_w as u64;
+    let y_ratio = ((src_h as u64 - 1) << 16) / dst_h as u64;
+
+    // Luma
+    for dst_row in 0..dst_h {
+        let sy = dst_row as u64 * y_ratio;
+        let row_base = dst_row * dst_w;
+        for dst_col in 0..dst_w {
+            let sx = dst_col as u64 * x_ratio;
+            let (r, g, b) = sample_bicubic(bgra, src_stride, src_w, src_h, sx, sy);
+            let y = ((YR * r + YG * g + YB * b + 32768) >> 16).clamp(0, 255);
+            y_plane[row_base + dst_col] = y as u8;
+        }
+    }
+
+    // Chroma
+    for uv_row in 0..uv_h {
+        for uv_col in 0..uv_w {
+            let mut sum_r: i32 = 0;
+            let mut sum_g: i32 = 0;
+            let mut sum_b: i32 = 0;
+            for dy in 0..2u64 {
+                let dst_row = uv_row as u64 * 2 + dy;
+                let sy = dst_row * y_ratio;
+                for dx in 0..2u64 {
+                    let dst_col = uv_col as u64 * 2 + dx;
+                    let sx = dst_col * x_ratio;
+                    let (r, g, b) = sample_bicubic(bgra, src_stride, src_w, src_h, sx, sy);
+                    sum_r += r;
+                    sum_g += g;
+                    sum_b += b;
+                }
+            }
+            let avg_r = sum_r / 4;
+            let avg_g = sum_g / 4;
+            let avg_b = sum_b / 4;
+            let u = ((UR * avg_r + UG * avg_g + UB * avg_b + 32768) >> 16) + 128;
+            let v = ((VR * avg_r + VG * avg_g + VB * avg_b + 32768) >> 16) + 128;
+            let idx = uv_row * uv_w + uv_col;
+            u_plane[idx] = u.clamp(0, 255) as u8;
+            v_plane[idx] = v.clamp(0, 255) as u8;
+        }
+    }
+
+    (y_plane, u_plane, v_plane)
+}
+
+/// Fused BGRA→YUV420 BT.709 with Lanczos-3 downscaling.
+pub(crate) fn bgra_to_yuv420_bt709_downscale_lanczos3(
+    bgra: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let uv_w = dst_w / 2;
+    let uv_h = dst_h / 2;
+    let mut y_plane = vec![0u8; dst_w * dst_h];
+    let mut u_plane = vec![0u8; uv_w * uv_h];
+    let mut v_plane = vec![0u8; uv_w * uv_h];
+    let src_stride = src_w * 4;
+
+    #[inline(always)]
+    fn lanczos3_weight(x: f32) -> f32 {
+        if x.abs() < 1e-6 {
+            return 1.0;
+        }
+        if x.abs() >= 3.0 {
+            return 0.0;
+        }
+        let pi_x = std::f32::consts::PI * x;
+        let pi_x_3 = pi_x / 3.0;
+        (pi_x.sin() / pi_x) * (pi_x_3.sin() / pi_x_3)
+    }
+
+    #[inline(always)]
+    fn sample_lanczos3(bgra: &[u8], src_stride: usize, src_w: usize, src_h: usize,
+                       sx_fp: u64, sy_fp: u64) -> (i32, i32, i32) {
+        let ix = (sx_fp >> 16) as i32;
+        let iy = (sy_fp >> 16) as i32;
+        let fx = (sx_fp & 0xFFFF) as f32 / 65536.0;
+        let fy = (sy_fp & 0xFFFF) as f32 / 65536.0;
+
+        let mut sum_r: f32 = 0.0;
+        let mut sum_g: f32 = 0.0;
+        let mut sum_b: f32 = 0.0;
+        let mut sum_w: f32 = 0.0;
+
+        for j in -2i32..=3 {
+            let sy = (iy + j).clamp(0, src_h as i32 - 1) as usize;
+            let wy = lanczos3_weight(j as f32 - fy);
+            let row_off = sy * src_stride;
+            for i in -2i32..=3 {
+                let sx = (ix + i).clamp(0, src_w as i32 - 1) as usize;
+                let wx = lanczos3_weight(i as f32 - fx);
+                let w = wx * wy;
+                let px = row_off + sx * 4;
+                sum_b += w * bgra[px] as f32;
+                sum_g += w * bgra[px + 1] as f32;
+                sum_r += w * bgra[px + 2] as f32;
+                sum_w += w;
+            }
+        }
+
+        if sum_w.abs() < 1e-6 {
+            return (0, 0, 0);
+        }
+        let r = (sum_r / sum_w).clamp(0.0, 255.0) as i32;
+        let g = (sum_g / sum_w).clamp(0.0, 255.0) as i32;
+        let b = (sum_b / sum_w).clamp(0.0, 255.0) as i32;
+        (r, g, b)
+    }
+
+    let x_ratio = ((src_w as u64 - 1) << 16) / dst_w as u64;
+    let y_ratio = ((src_h as u64 - 1) << 16) / dst_h as u64;
+
+    // Luma
+    for dst_row in 0..dst_h {
+        let sy = dst_row as u64 * y_ratio;
+        let row_base = dst_row * dst_w;
+        for dst_col in 0..dst_w {
+            let sx = dst_col as u64 * x_ratio;
+            let (r, g, b) = sample_lanczos3(bgra, src_stride, src_w, src_h, sx, sy);
+            let y = ((YR * r + YG * g + YB * b + 32768) >> 16).clamp(0, 255);
+            y_plane[row_base + dst_col] = y as u8;
+        }
+    }
+
+    // Chroma
+    for uv_row in 0..uv_h {
+        for uv_col in 0..uv_w {
+            let mut sum_r: i32 = 0;
+            let mut sum_g: i32 = 0;
+            let mut sum_b: i32 = 0;
+            for dy in 0..2u64 {
+                let dst_row = uv_row as u64 * 2 + dy;
+                let sy = dst_row * y_ratio;
+                for dx in 0..2u64 {
+                    let dst_col = uv_col as u64 * 2 + dx;
+                    let sx = dst_col * x_ratio;
+                    let (r, g, b) = sample_lanczos3(bgra, src_stride, src_w, src_h, sx, sy);
+                    sum_r += r;
+                    sum_g += g;
+                    sum_b += b;
+                }
+            }
+            let avg_r = sum_r / 4;
+            let avg_g = sum_g / 4;
+            let avg_b = sum_b / 4;
+            let u = ((UR * avg_r + UG * avg_g + UB * avg_b + 32768) >> 16) + 128;
+            let v = ((VR * avg_r + VG * avg_g + VB * avg_b + 32768) >> 16) + 128;
+            let idx = uv_row * uv_w + uv_col;
+            u_plane[idx] = u.clamp(0, 255) as u8;
+            v_plane[idx] = v.clamp(0, 255) as u8;
+        }
+    }
+
+    (y_plane, u_plane, v_plane)
+}
+
+/// Dispatch to the appropriate fused BGRA→YUV420 downscale implementation.
+pub(crate) fn bgra_to_yuv420_bt709_downscale_with_method(
+    bgra: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    method: super::DownscaleMethod,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    match method {
+        super::DownscaleMethod::Nearest => {
+            bgra_to_yuv420_bt709_downscale(bgra, src_w, src_h, dst_w, dst_h)
+        }
+        super::DownscaleMethod::Bilinear => {
+            bgra_to_yuv420_bt709_downscale_bilinear(bgra, src_w, src_h, dst_w, dst_h)
+        }
+        super::DownscaleMethod::Bicubic => {
+            bgra_to_yuv420_bt709_downscale_bicubic(bgra, src_w, src_h, dst_w, dst_h)
+        }
+        super::DownscaleMethod::Lanczos3 => {
+            bgra_to_yuv420_bt709_downscale_lanczos3(bgra, src_w, src_h, dst_w, dst_h)
+        }
+    }
+}
+
 // ── WGC callback handler ────────────────────────────────────────────────────
 
 struct EncoderFrame {
@@ -369,7 +717,7 @@ fn spawn_encoder_thread(
     preview_dir: Option<std::path::PathBuf>,
     app: tauri::AppHandle,
     inline_preview: bool,
-    _downscale_method: super::DownscaleMethod,
+    downscale_method: super::DownscaleMethod,
 ) -> crossbeam_channel::Sender<EncoderFrame> {
     let (tx, rx) = crossbeam_channel::bounded::<EncoderFrame>(2);
     let label = label.to_string();
@@ -398,8 +746,9 @@ fn spawn_encoder_thread(
 
                 let needs_downscale = frame.src_w > dst_w || frame.src_h > dst_h;
                 let (y_plane, u_plane, v_plane) = if needs_downscale {
-                    bgra_to_yuv420_bt709_downscale(
+                    bgra_to_yuv420_bt709_downscale_with_method(
                         &frame.bgra, frame.src_w, frame.src_h, dst_w, dst_h,
+                        downscale_method,
                     )
                 } else {
                     bgra_to_yuv420_bt709(&frame.bgra, frame.src_w, frame.src_h)
