@@ -893,4 +893,48 @@ mod tests {
         println!("U: {} bytes (expected {})", u.len(), (dst_w / 2) * (dst_h / 2));
         println!("V: {} bytes (expected {})", v.len(), (dst_w / 2) * (dst_h / 2));
     }
+
+    #[test]
+    fn test_fused_bgra_yuv_encode_decode_roundtrip() {
+        let w = 320usize;
+        let h = 240usize;
+
+        // Generate BGRA gradient (simulating a screen capture frame)
+        let bgra = make_gradient_bgra(w, h);
+
+        // Convert using fused BT.709 path
+        let (y_plane, u_plane, v_plane) = bgra_to_yuv420_bt709(&bgra, w, h);
+
+        // Encode via YUVSlices (zero-copy, implements YUVSource)
+        let slices = openh264::formats::YUVSlices::new(
+            (&y_plane, &u_plane, &v_plane),
+            (w, h),
+            (w, w / 2, w / 2),
+        );
+
+        let api = openh264::OpenH264API::from_source();
+        let enc_cfg = openh264::encoder::EncoderConfig::new()
+            .max_frame_rate(openh264::encoder::FrameRate::from_hz(30.0));
+        let mut encoder = openh264::encoder::Encoder::with_api_config(api, enc_cfg).unwrap();
+
+        let bitstream = encoder.encode(&slices).unwrap();
+        let h264_data = bitstream.to_vec();
+        assert!(!h264_data.is_empty(), "H.264 bitstream should not be empty");
+
+        // Decode
+        let mut decoder = openh264::decoder::Decoder::new().unwrap();
+        let decoded = decoder.decode(&h264_data).unwrap();
+        assert!(decoded.is_some(), "decoder should produce a frame");
+
+        let decoded = decoded.unwrap();
+        let (dw, dh) = decoded.dimensions();
+        assert_eq!(dw, w);
+        assert_eq!(dh, h);
+
+        // Verify decoded frame has non-zero content
+        let mut rgb = vec![0u8; dw * dh * 3];
+        decoded.write_rgb8(&mut rgb);
+        let nonzero = rgb.iter().filter(|&&b| b != 0).count();
+        assert!(nonzero > rgb.len() / 2, "decoded frame should have content");
+    }
 }
