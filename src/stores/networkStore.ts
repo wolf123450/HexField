@@ -634,6 +634,9 @@ export const useNetworkStore = defineStore('network', () => {
       case 'voice_screen_share_stop':
         handleVoiceScreenShareStop(userId)
         break
+      case 'quality_request':
+        handleQualityRequest(userId, msg)
+        break
       case 'sync_neg_init':
       case 'sync_neg_reply':
       case 'sync_push':
@@ -1292,6 +1295,16 @@ export const useNetworkStore = defineStore('network', () => {
     const voiceStore = useVoiceStore()
     delete voiceStore.screenFrameUrls[userId]
     voiceStore.updatePeer(userId, { screenSharing: false })
+  }
+
+  async function handleQualityRequest(userId: string, msg: Record<string, unknown>) {
+    const tier = typeof msg.tier === 'string' ? msg.tier : 'low'
+    try {
+      await invoke('webrtc_set_peer_quality', { peerId: userId, tier })
+      logger.debug('network', `switched quality for peer ${userId} to ${tier}`)
+    } catch (e) {
+      logger.warn('network', 'quality switch failed:', e)
+    }
   }
 
   async function handleVoicePeerDisconnect(userId: string) {

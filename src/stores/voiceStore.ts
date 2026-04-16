@@ -12,6 +12,7 @@ export const useVoiceStore = defineStore('voice', () => {
   const session         = ref<VoiceSession | null>(null)
   const screenShareActive = ref<boolean>(false)
   const screenFrameUrls   = ref<Record<string, string>>({}) // asset:// URLs per peer for screen frames
+  const streamQualityTier = ref<Record<string, 'low' | 'high'>>({})
   const isMuted         = ref<boolean>(false)
   const isDeafened      = ref<boolean>(false)
   const adminMuted      = ref<boolean>(false)
@@ -252,11 +253,22 @@ export const useVoiceStore = defineStore('voice', () => {
     audioService.setPeerVolume(userId, volume / 100)
   }
 
+  async function requestQuality(sharerUserId: string, tier: 'low' | 'high') {
+    streamQualityTier.value[sharerUserId] = tier
+    const { useNetworkStore } = await import('./networkStore')
+    const networkStore = useNetworkStore()
+    networkStore.sendToPeer(sharerUserId, {
+      type: 'quality_request',
+      tier,
+    })
+  }
+
   return {
     session,
     screenShareActive,
     screenShareSupported,
     screenFrameUrls,
+    streamQualityTier,
     isMuted,
     isDeafened,
     adminMuted,
@@ -284,6 +296,7 @@ export const useVoiceStore = defineStore('voice', () => {
     removePeer,
     getPeerVolume,
     setPeerVolume,
+    requestQuality,
   }
 })
 
