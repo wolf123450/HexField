@@ -98,6 +98,10 @@
               <AppIcon :path="mdiEyeOff" :size="14" />
             </button>
           </div>
+          <QualitySelector
+            :current-tier="voiceStore.streamQualityTier[userId] ?? 'low'"
+            @quality-change="(tier: 'low' | 'high') => voiceStore.requestQuality(userId, tier)"
+          />
         </div>
 
         <!-- Non-video remote peers (shown unless hideNonVideo) -->
@@ -167,6 +171,8 @@ import { useServersStore }  from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import MessageHistory from '@/components/chat/MessageHistory.vue'
 import MessageInput   from '@/components/chat/MessageInput.vue'
+
+import QualitySelector from './QualitySelector.vue'
 
 const voiceStore    = useVoiceStore()
 const channelsStore = useChannelsStore()
