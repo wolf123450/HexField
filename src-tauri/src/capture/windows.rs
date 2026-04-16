@@ -402,140 +402,105 @@ impl GraphicsCaptureApiHandler for WgcHandler {
         let mut buf = frame.buffer()?;
         let raw = buf.as_raw_buffer();
 
-        // Downscale + BGRA→RGBA in a single pass. For 3840×2160 → 1280×720
-        // this reads the source once and writes a 3.6 MB output buffer with
-        // channels already swapped, avoiding a 33 MB copy + separate swap.
-        const MAX_W: u32 = 1280;
-        let (w, h, mut rgba, already_swapped) = if orig_w > MAX_W {
-            let scale = MAX_W as f64 / orig_w as f64;
-            let new_h = (orig_h as f64 * scale) as u32;
-            // Ensure even dimensions for H.264
-            let new_w = (MAX_W & !1) as usize;
-            let new_h = (new_h & !1) as usize;
-            let src_stride = orig_w as usize * 4;
+        if self.use_new_pipeline {
+            // ── New fused BGRA→YUV420 pipeline ─────────────────────────
+            const LOW_W: u32 = 1280;
+            let (low_w, low_h) = if orig_w > LOW_W {
+                let scale = LOW_W as f64 / orig_w as f64;
+                let h = (orig_h as f64 * scale) as u32;
+                ((LOW_W & !1) as usize, (h & !1) as usize)
+            } else {
+                ((orig_w & !1) as usize, (orig_h & !1) as usize)
+            };
 
-            // Fast nearest-neighbor downscale + BGRA→RGBA swap in a single
-            // pass. Avoids two separate iterations over the pixel data.
-            let mut out = vec![0u8; new_w * new_h * 4];
-            let x_ratio = orig_w as f64 / new_w as f64;
-            let y_ratio = orig_h as f64 / new_h as f64;
-            for y in 0..new_h {
-                let src_y = (y as f64 * y_ratio) as usize;
-                let src_row = src_y * src_stride;
-                let dst_row = y * new_w * 4;
-                for x in 0..new_w {
-                    let src_x = (x as f64 * x_ratio) as usize;
-                    let si = src_row + src_x * 4;
-                    let di = dst_row + x * 4;
-                    // BGRA → RGBA: swap B↔R during copy
-                    out[di] = raw[si + 2];     // R ← B
-                    out[di + 1] = raw[si + 1]; // G ← G
-                    out[di + 2] = raw[si];     // B ← R
-                    out[di + 3] = raw[si + 3]; // A ← A
-                }
-            }
+            // Fused BGRA→YUV420 (single pass, BT.709)
+            let (y_low, u_low, v_low) = if orig_w > LOW_W {
+                bgra_to_yuv420_bt709_downscale(raw, orig_w as usize, orig_h as usize, low_w, low_h)
+            } else {
+                bgra_to_yuv420_bt709(raw, low_w, low_h)
+            };
             drop(buf);
-            (new_w, new_h, out, true)
-        } else {
-            let data = raw.to_vec();
-            drop(buf);
-            (orig_w as usize, orig_h as usize, data, false)
-        };
 
-        // Swap B↔R only if not already done during downscale
-        if !already_swapped {
-            for pixel in rgba.chunks_exact_mut(4) {
-                pixel.swap(0, 2);
-            }
-        }
-        let t_after_swap = t_start.elapsed();
+            let t_after_convert = t_start.elapsed();
 
-        // Init encoder on first frame (when we know the resolution)
-        if self.encoder.is_none() {
-            let fps_f = 1.0 / self.frame_duration.as_secs_f32();
-            let mut enc_cfg = openh264::encoder::EncoderConfig::new()
-                .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps_f));
-            if self.bitrate_kbps > 0 {
-                enc_cfg = enc_cfg
-                    .bitrate(openh264::encoder::BitRate::from_bps(
-                        self.bitrate_kbps * 1000,
-                    ))
-                    .rate_control_mode(openh264::encoder::RateControlMode::Bitrate);
-            }
-            self.encoder = Some(openh264::encoder::Encoder::with_api_config(
-                openh264::OpenH264API::from_source(),
-                enc_cfg,
-            )?);
-        }
-
-        let enc = self.encoder.as_mut().unwrap();
-
-        // If a new peer connected, force an IDR keyframe so they can start
-        // decoding immediately instead of waiting for the next periodic IDR.
-        if self.force_keyframe.swap(false, Ordering::AcqRel) {
-            enc.force_intra_frame();
-        }
-
-        let src = openh264::formats::RgbaSliceU8::new(&rgba, (w, h));
-        let yuv = openh264::formats::YUVBuffer::from_rgb_source(src);
-        let t_after_yuv = t_start.elapsed();
-
-        match enc.encode(&yuv) {
-            Ok(bitstream) => {
-                let t_after_encode = t_start.elapsed();
-                let h264_data = bitstream.to_vec();
-                if !h264_data.is_empty() {
-                    let vt = self.video_track.clone();
-                    let dur = self.frame_duration;
-                    let _ = self.rt.block_on(async {
-                        vt.write_sample(&Sample {
-                            data: Bytes::from(h264_data),
-                            duration: dur,
-                            ..Default::default()
-                        })
-                        .await
-                    });
+            // Init encoder on first frame
+            if self.encoder.is_none() {
+                let fps_f = 1.0 / self.frame_duration.as_secs_f32();
+                let mut enc_cfg = openh264::encoder::EncoderConfig::new()
+                    .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps_f));
+                if self.bitrate_kbps > 0 {
+                    enc_cfg = enc_cfg
+                        .bitrate(openh264::encoder::BitRate::from_bps(self.bitrate_kbps * 1000))
+                        .rate_control_mode(openh264::encoder::RateControlMode::Bitrate);
                 }
-                let t_after_send = t_start.elapsed();
+                self.encoder = Some(openh264::encoder::Encoder::with_api_config(
+                    openh264::OpenH264API::from_source(),
+                    enc_cfg,
+                )?);
+            }
+            let enc = self.encoder.as_mut().unwrap();
 
-                // Log timing: first frame + every 300th (~10s at 30fps)
-                if self.frame_count == 1 || self.frame_count % 300 == 0 {
-                    let total = t_start.elapsed();
-                    log::info!(
-                        "[media] capture frame #{}: swap={:.1}ms yuv={:.1}ms enc={:.1}ms send={:.1}ms total={:.1}ms ({}x{})",
-                        self.frame_count,
-                        t_after_swap.as_secs_f64() * 1000.0,
-                        t_after_yuv.as_secs_f64() * 1000.0,
-                        t_after_encode.as_secs_f64() * 1000.0,
-                        t_after_send.as_secs_f64() * 1000.0,
-                        total.as_secs_f64() * 1000.0,
-                        w, h,
-                    );
+            if self.force_keyframe.swap(false, Ordering::AcqRel) {
+                enc.force_intra_frame();
+            }
+
+            // Encode using YUVSlices (zero-copy — borrows our planes directly)
+            let slices = openh264::formats::YUVSlices::new(
+                (&y_low, &u_low, &v_low),
+                (low_w, low_h),
+                (low_w, low_w / 2, low_w / 2),
+            );
+
+            match enc.encode(&slices) {
+                Ok(bitstream) => {
+                    let t_after_encode = t_start.elapsed();
+                    let h264_data = bitstream.to_vec();
+                    if !h264_data.is_empty() {
+                        let vt = self.video_track.clone();
+                        let dur = self.frame_duration;
+                        let _ = self.rt.block_on(async {
+                            vt.write_sample(&Sample {
+                                data: Bytes::from(h264_data),
+                                duration: dur,
+                                ..Default::default()
+                            })
+                            .await
+                        });
+                    }
+                    let t_after_send = t_start.elapsed();
+
+                    // Log with [media-NEW] prefix for comparison with old pipeline
+                    if self.frame_count == 1 || self.frame_count % 300 == 0 {
+                        let total = t_start.elapsed();
+                        log::info!(
+                            "[media-NEW] capture frame #{}: convert={:.1}ms enc={:.1}ms send={:.1}ms total={:.1}ms ({}x{})",
+                            self.frame_count,
+                            t_after_convert.as_secs_f64() * 1000.0,
+                            t_after_encode.as_secs_f64() * 1000.0,
+                            t_after_send.as_secs_f64() * 1000.0,
+                            total.as_secs_f64() * 1000.0,
+                            low_w, low_h,
+                        );
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[media-NEW] H.264 encode error: {e}");
                 }
             }
-            Err(e) => {
-                log::warn!("[media] H.264 encode error: {e}");
-            }
-        }
 
-        // Local preview JPEG (every 2nd frame)
-        if self.frame_count % 2 == 0 {
-            if let Some(ref dir) = self.preview_dir {
-                let preview_path = dir.join("self.jpg");
-                if let Some(rgba_img) = image::RgbaImage::from_raw(w as u32, h as u32, rgba) {
-                    let preview_w = 640u32.min(w as u32);
-                    let preview_h = preview_w * h as u32 / (w as u32).max(1);
-                    let resized = image::imageops::resize(
-                        &rgba_img,
-                        preview_w,
-                        preview_h,
-                        image::imageops::FilterType::Nearest,
-                    );
+            // Local preview JPEG (every 2nd frame) — use grayscale from Y plane
+            if self.frame_count % 2 == 0 {
+                if let Some(ref dir) = self.preview_dir {
+                    let preview_path = dir.join("self.jpg");
+                    let mut rgba_preview = vec![255u8; low_w * low_h * 4];
+                    for (i, &y_val) in y_low.iter().enumerate() {
+                        let di = i * 4;
+                        rgba_preview[di] = y_val;
+                        rgba_preview[di + 1] = y_val;
+                        rgba_preview[di + 2] = y_val;
+                    }
                     let _ = crate::media_manager::MediaManager::write_jpeg_frame(
-                        resized.as_raw(),
-                        preview_w,
-                        preview_h,
-                        &preview_path,
+                        &rgba_preview, low_w as u32, low_h as u32, &preview_path,
                     );
                     let _ = self.app.emit(
                         "media_video_frame",
@@ -545,6 +510,154 @@ impl GraphicsCaptureApiHandler for WgcHandler {
                             "path": preview_path.to_string_lossy(),
                         }),
                     );
+                }
+            }
+        } else {
+            // ── Old pipeline (unchanged) ────────────────────────────────
+            // Downscale + BGRA→RGBA in a single pass. For 3840×2160 → 1280×720
+            // this reads the source once and writes a 3.6 MB output buffer with
+            // channels already swapped, avoiding a 33 MB copy + separate swap.
+            const MAX_W: u32 = 1280;
+            let (w, h, mut rgba, already_swapped) = if orig_w > MAX_W {
+                let scale = MAX_W as f64 / orig_w as f64;
+                let new_h = (orig_h as f64 * scale) as u32;
+                // Ensure even dimensions for H.264
+                let new_w = (MAX_W & !1) as usize;
+                let new_h = (new_h & !1) as usize;
+                let src_stride = orig_w as usize * 4;
+
+                // Fast nearest-neighbor downscale + BGRA→RGBA swap in a single
+                // pass. Avoids two separate iterations over the pixel data.
+                let mut out = vec![0u8; new_w * new_h * 4];
+                let x_ratio = orig_w as f64 / new_w as f64;
+                let y_ratio = orig_h as f64 / new_h as f64;
+                for y in 0..new_h {
+                    let src_y = (y as f64 * y_ratio) as usize;
+                    let src_row = src_y * src_stride;
+                    let dst_row = y * new_w * 4;
+                    for x in 0..new_w {
+                        let src_x = (x as f64 * x_ratio) as usize;
+                        let si = src_row + src_x * 4;
+                        let di = dst_row + x * 4;
+                        // BGRA → RGBA: swap B↔R during copy
+                        out[di] = raw[si + 2];     // R ← B
+                        out[di + 1] = raw[si + 1]; // G ← G
+                        out[di + 2] = raw[si];     // B ← R
+                        out[di + 3] = raw[si + 3]; // A ← A
+                    }
+                }
+                drop(buf);
+                (new_w, new_h, out, true)
+            } else {
+                let data = raw.to_vec();
+                drop(buf);
+                (orig_w as usize, orig_h as usize, data, false)
+            };
+
+            // Swap B↔R only if not already done during downscale
+            if !already_swapped {
+                for pixel in rgba.chunks_exact_mut(4) {
+                    pixel.swap(0, 2);
+                }
+            }
+            let t_after_swap = t_start.elapsed();
+
+            // Init encoder on first frame (when we know the resolution)
+            if self.encoder.is_none() {
+                let fps_f = 1.0 / self.frame_duration.as_secs_f32();
+                let mut enc_cfg = openh264::encoder::EncoderConfig::new()
+                    .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps_f));
+                if self.bitrate_kbps > 0 {
+                    enc_cfg = enc_cfg
+                        .bitrate(openh264::encoder::BitRate::from_bps(
+                            self.bitrate_kbps * 1000,
+                        ))
+                        .rate_control_mode(openh264::encoder::RateControlMode::Bitrate);
+                }
+                self.encoder = Some(openh264::encoder::Encoder::with_api_config(
+                    openh264::OpenH264API::from_source(),
+                    enc_cfg,
+                )?);
+            }
+
+            let enc = self.encoder.as_mut().unwrap();
+
+            // If a new peer connected, force an IDR keyframe so they can start
+            // decoding immediately instead of waiting for the next periodic IDR.
+            if self.force_keyframe.swap(false, Ordering::AcqRel) {
+                enc.force_intra_frame();
+            }
+
+            let src = openh264::formats::RgbaSliceU8::new(&rgba, (w, h));
+            let yuv = openh264::formats::YUVBuffer::from_rgb_source(src);
+            let t_after_yuv = t_start.elapsed();
+
+            match enc.encode(&yuv) {
+                Ok(bitstream) => {
+                    let t_after_encode = t_start.elapsed();
+                    let h264_data = bitstream.to_vec();
+                    if !h264_data.is_empty() {
+                        let vt = self.video_track.clone();
+                        let dur = self.frame_duration;
+                        let _ = self.rt.block_on(async {
+                            vt.write_sample(&Sample {
+                                data: Bytes::from(h264_data),
+                                duration: dur,
+                                ..Default::default()
+                            })
+                            .await
+                        });
+                    }
+                    let t_after_send = t_start.elapsed();
+
+                    // Log timing: first frame + every 300th (~10s at 30fps)
+                    if self.frame_count == 1 || self.frame_count % 300 == 0 {
+                        let total = t_start.elapsed();
+                        log::info!(
+                            "[media] capture frame #{}: swap={:.1}ms yuv={:.1}ms enc={:.1}ms send={:.1}ms total={:.1}ms ({}x{})",
+                            self.frame_count,
+                            t_after_swap.as_secs_f64() * 1000.0,
+                            t_after_yuv.as_secs_f64() * 1000.0,
+                            t_after_encode.as_secs_f64() * 1000.0,
+                            t_after_send.as_secs_f64() * 1000.0,
+                            total.as_secs_f64() * 1000.0,
+                            w, h,
+                        );
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[media] H.264 encode error: {e}");
+                }
+            }
+
+            // Local preview JPEG (every 2nd frame)
+            if self.frame_count % 2 == 0 {
+                if let Some(ref dir) = self.preview_dir {
+                    let preview_path = dir.join("self.jpg");
+                    if let Some(rgba_img) = image::RgbaImage::from_raw(w as u32, h as u32, rgba) {
+                        let preview_w = 640u32.min(w as u32);
+                        let preview_h = preview_w * h as u32 / (w as u32).max(1);
+                        let resized = image::imageops::resize(
+                            &rgba_img,
+                            preview_w,
+                            preview_h,
+                            image::imageops::FilterType::Nearest,
+                        );
+                        let _ = crate::media_manager::MediaManager::write_jpeg_frame(
+                            resized.as_raw(),
+                            preview_w,
+                            preview_h,
+                            &preview_path,
+                        );
+                        let _ = self.app.emit(
+                            "media_video_frame",
+                            serde_json::json!({
+                                "userId": "self",
+                                "frameNumber": self.frame_count,
+                                "path": preview_path.to_string_lossy(),
+                            }),
+                        );
+                    }
                 }
             }
         }
