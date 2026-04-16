@@ -128,7 +128,7 @@ fn bgra_to_yuv420_bt709_downscale_bilinear(
         let interp = |ch: usize| -> i32 {
             let top = ifx * bgra[p00 + ch] as i32 + fx * bgra[p10 + ch] as i32;
             let bot = ifx * bgra[p01 + ch] as i32 + fx * bgra[p11 + ch] as i32;
-            (ify * (top >> 8) + fy * (bot >> 8)) >> 24
+            ((ify as i64 * (top >> 8) as i64 + fy as i64 * (bot >> 8) as i64) >> 24) as i32
         };
 
         (interp(2), interp(1), interp(0)) // r, g, b (BGRA layout)
