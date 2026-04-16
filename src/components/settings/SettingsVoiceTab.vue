@@ -51,6 +51,7 @@
         <option :value="10">10 fps — Minimal bandwidth</option>
         <option :value="15">15 fps — Balanced</option>
         <option :value="30">30 fps — Smooth</option>
+        <option :value="60">60 fps — Ultra smooth</option>
       </select>
     </div>
 
@@ -62,6 +63,7 @@
         <option value="1mbps">1 Mbps — Balanced</option>
         <option value="2.5mbps">2.5 Mbps — High</option>
         <option value="5mbps">5 Mbps — Very High</option>
+        <option value="10mbps">10 Mbps — Maximum</option>
       </select>
       <p class="form-hint">Limits the maximum outgoing bitrate for screen sharing. Lower values reduce CPU and bandwidth usage.</p>
     </div>
@@ -134,7 +136,7 @@ const natDescription = computed(() => ({
 const noiseSuppression = ref(settingsStore.settings.noiseSuppression)
 const videoQuality  = ref(settingsStore.settings.videoQuality)
 const videoBitrate  = ref(settingsStore.settings.videoBitrate)
-const videoFrameRate = ref<10 | 15 | 30>(settingsStore.settings.videoFrameRate)
+const videoFrameRate = ref<10 | 15 | 30 | 60>(settingsStore.settings.videoFrameRate)
 const audioInputs   = ref<AudioDeviceInfo[]>([])
 const audioOutputs  = ref<AudioDeviceInfo[]>([])
 const inputDeviceMissing  = computed(() => inputDevice.value !== '' && audioInputs.value.length > 0 && !audioInputs.value.some(d => d.id === inputDevice.value))
