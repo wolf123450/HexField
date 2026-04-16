@@ -285,6 +285,7 @@ pub fn run() {
             media_screen_share_supported,
             media_start_screen_share,
             media_stop_screen_share,
+            webrtc_set_peer_quality,
             // WebRTC (Rust-native data channels)
             webrtc_init,
             webrtc_create_offer,

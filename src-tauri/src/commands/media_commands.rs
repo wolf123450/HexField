@@ -165,3 +165,21 @@ pub async fn media_stop_screen_share(
         .remove_video_tracks_from_all(&app)
         .await
 }
+
+/// Switch a specific peer's video track to a different quality tier.
+#[tauri::command]
+pub async fn webrtc_set_peer_quality(
+    peer_id: String,
+    tier: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let quality_tier = match tier.as_str() {
+        "high" => crate::webrtc_manager::VideoQualityTier::High,
+        _ => crate::webrtc_manager::VideoQualityTier::Low,
+    };
+    state
+        .webrtc_manager
+        .set_peer_video_quality(&peer_id, quality_tier, &app)
+        .await
+}
