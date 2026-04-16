@@ -180,6 +180,149 @@ impl ScreenCapturer for WgcCapturer {
     }
 }
 
+// ── Fused BGRA → YUV420 BT.709 conversion ──────────────────────────────────
+
+// BT.709 fixed-point coefficients (×65536)
+const YR: i32 = 13933;
+const YG: i32 = 46871;
+const YB: i32 = 4732;
+const UR: i32 = -7509;
+const UG: i32 = -25259;
+const UB: i32 = 32768;
+const VR: i32 = 32768;
+const VG: i32 = -29763;
+const VB: i32 = -3005;
+
+/// Convert BGRA pixel data to YUV420 planar (BT.709) in a single pass.
+///
+/// Returns `(Y_plane, U_plane, V_plane)` where Y is `w*h` bytes and
+/// U/V are `(w/2)*(h/2)` bytes each (4:2:0 subsampling).
+pub(crate) fn bgra_to_yuv420_bt709(bgra: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let uv_w = w / 2;
+    let uv_h = h / 2;
+    let mut y_plane = vec![0u8; w * h];
+    let mut u_plane = vec![0u8; uv_w * uv_h];
+    let mut v_plane = vec![0u8; uv_w * uv_h];
+
+    let stride = w * 4; // BGRA bytes per row
+
+    for row in 0..h {
+        let row_off = row * stride;
+        for col in 0..w {
+            let px = row_off + col * 4;
+            let b = bgra[px] as i32;
+            let g = bgra[px + 1] as i32;
+            let r = bgra[px + 2] as i32;
+
+            let y = ((YR * r + YG * g + YB * b + 32768) >> 16).clamp(0, 255);
+            y_plane[row * w + col] = y as u8;
+        }
+    }
+
+    // Chroma: average each 2×2 block, then compute U/V
+    for uv_row in 0..uv_h {
+        let src_row = uv_row * 2;
+        for uv_col in 0..uv_w {
+            let src_col = uv_col * 2;
+
+            // Gather the 2×2 block
+            let mut sum_r: i32 = 0;
+            let mut sum_g: i32 = 0;
+            let mut sum_b: i32 = 0;
+            for dy in 0..2 {
+                let row_off = (src_row + dy) * stride;
+                for dx in 0..2 {
+                    let px = row_off + (src_col + dx) * 4;
+                    sum_b += bgra[px] as i32;
+                    sum_g += bgra[px + 1] as i32;
+                    sum_r += bgra[px + 2] as i32;
+                }
+            }
+            let avg_r = sum_r / 4;
+            let avg_g = sum_g / 4;
+            let avg_b = sum_b / 4;
+
+            let u = ((UR * avg_r + UG * avg_g + UB * avg_b + 32768) >> 16) + 128;
+            let v = ((VR * avg_r + VG * avg_g + VB * avg_b + 32768) >> 16) + 128;
+
+            let idx = uv_row * uv_w + uv_col;
+            u_plane[idx] = u.clamp(0, 255) as u8;
+            v_plane[idx] = v.clamp(0, 255) as u8;
+        }
+    }
+
+    (y_plane, u_plane, v_plane)
+}
+
+/// Convert BGRA pixel data to YUV420 planar (BT.709) with nearest-neighbor
+/// downscaling from `(src_w, src_h)` to `(dst_w, dst_h)` in a single pass.
+pub(crate) fn bgra_to_yuv420_bt709_downscale(
+    bgra: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let uv_w = dst_w / 2;
+    let uv_h = dst_h / 2;
+    let mut y_plane = vec![0u8; dst_w * dst_h];
+    let mut u_plane = vec![0u8; uv_w * uv_h];
+    let mut v_plane = vec![0u8; uv_w * uv_h];
+
+    let src_stride = src_w * 4;
+
+    // Luma: nearest-neighbor sample for each destination pixel
+    for dst_row in 0..dst_h {
+        let src_row = dst_row * src_h / dst_h;
+        let row_off = src_row * src_stride;
+        for dst_col in 0..dst_w {
+            let src_col = dst_col * src_w / dst_w;
+            let px = row_off + src_col * 4;
+            let b = bgra[px] as i32;
+            let g = bgra[px + 1] as i32;
+            let r = bgra[px + 2] as i32;
+
+            let y = ((YR * r + YG * g + YB * b + 32768) >> 16).clamp(0, 255);
+            y_plane[dst_row * dst_w + dst_col] = y as u8;
+        }
+    }
+
+    // Chroma: nearest-neighbor sample 2×2 blocks in destination space, map back to source
+    for uv_row in 0..uv_h {
+        let dst_row = uv_row * 2;
+        for uv_col in 0..uv_w {
+            let dst_col = uv_col * 2;
+
+            let mut sum_r: i32 = 0;
+            let mut sum_g: i32 = 0;
+            let mut sum_b: i32 = 0;
+            for dy in 0..2 {
+                let src_row = (dst_row + dy) * src_h / dst_h;
+                let row_off = src_row * src_stride;
+                for dx in 0..2 {
+                    let src_col = (dst_col + dx) * src_w / dst_w;
+                    let px = row_off + src_col * 4;
+                    sum_b += bgra[px] as i32;
+                    sum_g += bgra[px + 1] as i32;
+                    sum_r += bgra[px + 2] as i32;
+                }
+            }
+            let avg_r = sum_r / 4;
+            let avg_g = sum_g / 4;
+            let avg_b = sum_b / 4;
+
+            let u = ((UR * avg_r + UG * avg_g + UB * avg_b + 32768) >> 16) + 128;
+            let v = ((VR * avg_r + VG * avg_g + VB * avg_b + 32768) >> 16) + 128;
+
+            let idx = uv_row * uv_w + uv_col;
+            u_plane[idx] = u.clamp(0, 255) as u8;
+            v_plane[idx] = v.clamp(0, 255) as u8;
+        }
+    }
+
+    (y_plane, u_plane, v_plane)
+}
+
 // ── WGC callback handler ────────────────────────────────────────────────────
 
 struct WgcFlags {
@@ -415,5 +558,98 @@ impl GraphicsCaptureApiHandler for WgcHandler {
             self.frame_count
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openh264::formats::YUVSource;
+
+    /// Generate a BGRA gradient test image: R increases left→right, G increases top→bottom.
+    fn make_gradient_bgra(w: usize, h: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; w * h * 4];
+        for row in 0..h {
+            for col in 0..w {
+                let px = (row * w + col) * 4;
+                let r = (col * 255 / w.max(1)) as u8;
+                let g = (row * 255 / h.max(1)) as u8;
+                let b = 64u8;
+                buf[px] = b;     // B
+                buf[px + 1] = g; // G
+                buf[px + 2] = r; // R
+                buf[px + 3] = 255; // A
+            }
+        }
+        buf
+    }
+
+    #[test]
+    fn test_fused_bgra_to_yuv420_matches_reference() {
+        let w = 64usize;
+        let h = 64usize;
+        let bgra = make_gradient_bgra(w, h);
+
+        // --- New path: fused BT.709 ---
+        let (y_new, u_new, v_new) = bgra_to_yuv420_bt709(&bgra, w, h);
+
+        // --- Reference path: BGRA→RGBA then openh264 YUVBuffer ---
+        let mut rgba = vec![0u8; w * h * 4];
+        for i in 0..(w * h) {
+            rgba[i * 4] = bgra[i * 4 + 2];     // R
+            rgba[i * 4 + 1] = bgra[i * 4 + 1]; // G
+            rgba[i * 4 + 2] = bgra[i * 4];       // B
+            rgba[i * 4 + 3] = bgra[i * 4 + 3]; // A
+        }
+        let yuv_ref = openh264::formats::YUVBuffer::from_rgb_source(
+            openh264::formats::RgbSliceU8::new(&rgba, (w, h)),
+        );
+        let y_ref = yuv_ref.y();
+        let u_ref = yuv_ref.u();
+        let v_ref = yuv_ref.v();
+
+        // Y plane: same length
+        assert_eq!(y_new.len(), y_ref.len(), "Y plane length mismatch");
+        // U/V plane: same length
+        assert_eq!(u_new.len(), u_ref.len(), "U plane length mismatch");
+        assert_eq!(v_new.len(), v_ref.len(), "V plane length mismatch");
+
+        // Y plane max diff ≤ 15 (BT.601 vs BT.709 coefficient difference)
+        let y_max_diff = y_new
+            .iter()
+            .zip(y_ref.iter())
+            .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            y_max_diff <= 15,
+            "Y plane max diff {y_max_diff} exceeds threshold 15"
+        );
+
+        println!("Y max diff: {y_max_diff}");
+        println!("Y plane size: {}", y_new.len());
+        println!("U plane size: {}", u_new.len());
+        println!("V plane size: {}", v_new.len());
+    }
+
+    #[test]
+    fn test_fused_bgra_to_yuv420_downscale_dimensions() {
+        let src_w = 3840usize;
+        let src_h = 2160usize;
+        let dst_w = 1280usize;
+        let dst_h = 720usize;
+
+        // Allocate a minimal BGRA buffer (all zeros is fine for dimension checks)
+        let bgra = vec![0u8; src_w * src_h * 4];
+
+        let (y, u, v) = bgra_to_yuv420_bt709_downscale(&bgra, src_w, src_h, dst_w, dst_h);
+
+        assert_eq!(y.len(), dst_w * dst_h, "Y plane should be 1280×720");
+        assert_eq!(u.len(), (dst_w / 2) * (dst_h / 2), "U plane should be 640×360");
+        assert_eq!(v.len(), (dst_w / 2) * (dst_h / 2), "V plane should be 640×360");
+
+        println!("Y: {} bytes (expected {})", y.len(), dst_w * dst_h);
+        println!("U: {} bytes (expected {})", u.len(), (dst_w / 2) * (dst_h / 2));
+        println!("V: {} bytes (expected {})", v.len(), (dst_w / 2) * (dst_h / 2));
     }
 }

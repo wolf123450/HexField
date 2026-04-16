@@ -1027,7 +1027,7 @@ mod tests {
     #[test]
     fn test_enumerate_screens_returns_struct() {
         let mm = MediaManager::new();
-        let sources = mm.enumerate_screens();
+        let sources = mm.enumerate_screens().unwrap();
         // Should not panic; returns at least one monitor on desktop
         for src in &sources.monitors {
             assert!(!src.id.is_empty());
