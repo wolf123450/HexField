@@ -325,6 +325,131 @@ pub(crate) fn bgra_to_yuv420_bt709_downscale(
 
 // ── WGC callback handler ────────────────────────────────────────────────────
 
+struct EncoderFrame {
+    bgra: Vec<u8>,
+    src_w: usize,
+    src_h: usize,
+    frame_number: u64,
+    force_keyframe: bool,
+}
+
+fn spawn_encoder_thread(
+    label: &str,
+    dst_w: usize,
+    dst_h: usize,
+    fps: f32,
+    bitrate_kbps: u32,
+    video_track: Arc<TrackLocalStaticSample>,
+    frame_duration: Duration,
+    rt: tokio::runtime::Handle,
+    preview_dir: Option<std::path::PathBuf>,
+    app: tauri::AppHandle,
+) -> crossbeam_channel::Sender<EncoderFrame> {
+    let (tx, rx) = crossbeam_channel::bounded::<EncoderFrame>(2);
+    let label = label.to_string();
+
+    std::thread::Builder::new()
+        .name(format!("encoder-{label}"))
+        .spawn(move || {
+            let mut enc_cfg = openh264::encoder::EncoderConfig::new()
+                .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps));
+            if bitrate_kbps > 0 {
+                enc_cfg = enc_cfg
+                    .bitrate(openh264::encoder::BitRate::from_bps(bitrate_kbps * 1000))
+                    .rate_control_mode(openh264::encoder::RateControlMode::Bitrate);
+            }
+            let mut encoder = openh264::encoder::Encoder::with_api_config(
+                openh264::OpenH264API::from_source(),
+                enc_cfg,
+            ).expect("failed to create encoder");
+
+            while let Ok(frame) = rx.recv() {
+                let t_start = std::time::Instant::now();
+
+                if frame.force_keyframe {
+                    encoder.force_intra_frame();
+                }
+
+                let needs_downscale = frame.src_w > dst_w || frame.src_h > dst_h;
+                let (y_plane, u_plane, v_plane) = if needs_downscale {
+                    bgra_to_yuv420_bt709_downscale(
+                        &frame.bgra, frame.src_w, frame.src_h, dst_w, dst_h,
+                    )
+                } else {
+                    bgra_to_yuv420_bt709(&frame.bgra, frame.src_w, frame.src_h)
+                };
+
+                let t_after_convert = t_start.elapsed();
+
+                // Use YUVSlices (zero-copy encode from separate plane slices)
+                let slices = openh264::formats::YUVSlices::new(
+                    (&y_plane, &u_plane, &v_plane),
+                    (dst_w, dst_h),
+                    (dst_w, dst_w / 2, dst_w / 2),
+                );
+
+                match encoder.encode(&slices) {
+                    Ok(bitstream) => {
+                        let t_after_encode = t_start.elapsed();
+                        let h264_data = bitstream.to_vec();
+                        if !h264_data.is_empty() {
+                            let vt = video_track.clone();
+                            let dur = frame_duration;
+                            let _ = rt.block_on(async {
+                                vt.write_sample(&Sample {
+                                    data: Bytes::from(h264_data),
+                                    duration: dur,
+                                    ..Default::default()
+                                }).await
+                            });
+                        }
+                        let t_after_send = t_start.elapsed();
+
+                        if frame.frame_number == 1 || frame.frame_number % 300 == 0 {
+                            let total = t_start.elapsed();
+                            log::info!(
+                                "[media-{label}] frame #{}: convert={:.1}ms enc={:.1}ms send={:.1}ms total={:.1}ms ({}x{})",
+                                frame.frame_number,
+                                t_after_convert.as_secs_f64() * 1000.0,
+                                t_after_encode.as_secs_f64() * 1000.0,
+                                t_after_send.as_secs_f64() * 1000.0,
+                                total.as_secs_f64() * 1000.0,
+                                dst_w, dst_h,
+                            );
+                        }
+                    }
+                    Err(e) => log::warn!("[media-{label}] encode error: {e}"),
+                }
+
+                // Preview from low tier only, every 2nd frame
+                if label == "720p" && frame.frame_number % 2 == 0 {
+                    if let Some(ref dir) = preview_dir {
+                        let preview_path = dir.join("self.jpg");
+                        let mut rgba_preview = vec![255u8; dst_w * dst_h * 4];
+                        for (i, &yv) in y_plane.iter().enumerate() {
+                            let di = i * 4;
+                            rgba_preview[di] = yv;
+                            rgba_preview[di + 1] = yv;
+                            rgba_preview[di + 2] = yv;
+                        }
+                        let _ = crate::media_manager::MediaManager::write_jpeg_frame(
+                            &rgba_preview, dst_w as u32, dst_h as u32, &preview_path,
+                        );
+                        let _ = app.emit("media_video_frame", serde_json::json!({
+                            "userId": "self",
+                            "frameNumber": frame.frame_number,
+                            "path": preview_path.to_string_lossy(),
+                        }));
+                    }
+                }
+            }
+            log::info!("[media-{label}] encoder thread exiting");
+        })
+        .expect("failed to spawn encoder thread");
+
+    tx
+}
+
 struct WgcFlags {
     video_track: Arc<TrackLocalStaticSample>,
     video_track_high: Option<Arc<TrackLocalStaticSample>>,
@@ -353,6 +478,8 @@ struct WgcHandler {
     preview_dir: Option<std::path::PathBuf>,
     use_new_pipeline: bool,
     rt: tokio::runtime::Handle,
+    encoder_tx_low: Option<crossbeam_channel::Sender<EncoderFrame>>,
+    encoder_tx_high: Option<crossbeam_channel::Sender<EncoderFrame>>,
 }
 
 impl GraphicsCaptureApiHandler for WgcHandler {
@@ -375,6 +502,8 @@ impl GraphicsCaptureApiHandler for WgcHandler {
             preview_dir: flags.preview_dir,
             use_new_pipeline: flags.use_new_pipeline,
             rt: flags.rt,
+            encoder_tx_low: None,
+            encoder_tx_high: None,
         })
     }
 
@@ -403,114 +532,78 @@ impl GraphicsCaptureApiHandler for WgcHandler {
         let raw = buf.as_raw_buffer();
 
         if self.use_new_pipeline {
-            // ── New fused BGRA→YUV420 pipeline ─────────────────────────
-            const LOW_W: u32 = 1280;
-            let (low_w, low_h) = if orig_w > LOW_W {
-                let scale = LOW_W as f64 / orig_w as f64;
-                let h = (orig_h as f64 * scale) as u32;
-                ((LOW_W & !1) as usize, (h & !1) as usize)
-            } else {
-                ((orig_w & !1) as usize, (orig_h & !1) as usize)
-            };
+            // Initialize encoder threads on first frame
+            if self.encoder_tx_low.is_none() {
+                let fps_f = 1.0 / self.frame_duration.as_secs_f32();
 
-            // Fused BGRA→YUV420 (single pass, BT.709)
-            let (y_low, u_low, v_low) = if orig_w > LOW_W {
-                bgra_to_yuv420_bt709_downscale(raw, orig_w as usize, orig_h as usize, low_w, low_h)
-            } else {
-                bgra_to_yuv420_bt709(raw, low_w, low_h)
-            };
+                let (low_w, low_h) = {
+                    let scale = 1280.0_f64 / orig_w as f64;
+                    if scale < 1.0 {
+                        let w = (1280u32 & !1) as usize;
+                        let h = ((orig_h as f64 * scale) as u32 & !1) as usize;
+                        (w, h)
+                    } else {
+                        ((orig_w & !1) as usize, (orig_h & !1) as usize)
+                    }
+                };
+
+                self.encoder_tx_low = Some(spawn_encoder_thread(
+                    "720p", low_w, low_h, fps_f,
+                    self.bitrate_kbps, self.video_track.clone(),
+                    self.frame_duration, self.rt.clone(),
+                    self.preview_dir.clone(), self.app.clone(),
+                ));
+
+                // Only start high tier if source is > 720p and high track exists
+                if orig_w > 1280 {
+                    if let Some(ref track_high) = self.video_track_high {
+                        let (high_w, high_h) = {
+                            let scale = 1920.0_f64 / orig_w as f64;
+                            if scale < 1.0 {
+                                let w = (1920u32 & !1) as usize;
+                                let h = ((orig_h as f64 * scale) as u32 & !1) as usize;
+                                (w, h)
+                            } else {
+                                ((orig_w & !1) as usize, (orig_h & !1) as usize)
+                            }
+                        };
+                        self.encoder_tx_high = Some(spawn_encoder_thread(
+                            "1080p", high_w, high_h, fps_f,
+                            self.bitrate_kbps_high.max(6000),
+                            track_high.clone(), self.frame_duration,
+                            self.rt.clone(), None, self.app.clone(),
+                        ));
+                    }
+                }
+            }
+
+            let do_keyframe = self.force_keyframe.swap(false, Ordering::AcqRel);
+            let raw_vec = raw.to_vec();
             drop(buf);
 
-            let t_after_convert = t_start.elapsed();
+            let frame_low = EncoderFrame {
+                bgra: raw_vec.clone(),
+                src_w: orig_w as usize,
+                src_h: orig_h as usize,
+                frame_number: self.frame_count,
+                force_keyframe: do_keyframe,
+            };
 
-            // Init encoder on first frame
-            if self.encoder.is_none() {
-                let fps_f = 1.0 / self.frame_duration.as_secs_f32();
-                let mut enc_cfg = openh264::encoder::EncoderConfig::new()
-                    .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps_f));
-                if self.bitrate_kbps > 0 {
-                    enc_cfg = enc_cfg
-                        .bitrate(openh264::encoder::BitRate::from_bps(self.bitrate_kbps * 1000))
-                        .rate_control_mode(openh264::encoder::RateControlMode::Bitrate);
-                }
-                self.encoder = Some(openh264::encoder::Encoder::with_api_config(
-                    openh264::OpenH264API::from_source(),
-                    enc_cfg,
-                )?);
-            }
-            let enc = self.encoder.as_mut().unwrap();
-
-            if self.force_keyframe.swap(false, Ordering::AcqRel) {
-                enc.force_intra_frame();
+            // Send to low tier (drop frame if channel full)
+            if let Some(ref tx) = self.encoder_tx_low {
+                let _ = tx.try_send(frame_low);
             }
 
-            // Encode using YUVSlices (zero-copy — borrows our planes directly)
-            let slices = openh264::formats::YUVSlices::new(
-                (&y_low, &u_low, &v_low),
-                (low_w, low_h),
-                (low_w, low_w / 2, low_w / 2),
-            );
-
-            match enc.encode(&slices) {
-                Ok(bitstream) => {
-                    let t_after_encode = t_start.elapsed();
-                    let h264_data = bitstream.to_vec();
-                    if !h264_data.is_empty() {
-                        let vt = self.video_track.clone();
-                        let dur = self.frame_duration;
-                        let _ = self.rt.block_on(async {
-                            vt.write_sample(&Sample {
-                                data: Bytes::from(h264_data),
-                                duration: dur,
-                                ..Default::default()
-                            })
-                            .await
-                        });
-                    }
-                    let t_after_send = t_start.elapsed();
-
-                    // Log with [media-NEW] prefix for comparison with old pipeline
-                    if self.frame_count == 1 || self.frame_count % 300 == 0 {
-                        let total = t_start.elapsed();
-                        log::info!(
-                            "[media-NEW] capture frame #{}: convert={:.1}ms enc={:.1}ms send={:.1}ms total={:.1}ms ({}x{})",
-                            self.frame_count,
-                            t_after_convert.as_secs_f64() * 1000.0,
-                            t_after_encode.as_secs_f64() * 1000.0,
-                            t_after_send.as_secs_f64() * 1000.0,
-                            total.as_secs_f64() * 1000.0,
-                            low_w, low_h,
-                        );
-                    }
-                }
-                Err(e) => {
-                    log::warn!("[media-NEW] H.264 encode error: {e}");
-                }
-            }
-
-            // Local preview JPEG (every 2nd frame) — use grayscale from Y plane
-            if self.frame_count % 2 == 0 {
-                if let Some(ref dir) = self.preview_dir {
-                    let preview_path = dir.join("self.jpg");
-                    let mut rgba_preview = vec![255u8; low_w * low_h * 4];
-                    for (i, &y_val) in y_low.iter().enumerate() {
-                        let di = i * 4;
-                        rgba_preview[di] = y_val;
-                        rgba_preview[di + 1] = y_val;
-                        rgba_preview[di + 2] = y_val;
-                    }
-                    let _ = crate::media_manager::MediaManager::write_jpeg_frame(
-                        &rgba_preview, low_w as u32, low_h as u32, &preview_path,
-                    );
-                    let _ = self.app.emit(
-                        "media_video_frame",
-                        serde_json::json!({
-                            "userId": "self",
-                            "frameNumber": self.frame_count,
-                            "path": preview_path.to_string_lossy(),
-                        }),
-                    );
-                }
+            // Send to high tier
+            if let Some(ref tx) = self.encoder_tx_high {
+                let frame_high = EncoderFrame {
+                    bgra: raw_vec,
+                    src_w: orig_w as usize,
+                    src_h: orig_h as usize,
+                    frame_number: self.frame_count,
+                    force_keyframe: do_keyframe,
+                };
+                let _ = tx.try_send(frame_high);
             }
         } else {
             // ── Old pipeline (unchanged) ────────────────────────────────
