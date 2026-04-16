@@ -185,7 +185,7 @@ export const useVoiceStore = defineStore('voice', () => {
     }
     const maxBitrateKbps = bitrateMap[settings.videoBitrate]
 
-    const useNewPipeline = localStorage.getItem('hexfield_new_pipeline') === 'true'
+    const useNewPipeline = localStorage.getItem('hexfield_new_pipeline') !== 'false'
 
     await webrtcService.addScreenShareTrack(
       sourceId,
