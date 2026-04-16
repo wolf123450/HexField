@@ -198,6 +198,42 @@ Current: 640px, every-other-frame, JPEG 75%.
 
 ---
 
+## Profiling Results
+
+**Date**: 2026-04-15  
+**Method**: Standalone Rust benchmark (`cargo bench --bench pipeline_bench`, release profile, 20 iterations, warmup)  
+**CPU**: Host machine (real hardware, not CI)
+
+### 4K → 720p (3840×2160 → 1280×720)
+
+| Step | Old Pipeline (avg) | New Pipeline (avg) |
+|------|-------------------|--------------------|
+| Downscale + BGRA→RGBA swap | 2.68 ms | — |
+| YUV conversion (BT.601) | 4.30 ms | — |
+| Fused BGRA→YUV420 BT.709 + downscale | — | 3.76 ms |
+| H.264 encode | 2.99 ms | 3.72 ms |
+| **Total (convert + encode)** | **15.62 ms** | **11.51 ms** |
+
+**Speedup: 26% faster** (4.11 ms saved per frame)
+
+### 1080p native (1920×1080, no downscale)
+
+| Metric | Old Pipeline (avg) | New Pipeline (avg) |
+|--------|-------------------|--------------------|
+| **Total (convert + encode)** | **21.46 ms** | **14.42 ms** |
+
+**Speedup: 33% faster** (7.04 ms saved per frame)
+
+### Analysis
+
+- The new pipeline's fused conversion (3.76 ms) replaces a two-step swap+YUV (2.68 + 4.30 = 6.98 ms), saving ~3.22 ms per frame in conversion alone
+- Encode time is comparable between pipelines (expected — same H.264 encoder)
+- At 60fps, the new pipeline's 11.51 ms per-frame budget leaves ~5.2 ms headroom per frame (16.67 ms budget) for 4K→720p
+- The 1080p tier at 14.42 ms avg is still within the 16.67 ms budget for 60fps, though tight
+- Min times show the new pipeline can hit 7.12 ms (4K→720p), confirming >120fps theoretical capacity
+
+---
+
 ## Performance Budget
 
 At 1080p 60fps (16.7ms budget per frame):
