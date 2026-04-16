@@ -252,8 +252,10 @@ function voiceChannelPeerIds(channelId: string): string[] {
   if (voiceStore.session?.channelId === channelId) {
     return Object.keys(voiceStore.peers)
   }
+  const sid = serversStore.activeServerId
+  if (!sid) return []
   return Object.entries(voiceStore.peerVoiceChannels)
-    .filter(([, cid]) => cid === channelId)
+    .filter(([, v]) => v.channelId === channelId && v.serverId === sid)
     .map(([uid]) => uid)
 }
 

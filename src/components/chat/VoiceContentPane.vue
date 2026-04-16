@@ -48,16 +48,22 @@
           </div>
         </div>
 
-        <!-- Own screen share (placeholder — local frames are captured in Rust) -->
+        <!-- Own screen share (live preview from local capture pipeline) -->
         <div
           v-if="voiceStore.screenShareActive && !hiddenStreams.has('local')"
           class="video-tile"
           :class="{ focused: focusedId === 'local' }"
           @click="toggleFocus('local')"
         >
-          <div class="screen-placeholder">
+          <img
+            v-if="voiceStore.screenFrameUrls['self']"
+            :src="voiceStore.screenFrameUrls['self']"
+            alt="Your screen share"
+            class="video-el"
+          />
+          <div v-else class="screen-placeholder">
             <AppIcon :path="mdiMonitorShare" :size="48" />
-            <span>You are sharing your screen</span>
+            <span>Starting screen share&hellip;</span>
           </div>
           <div class="tile-overlay">
             <span class="tile-label">
@@ -185,7 +191,7 @@ const channelName = computed(() => {
 
 // Remote shares visible (not hidden) — uses frame URLs from Rust decode pipeline
 const remoteShares = computed<[string, string][]>(() =>
-  Object.entries(voiceStore.screenFrameUrls).filter(([userId]) => !hiddenStreams.has(userId))
+  Object.entries(voiceStore.screenFrameUrls).filter(([userId]) => userId !== 'self' && !hiddenStreams.has(userId))
 )
 
 // Non-video remote peers (in session, no screen share)

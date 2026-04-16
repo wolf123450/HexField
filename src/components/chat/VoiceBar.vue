@@ -53,6 +53,7 @@
               @click="switchInput(d.id)"
             >{{ d.name }}</button>
             <button class="device-option" :class="{ active: !currentInputId }" @click="switchInput('')">Default</button>
+            <div class="device-divider" />
             <div class="device-section-label">Output</div>
             <button
               v-for="d in audioOutputs" :key="d.id"
@@ -84,9 +85,9 @@
           <AppIcon :path="mdiHeadset" :size="18" />
         </button>
 
-        <!-- Screen share (desktop only — no getDisplayMedia on mobile) -->
+        <!-- Screen share (desktop only + platform support) -->
         <button
-          v-if="!isMobile"
+          v-if="!isMobile && voiceStore.screenShareSupported"
           class="ctrl-btn"
           :class="{ active: voiceStore.screenShareActive }"
           :title="voiceStore.screenShareActive ? 'Stop share' : 'Share screen'"
@@ -139,7 +140,7 @@ const audioOutputs   = ref<AudioDeviceInfo[]>([])
 const currentInputId  = computed(() => settingsStore.settings.inputDeviceId)
 const currentOutputId = computed(() => settingsStore.settings.outputDeviceId)
 
-const peerList = computed(() => Object.values(voiceStore.peers))
+const peerList = computed(() => Object.values(voiceStore.peers).filter(p => p.userId))
 
 const channelName = computed(() => {
   const session = voiceStore.session
@@ -323,12 +324,17 @@ onUnmounted(() => {
 }
 
 .device-section-label {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-tertiary);
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
   padding: var(--spacing-xs) var(--spacing-sm);
+}
+
+.device-divider {
+  border-top: 1px solid var(--border-color);
+  margin: 4px var(--spacing-sm);
 }
 
 .device-option {

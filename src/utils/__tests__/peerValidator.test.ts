@@ -91,11 +91,15 @@ describe('peerValidator', () => {
 
   // ── isValidVoiceJoin ──────────────────────────────────────────────────────
 
-  it('accepts voice_join with channelId', () => {
-    expect(isValidVoiceJoin({ channelId: 'ch-voice' })).toBe(true)
+  it('accepts voice_join with channelId and serverId', () => {
+    expect(isValidVoiceJoin({ channelId: 'ch-voice', serverId: 'srv-1' })).toBe(true)
   })
 
   it('rejects voice_join without channelId', () => {
-    expect(isValidVoiceJoin({})).toBe(false)
+    expect(isValidVoiceJoin({ serverId: 'srv-1' })).toBe(false)
+  })
+
+  it('rejects voice_join without serverId', () => {
+    expect(isValidVoiceJoin({ channelId: 'ch-voice' })).toBe(false)
   })
 })

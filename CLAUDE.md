@@ -367,7 +367,7 @@ When writing a new `invoke` call, cross-reference three places:
 
 - **No dead code** — remove unused imports, variables, and functions immediately; `vue-tsc` with `noUnusedLocals`/`noUnusedParameters` enforces this
 - **No TODO comments in committed code** — track work items in `docs/TODO.md` instead
-- **No speculative abstractions** — build for the current phase only; refactor when the pattern actually recurs
+- **Abstractions should match known requirements** — if the roadmap already calls for multiple implementations (e.g., per-platform screen capture, multiple storage backends), define the trait/interface now so the first implementation is clean and the second slots in. Don't hardcode what you know will need abstraction. But don't invent abstractions for hypothetical future needs that aren't on any roadmap — wait until the pattern actually recurs
 - Keep components, commands, and store actions focused enough that their intent is obvious from their name alone
 - Prefer explicit over implicit: spell out field names in struct initialisers, avoid positional destructuring of tuples in complex functions
 - When fixing a bug, understand the root cause first — don't apply workarounds that may mask deeper issues
@@ -415,6 +415,8 @@ Issues that have already been encountered and fixed. **Do not re-introduce these
 | On join, `startSync` fires when the data channel opens (before `joinFromManifest`), so the host pushes messages that fail with `FOREIGN KEY constraint failed` (server/channels not in joiner's DB yet) | Fixed: `JoinView.vue` calls `networkStore.resyncPeer(invite.userId)` after `joinFromManifest` + `loadChannels` to recover the missed messages. |
 | `rustls` panics at startup: "Could not automatically determine the process-level CryptoProvider" | `webrtc`/`dtls` pulls in `ring` and `reqwest`/`hyper-rustls` pulls in `aws-lc-rs` — both land on the same `rustls` instance. Fix: add `rustls = { version = "0.23", default-features = false, features = ["ring","std"] }` as a direct dep and call `rustls::crypto::ring::default_provider().install_default()` at the very top of `run()` in `lib.rs`. |
 | Rate limit of 15 msg/s blocked legitimate sync traffic during initial negentropy + push burst | `RATE_LIMIT` raised to 100 in `networkStore.ts`. |
+| `handle_offer` in `webrtc_manager.rs` always created a new `RTCPeerConnection`, even for SDP renegotiation (e.g. adding audio/video tracks) | This destroyed the existing data channel when a peer joined a voice channel — `add_audio_track_to_all` triggers renegotiation, the remote side's `handle_offer` replaced the PC, breaking the connection. Fix: check `pc.connection_state() == Connected` — if the existing PC is connected, apply the offer to it (set_remote_description + create_answer) instead of building a new one. Only create a new PC for initial offers or when the old PC is in a non-connected state. |
+| `handleMutationMessage` in networkStore.ts did not handle `channel_create/update/delete` mutations | Real-time channel mutations (e.g. creating a voice channel) only synced via negentropy, not the real-time broadcast path. Fix: added channel mutation routing in `handleMutationMessage` to call `channelsStore.applyChannelMutation(mutation)`. |
 
 ---
 

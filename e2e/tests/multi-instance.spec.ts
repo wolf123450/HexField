@@ -202,9 +202,17 @@ test('alice can create an invite link', async () => {
   // Wait for the invite modal
   await alicePage.waitForSelector('.modal-backdrop', { timeout: OP_MS })
 
-  // Extract the invite link from the readonly text input
+  // Extract the invite link from the readonly text input (async generation — wait for value)
   const inviteInput = alicePage.locator('.modal-box input.text-input[readonly]').first()
-  const inviteLink = await inviteInput.inputValue({ timeout: OP_MS })
+  await alicePage.waitForFunction(
+    (sel) => {
+      const el = document.querySelector(sel) as HTMLInputElement | null
+      return el && el.value.length > 0
+    },
+    '.modal-box input.text-input[readonly]',
+    { timeout: OP_MS }
+  )
+  const inviteLink = await inviteInput.inputValue()
 
   expect(inviteLink).toBeTruthy()
   expect(inviteLink).toContain('hexfield://join/')
@@ -212,7 +220,7 @@ test('alice can create an invite link', async () => {
 
   // Store invite link for the next test
   await alicePage.evaluate((link) => {
-    (window as Record<string, unknown>).__e2e_invite_link = link
+    (window as unknown as Record<string, unknown>).__e2e_invite_link = link
   }, inviteLink)
   console.log(`[test] invite link: ${inviteLink.substring(0, 60)}…`)
 
@@ -234,7 +242,7 @@ test('bob can join the server via invite link', async () => {
 
   // Retrieve invite link created by alice
   const inviteLink: string = await alicePage.evaluate(
-    () => (window as Record<string, unknown>).__e2e_invite_link as string
+    () => (window as unknown as Record<string, unknown>).__e2e_invite_link as string
   )
   expect(inviteLink, 'No invite link found — run "alice can create an invite link" first').toBeTruthy()
 
@@ -468,15 +476,249 @@ test('alice can send an image in chat', async () => {
   await sendMessage(alicePage, 'Image from Alice')
 
   // Verify alice sees her own message
-  const aliceMsg = alicePage.locator('.message-text').filter({ hasText: 'Image from Alice' })
+  const aliceMsg = alicePage.locator('.message-text').filter({ hasText: 'Image from Alice' }).last()
   await aliceMsg.waitFor({ timeout: OP_MS })
 
   // Verify bob receives the message text
   await ensureChannelSelected(bobPage, 'bob')
-  const bobMsg = bobPage.locator('.message-text').filter({ hasText: 'Image from Alice' })
+  const bobMsg = bobPage.locator('.message-text').filter({ hasText: 'Image from Alice' }).last()
   await bobMsg.waitFor({ timeout: SYNC_MS }).catch(() => {
     throw new Error('"Image from Alice" never appeared in Bob\'s view')
   })
 
   console.log('[test] Image message sent and received ✓')
+})
+
+test('voice channel participant visibility', async () => {
+  test.setTimeout(SYNC_MS * 3)
+
+  // Ensure both peers are on the shared server
+  await ensureChannelSelected(alicePage, 'alice')
+  await ensureChannelSelected(bobPage, 'bob')
+
+  // Wait for peers to be connected — mDNS auto-discovers and WebRTC connects,
+  // but this may take several seconds. The member list shows "ONLINE — 2" when
+  // both peers have an active data channel. Without this, broadcast() has no
+  // connected peers and voice_join never reaches the other side.
+  const onlineLabel = alicePage.locator('.member-category-label', { hasText: /ONLINE\s*—\s*2/ })
+  await onlineLabel.waitFor({ timeout: SYNC_MS }).catch(() => {
+    throw new Error(
+      'Peers never connected — member list did not show "ONLINE — 2" on Alice\'s side. ' +
+      'mDNS discovery or WebRTC handshake may have failed. ' +
+      'Both instances must be running on the same machine.'
+    )
+  })
+  console.log('[test] Peers connected (both ONLINE) ✓')
+
+  // Check if a voice channel already exists
+  const existingVoice = alicePage.locator('.channel-item.channel-voice')
+  const voiceCount = await existingVoice.count()
+
+  if (voiceCount === 0) {
+    // Create a voice channel via the add button + dialog
+    const addVoiceBtn = alicePage.locator('button.add-channel-btn[title="Add voice channel"]')
+    // Set up dialog handler BEFORE clicking
+    alicePage.once('dialog', async dialog => {
+      await dialog.accept('Test Voice')
+    })
+    await addVoiceBtn.click()
+
+    // Wait for the voice channel to appear in Alice's sidebar
+    await alicePage.locator('.channel-item.channel-voice .channel-name')
+      .filter({ hasText: 'Test Voice' })
+      .waitFor({ timeout: OP_MS })
+    console.log('[test] Alice created voice channel ✓')
+  } else {
+    console.log(`[test] Voice channel already exists (${voiceCount}) — reusing`)
+  }
+
+  // Ensure Bob also has the voice channel before proceeding
+  await bobPage.locator('.channel-item.channel-voice')
+    .waitFor({ timeout: SYNC_MS })
+    .catch(() => { throw new Error('Voice channel never appeared on Bob\'s side') })
+  console.log('[test] Bob has voice channel ✓')
+
+  // Alice clicks the voice channel to join
+  const aliceVoiceCh = alicePage.locator('.channel-item.channel-voice').first()
+  await aliceVoiceCh.click()
+
+  // Alice should see herself as a participant (vp-you)
+  const aliceSelf = alicePage.locator('.voice-participant .vp-you')
+  await aliceSelf.waitFor({ timeout: OP_MS }).catch(() => {
+    throw new Error(
+      'Alice never appeared as voice participant — joinVoiceChannel likely failed ' +
+      '(addAudioTrack/media_start_mic may have thrown)'
+    )
+  })
+  expect(await aliceSelf.isVisible()).toBe(true)
+  console.log('[test] Alice joined voice channel and sees self ✓')
+
+  // Bob should see Alice listed under the voice channel (before Bob joins).
+  // This relies on voice_join broadcast → handleVoiceJoin → setPeerVoiceChannel
+  // → voiceChannelPeerIds returns [aliceUserId] → sidebar renders .voice-participant
+  const aliceInBobSidebar = bobPage.locator('.voice-participant .vp-name')
+  await aliceInBobSidebar.first().waitFor({ timeout: SYNC_MS }).catch(() => {
+    throw new Error(
+      'Alice never appeared as voice participant in Bob\'s sidebar. ' +
+      'Either voice_join broadcast was not received, or peerVoiceChannels is not rendering.'
+    )
+  })
+  console.log('[test] Bob sees Alice in voice channel ✓')
+
+  // Bob joins the same voice channel
+  const bobVoiceCh = bobPage.locator('.channel-item.channel-voice').first()
+  await bobVoiceCh.click()
+
+  // Bob should see himself as a participant
+  const bobSelf = bobPage.locator('.voice-participant .vp-you')
+  await bobSelf.waitFor({ timeout: OP_MS }).catch(() => {
+    throw new Error(
+      'Bob never appeared as voice participant — joinVoiceChannel likely failed'
+    )
+  })
+  expect(await bobSelf.isVisible()).toBe(true)
+  console.log('[test] Bob joined voice channel and sees self ✓')
+
+  // Alice should now see Bob as a remote participant.
+  // After Bob joins: broadcast voice_join → Alice's handleVoiceJoin
+  // → updatePeer (same channel) → voiceChannelPeerIds returns [bobUserId]
+  // The remote participant has .vp-name but NOT .vp-you
+  const remoteInAlice = alicePage.locator('.voice-participant:not(:has(.vp-you)) .vp-name')
+  await remoteInAlice.first().waitFor({ timeout: SYNC_MS }).catch(() => {
+    throw new Error(
+      'Bob never appeared as remote participant in Alice\'s view. ' +
+      'voice_join reply or updatePeer may be broken.'
+    )
+  })
+  console.log('[test] Alice sees Bob in voice channel ✓')
+
+  console.log('[test] Voice channel participant visibility ✓')
+})
+
+// ── Screen Share Tests ────────────────────────────────────────────────────────
+
+test('alice can screen share and bob receives video frames', async () => {
+  test.setTimeout(SYNC_MS * 3)
+
+  // Prerequisite: both alice and bob must be in the voice channel
+  // (previous test left them joined).
+
+  // Ensure voice bar is visible on Alice's side (she joined in previous test)
+  const aliceVoiceBar = alicePage.locator('.voice-bar')
+  await aliceVoiceBar.waitFor({ timeout: OP_MS }).catch(() => {
+    throw new Error(
+      'Voice bar not visible on Alice — did the previous voice test fail? ' +
+      'Both peers must be in a voice channel before testing screen share.'
+    )
+  })
+
+  // Verify both peers still see each other (data channel alive after voice join)
+  const onlineLabel = alicePage.locator('.member-category-label', { hasText: /ONLINE\s*—\s*2/ })
+  await onlineLabel.waitFor({ timeout: SYNC_MS }).catch(() => {
+    throw new Error(
+      'Peers not both online — WebRTC data channel may have been lost'
+    )
+  })
+  console.log('[test] Both peers online — ready for screen share ✓')
+
+  // Alice clicks the screen share button in the VoiceBar
+  const shareBtn = alicePage.locator('.voice-bar .ctrl-btn[title="Share screen"]')
+  await shareBtn.waitFor({ timeout: OP_MS })
+  await shareBtn.click()
+
+  // Wait for the source picker modal to appear
+  const sourcePicker = alicePage.locator('.source-picker')
+  await sourcePicker.waitFor({ timeout: OP_MS }).catch(() => {
+    throw new Error(
+      'Source picker modal never appeared after clicking screen share button'
+    )
+  })
+  console.log('[test] Source picker opened ✓')
+
+  // Wait for sources to load (loading spinner disappears, sources appear)
+  const sourceCard = alicePage.locator('.source-card')
+  await sourceCard.first().waitFor({ timeout: OP_MS }).catch(() => {
+    throw new Error(
+      'No screen sources found — media_enumerate_screens returned empty. ' +
+      'On Windows, at least one monitor should be detected by the capture backend.'
+    )
+  })
+  console.log(`[test] Found ${await sourceCard.count()} screen source(s) ✓`)
+
+  // Select the first monitor
+  await sourceCard.first().click()
+
+  // The source picker should close
+  await sourcePicker.waitFor({ state: 'hidden', timeout: OP_MS }).catch(() => {
+    throw new Error('Source picker did not close after selecting a source')
+  })
+
+  // Alice's share button should now show "active" state (screen share started)
+  const stopBtn = alicePage.locator('.voice-bar .ctrl-btn[title="Stop share"]')
+  await stopBtn.waitFor({ timeout: OP_MS }).catch(() => {
+    throw new Error(
+      'Screen share did not start — the "Stop share" button never appeared. ' +
+      'media_start_screen_share or addScreenShareTrack may have failed.'
+    )
+  })
+  console.log('[test] Alice screen share active ✓')
+
+  // Alice should see her own screen share in the voice content pane.
+  // The voice view must be active (voiceViewActive = true).
+  // Her own tile has alt="Your screen share" or class="video-el"
+  const aliceOwnTile = alicePage.locator('.video-tile img[alt="Your screen share"]')
+  await aliceOwnTile.waitFor({ timeout: SYNC_MS }).catch(() => {
+    // The local preview writes JPEG every 5th frame, so allow time
+    throw new Error(
+      'Alice never saw her own screen share preview. ' +
+      'media_video_frame event with userId="self" may not be firing, ' +
+      'or the preview JPEG is not being written to disk.'
+    )
+  })
+  console.log('[test] Alice sees own screen share ✓')
+
+  // Bob should receive the video track via SDP renegotiation and see
+  // Alice's screen share frames. This tests the full pipeline:
+  // 1. add_video_track_to_all → renegotiation offer sent to Bob
+  // 2. Bob's handle_offer processes renegotiation, replies with answer
+  // 3. H.264 frames flow via RTP
+  // 4. Bob's on_track fires for the video track
+  // 5. H.264 RTP depacketization (FU-A → NAL units)
+  // 6. H.264 decode → JPEG → media_video_frame event → UI
+  const bobRemoteTile = bobPage.locator('.video-tile img.video-el')
+  await bobRemoteTile.waitFor({ timeout: SYNC_MS }).catch(() => {
+    throw new Error(
+      'Bob never received Alice\'s screen share frames. Possible causes:\n' +
+      '  1. SDP renegotiation offer not relayed (signal_send failed)\n' +
+      '  2. handle_offer renegotiation path broken\n' +
+      '  3. H.264 RTP depacketization failing (FU-A fragments not reassembled)\n' +
+      '  4. H.264 decode returning no frames\n' +
+      '  5. media_video_frame event not emitted or not received\n' +
+      '  6. convertFileSrc returning invalid asset:// URL'
+    )
+  })
+  console.log('[test] Bob receives Alice\'s screen share ✓')
+
+  // Verify the image src is an asset:// URL (or http://asset.localhost/ on Windows)
+  const tileSrc = await bobRemoteTile.getAttribute('src')
+  expect(tileSrc, 'Video tile src should be set').toBeTruthy()
+  console.log(`[test] Bob video tile src: ${tileSrc!.substring(0, 80)}…`)
+
+  // Stop the screen share
+  await stopBtn.click()
+
+  // The share button should revert to "Share screen" title
+  const shareAgainBtn = alicePage.locator('.voice-bar .ctrl-btn[title="Share screen"]')
+  await shareAgainBtn.waitFor({ timeout: OP_MS }).catch(() => {
+    throw new Error('Screen share did not stop — "Share screen" button never reappeared')
+  })
+  console.log('[test] Alice stopped screen share ✓')
+
+  // Bob's remote video tile should disappear after screen share stops
+  // (media_video_frame_ended or media_screen_share_stopped cleans up)
+  await bobRemoteTile.waitFor({ state: 'hidden', timeout: SYNC_MS }).catch(() => {
+    console.warn('[test] Bob\'s video tile did not disappear after Alice stopped — cleanup race')
+  })
+
+  console.log('[test] Screen share E2E test passed ✓')
 })

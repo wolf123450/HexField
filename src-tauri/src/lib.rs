@@ -8,6 +8,7 @@ use tauri::image::Image;
 
 mod db;
 mod commands;
+mod capture;
 #[cfg(not(mobile))]
 mod lan;
 #[cfg(not(mobile))]
@@ -65,6 +66,7 @@ pub fn run() {
                     tauri_plugin_log::Target::new(
                         tauri_plugin_log::TargetKind::LogDir { file_name: Some("hexfield".into()) }
                     ),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
                 ])
                 .level(std::env::var("HEXFIELD_LOG")
@@ -280,6 +282,7 @@ pub fn run() {
             media_set_output_device,
             // Media (screen share)
             media_enumerate_screens,
+            media_screen_share_supported,
             media_start_screen_share,
             media_stop_screen_share,
             // WebRTC (Rust-native data channels)
@@ -289,6 +292,7 @@ pub fn run() {
             webrtc_handle_answer,
             webrtc_add_ice,
             webrtc_send,
+            webrtc_ensure_tracks,
             webrtc_close_peer,
             webrtc_destroy_all,
             webrtc_get_connected_peers,

@@ -782,6 +782,7 @@ impl MediaManager {
         app: tauri::AppHandle,
         fps: u32,
         bitrate_kbps: u32,
+        use_new_pipeline: bool,
     ) -> Result<(), String> {
         log::info!("[media] start_screen_share called: source_id={source_id} fps={fps}");
         if !self.capturer.is_supported() {
@@ -813,7 +814,7 @@ impl MediaManager {
             screen_active,
             force_keyframe: self.force_keyframe.clone(),
             preview_dir,
-            use_new_pipeline: false,
+            use_new_pipeline,
         };
 
         let task = tokio::task::spawn_blocking(move || {
