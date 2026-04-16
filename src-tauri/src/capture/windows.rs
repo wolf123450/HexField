@@ -443,8 +443,8 @@ fn spawn_encoder_thread(
                     Err(e) => log::warn!("[media-{label}] encode error: {e}"),
                 }
 
-                // Preview (low tier only, every 3rd frame for ~20fps visual update at 60fps)
-                if label == "720p" && frame.frame_number % 3 == 0 {
+                // Preview: generate from whichever thread owns the preview_dir
+                if preview_dir.is_some() && frame.frame_number % 2 == 0 {
                     if let Some(ref dir) = preview_dir {
                         let preview_path = dir.join("self.jpg");
                         // Convert YUV420 → RGB for color preview (BT.709 inverse)
@@ -582,11 +582,16 @@ impl GraphicsCaptureApiHandler for WgcHandler {
                     }
                 };
 
+                // Determine whether the high tier will exist — if so, it
+                // gets the preview_dir so the local user sees 1080p preview.
+                let has_high_tier = orig_w > 1280 && self.video_track_high.is_some();
+
                 self.encoder_tx_low = Some(spawn_encoder_thread(
                     "720p", low_w, low_h, fps_f,
                     self.bitrate_kbps, self.video_track.clone(),
                     self.frame_duration, self.rt.clone(),
-                    self.preview_dir.clone(), self.app.clone(),
+                    if has_high_tier { None } else { self.preview_dir.clone() },
+                    self.app.clone(),
                 ));
 
                 // Only start high tier if source is > 720p and high track exists
@@ -606,7 +611,7 @@ impl GraphicsCaptureApiHandler for WgcHandler {
                             "1080p", high_w, high_h, fps_f,
                             self.bitrate_kbps_high.max(6000),
                             track_high.clone(), self.frame_duration,
-                            self.rt.clone(), None, self.app.clone(),
+                            self.rt.clone(), self.preview_dir.clone(), self.app.clone(),
                         ));
                     }
                 }
