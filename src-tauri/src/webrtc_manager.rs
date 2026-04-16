@@ -102,6 +102,20 @@ struct TrackEvent {
     stream_id: String,
 }
 
+// ── Video quality tiers ──────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VideoQualityTier {
+    Low,  // 720p
+    High, // 1080p
+}
+
+impl Default for VideoQualityTier {
+    fn default() -> Self {
+        VideoQualityTier::Low
+    }
+}
+
 // ── Per-peer state ──────────────────────────────────────────────────────────
 
 struct PeerEntry {
@@ -117,6 +131,8 @@ struct PeerEntry {
     audio_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
     /// Local video track attached to this peer (None if screen share not active).
     video_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
+    /// Which quality tier this peer is currently receiving.
+    video_quality_tier: Arc<Mutex<VideoQualityTier>>,
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────────
@@ -130,8 +146,10 @@ pub struct WebRTCManager {
     ice_queue: Arc<Mutex<HashMap<String, Vec<RTCIceCandidateInit>>>>,
     /// The local audio track being sent to all peers (if mic active).
     local_audio_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
-    /// The local video track being sent to all peers (if screen share active).
-    local_video_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
+    /// The local video track (low quality tier) being sent to all peers (if screen share active).
+    local_video_track_low: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
+    /// The local video track (high quality tier) for peers that request it.
+    local_video_track_high: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
 }
 
 impl WebRTCManager {
@@ -141,7 +159,8 @@ impl WebRTCManager {
             peers: Arc::new(Mutex::new(HashMap::new())),
             ice_queue: Arc::new(Mutex::new(HashMap::new())),
             local_audio_track: Arc::new(Mutex::new(None)),
-            local_video_track: Arc::new(Mutex::new(None)),
+            local_video_track_low: Arc::new(Mutex::new(None)),
+            local_video_track_high: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -533,6 +552,7 @@ impl WebRTCManager {
                 being_replaced,
                 audio_track: Arc::new(Mutex::new(None)),
                 video_track: Arc::new(Mutex::new(None)),
+                video_quality_tier: Arc::new(Mutex::new(VideoQualityTier::default())),
             },
         );
 
@@ -665,6 +685,7 @@ impl WebRTCManager {
                 being_replaced,
                 audio_track: Arc::new(Mutex::new(None)),
                 video_track: Arc::new(Mutex::new(None)),
+                video_quality_tier: Arc::new(Mutex::new(VideoQualityTier::default())),
             },
         );
 
@@ -895,7 +916,7 @@ impl WebRTCManager {
         // rather than iterating other peers — the sender may be alone with no
         // other peers to copy from.
         let local_audio = self.local_audio_track.lock().await.clone();
-        let local_video = self.local_video_track.lock().await.clone();
+        let local_video = self.local_video_track_low.lock().await.clone();
 
         let peers = self.peers.lock().await;
         let entry = match peers.get(peer_id) {
@@ -976,15 +997,115 @@ impl WebRTCManager {
         }
 
         // Store track at manager level for late-joining peers
-        *self.local_video_track.lock().await = Some(track.clone());
+        *self.local_video_track_low.lock().await = Some(track.clone());
 
         Ok(track)
     }
 
+    /// Create both quality tiers of video tracks and add the low tier to all peers.
+    /// Returns (track_low, track_high) for the capture pipeline.
+    pub async fn add_video_tracks_dual(
+        &self,
+        app: &AppHandle,
+    ) -> Result<(Arc<TrackLocalStaticSample>, Arc<TrackLocalStaticSample>), String> {
+        let make_track = || {
+            Arc::new(TrackLocalStaticSample::new(
+                RTCRtpCodecCapability {
+                    mime_type: "video/H264".to_owned(),
+                    clock_rate: 90000,
+                    ..Default::default()
+                },
+                format!("hexfield-video-{}", uuid::Uuid::new_v4()),
+                "hexfield-screen".to_owned(),
+            ))
+        };
+
+        let track_low = make_track();
+        let track_high = make_track();
+
+        // Add low track to all peers by default
+        let peers = self.peers.lock().await;
+        for (peer_id, entry) in peers.iter() {
+            let track_local: Arc<dyn TrackLocal + Send + Sync> = track_low.clone();
+            entry.pc.add_track(track_local).await
+                .map_err(|e| format!("add_video_track_low to {peer_id}: {e}"))?;
+            *entry.video_track.lock().await = Some(track_low.clone());
+            *entry.video_quality_tier.lock().await = VideoQualityTier::Low;
+
+            if !self.try_renegotiate(&entry.pc, peer_id, app).await? {
+                log::warn!("[webrtc] add_video_dual: skipped renegotiation for {peer_id}");
+            }
+        }
+
+        *self.local_video_track_low.lock().await = Some(track_low.clone());
+        *self.local_video_track_high.lock().await = Some(track_high.clone());
+
+        Ok((track_low, track_high))
+    }
+
+    /// Switch a specific peer to a different quality tier.
+    /// Replaces the video sender's track without full SDP renegotiation.
+    pub async fn set_peer_video_quality(
+        &self,
+        peer_id: &str,
+        tier: VideoQualityTier,
+        app: &AppHandle,
+    ) -> Result<(), String> {
+        let peers = self.peers.lock().await;
+        let entry = peers.get(peer_id)
+            .ok_or_else(|| format!("peer not found: {peer_id}"))?;
+
+        let current = *entry.video_quality_tier.lock().await;
+        if current == tier {
+            return Ok(());
+        }
+
+        let new_track = match tier {
+            VideoQualityTier::Low => {
+                self.local_video_track_low.lock().await.clone()
+            }
+            VideoQualityTier::High => {
+                self.local_video_track_high.lock().await.clone()
+            }
+        };
+
+        let new_track = new_track.ok_or("requested video track tier not available")?;
+
+        // Find the video sender and replace its track
+        let senders = entry.pc.get_senders().await;
+        let mut replaced = false;
+        for sender in senders {
+            if let Some(track) = sender.track().await {
+                if track.kind() == RTPCodecType::Video {
+                    sender.replace_track(Some(new_track.clone())).await
+                        .map_err(|e| format!("replace_track for {peer_id}: {e}"))?;
+                    replaced = true;
+                    break;
+                }
+            }
+        }
+
+        if !replaced {
+            let track_local: Arc<dyn TrackLocal + Send + Sync> = new_track.clone();
+            entry.pc.add_track(track_local).await
+                .map_err(|e| format!("add_video_track to {peer_id}: {e}"))?;
+            if !self.try_renegotiate(&entry.pc, peer_id, app).await? {
+                log::warn!("[webrtc] set_quality: skipped renegotiation for {peer_id}");
+            }
+        }
+
+        *entry.video_track.lock().await = Some(new_track);
+        *entry.video_quality_tier.lock().await = tier;
+
+        log::info!("[webrtc] peer {peer_id} switched to {tier:?} quality tier");
+        Ok(())
+    }
+
     /// Remove video tracks from all peers and trigger SDP renegotiation.
     pub async fn remove_video_tracks_from_all(&self, app: &AppHandle) -> Result<(), String> {
-        // Clear manager-level track first
-        *self.local_video_track.lock().await = None;
+        // Clear manager-level tracks first
+        *self.local_video_track_low.lock().await = None;
+        *self.local_video_track_high.lock().await = None;
 
         let peers = self.peers.lock().await;
         for (peer_id, entry) in peers.iter() {
