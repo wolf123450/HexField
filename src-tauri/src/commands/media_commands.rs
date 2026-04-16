@@ -135,20 +135,32 @@ pub async fn media_start_screen_share(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let video_track = state
-        .webrtc_manager
-        .add_video_track_to_all(&app)
-        .await?;
+    let use_new = use_new_pipeline.unwrap_or(false);
+
+    let (video_track, video_track_high) = if use_new {
+        let (low, high) = state
+            .webrtc_manager
+            .add_video_tracks_dual(&app)
+            .await?;
+        (low, Some(high))
+    } else {
+        let track = state
+            .webrtc_manager
+            .add_video_track_to_all(&app)
+            .await?;
+        (track, None)
+    };
 
     state
         .media_manager
         .start_screen_share(
             &source_id,
             video_track,
+            video_track_high,
             app,
             fps.unwrap_or(30),
             bitrate_kbps.unwrap_or(0),
-            use_new_pipeline.unwrap_or(false),
+            use_new,
         )
         .await
 }
