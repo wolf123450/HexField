@@ -444,7 +444,7 @@ fn spawn_encoder_thread(
                 }
 
                 // Preview: generate from whichever thread owns the preview_dir
-                if preview_dir.is_some() && frame.frame_number % 2 == 0 {
+                if preview_dir.is_some() {
                     if let Some(ref dir) = preview_dir {
                         let preview_path = dir.join("self.jpg");
                         // Convert YUV420 → RGB for color preview (BT.709 inverse)
