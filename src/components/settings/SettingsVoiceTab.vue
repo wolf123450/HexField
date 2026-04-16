@@ -69,6 +69,17 @@
     </div>
 
     <div class="form-row">
+      <label class="form-label">Screen Share Downscale Method</label>
+      <select v-model="videoDownscaleMethod" class="form-select" @change="saveDownscaleMethod">
+        <option value="nearest">Nearest Neighbor — Fastest, pixelated</option>
+        <option value="bilinear">Bilinear — Smooth, balanced</option>
+        <option value="bicubic">Bicubic — Sharp, detailed</option>
+        <option value="lanczos3">Lanczos-3 — Sharpest, most CPU</option>
+      </select>
+      <p class="form-hint">Algorithm used when downscaling to the target resolution. Takes effect on next screen share.</p>
+    </div>
+
+    <div class="form-row">
       <label class="form-label">NAT Type</label>
       <div class="nat-status">
         <span class="nat-badge" :class="`nat-${networkStore.natType}`">{{ natLabel }}</span>
@@ -137,6 +148,7 @@ const noiseSuppression = ref(settingsStore.settings.noiseSuppression)
 const videoQuality  = ref(settingsStore.settings.videoQuality)
 const videoBitrate  = ref(settingsStore.settings.videoBitrate)
 const videoFrameRate = ref<10 | 15 | 30 | 60>(settingsStore.settings.videoFrameRate)
+const videoDownscaleMethod = ref(settingsStore.settings.videoDownscaleMethod)
 const audioInputs   = ref<AudioDeviceInfo[]>([])
 const audioOutputs  = ref<AudioDeviceInfo[]>([])
 const inputDeviceMissing  = computed(() => inputDevice.value !== '' && audioInputs.value.length > 0 && !audioInputs.value.some(d => d.id === inputDevice.value))
@@ -183,6 +195,7 @@ function saveNoiseSuppression() { settingsStore.updateSetting('noiseSuppression'
 function saveVideoQuality()  { settingsStore.updateSetting('videoQuality', videoQuality.value) }
 function saveVideoBitrate()  { settingsStore.updateSetting('videoBitrate', videoBitrate.value) }
 function saveVideoFrameRate() { settingsStore.updateSetting('videoFrameRate', videoFrameRate.value) }
+function saveDownscaleMethod() { settingsStore.updateSetting('videoDownscaleMethod', videoDownscaleMethod.value as 'nearest' | 'bilinear' | 'bicubic' | 'lanczos3') }
 function saveTURNServers() {
   try {
     const servers = turnServersText.value.trim() ? JSON.parse(turnServersText.value) : []

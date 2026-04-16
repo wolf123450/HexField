@@ -61,6 +61,7 @@ export interface UserSettings {
   videoQuality: 'auto' | '360p' | '720p' | '1080p';
   videoBitrate: 'auto' | '500kbps' | '1mbps' | '2.5mbps' | '5mbps' | '10mbps';
   videoFrameRate: 10 | 15 | 30 | 60;
+  videoDownscaleMethod: 'nearest' | 'bilinear' | 'bicubic' | 'lanczos3';
   // Network
   rendezvousServerUrl: string;
   userDiscoverability: 'public' | 'private';
@@ -110,6 +111,7 @@ const defaultSettings: UserSettings = {
   videoQuality: 'auto',
   videoBitrate: 'auto',
   videoFrameRate: 60,
+  videoDownscaleMethod: 'bilinear',
   // Network
   rendezvousServerUrl: '',
   userDiscoverability: 'public',
