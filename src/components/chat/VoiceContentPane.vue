@@ -73,6 +73,22 @@
             <button class="tile-hide-btn" title="Hide" @click.stop="hiddenStreams.add('local')">
               <AppIcon :path="mdiEyeOff" :size="14" />
             </button>
+            <button
+              class="tile-stats-btn"
+              :title="voiceStore.showScreenOverlay ? 'Hide stats' : 'Show stats'"
+              @click.stop="voiceStore.showScreenOverlay = !voiceStore.showScreenOverlay"
+            >
+              <AppIcon :path="mdiChartLine" :size="14" />
+            </button>
+          </div>
+          <!-- Performance overlay -->
+          <div v-if="voiceStore.showScreenOverlay && voiceStore.screenShareStats" class="perf-overlay">
+            <div class="perf-line">{{ voiceStore.screenShareStats.fps }} fps</div>
+            <div class="perf-line">{{ voiceStore.screenShareStats.srcResolution }} → {{ voiceStore.screenShareStats.resolution }}</div>
+            <div class="perf-line">convert: {{ voiceStore.screenShareStats.convertMs }}ms</div>
+            <div class="perf-line">encode: {{ voiceStore.screenShareStats.encodeMs }}ms</div>
+            <div class="perf-line">{{ voiceStore.screenShareStats.bitrateKbps }} kbps</div>
+            <div class="perf-line">{{ voiceStore.screenShareStats.method }}</div>
           </div>
         </div>
 
@@ -164,6 +180,7 @@ import {
   mdiEyeOff,
   mdiMessageText,
   mdiChevronDown,
+  mdiChartLine,
 } from '@mdi/js'
 import { useVoiceStore }    from '@/stores/voiceStore'
 import { useChannelsStore } from '@/stores/channelsStore'
@@ -501,4 +518,38 @@ function peerName(userId: string): string {
   min-width: 32px;
   text-align: right;
 }
+
+/* Performance stats overlay */
+.perf-overlay {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #0f0;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 10;
+  line-height: 1.4;
+}
+
+.perf-line {
+  white-space: nowrap;
+}
+
+.tile-stats-btn {
+  background: rgba(255, 255, 255, 0.15);
+  border: none;
+  border-radius: 4px;
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  transform: none;
+}
+.tile-stats-btn:hover { background: rgba(255, 255, 255, 0.3); }
 </style>
