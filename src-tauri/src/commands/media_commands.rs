@@ -132,10 +132,19 @@ pub async fn media_start_screen_share(
     fps: Option<u32>,
     bitrate_kbps: Option<u32>,
     use_new_pipeline: Option<bool>,
+    inline_preview: Option<bool>,
+    downscale_method: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let use_new = use_new_pipeline.unwrap_or(false);
+    let inline = inline_preview.unwrap_or(false);
+    let method = match downscale_method.as_deref() {
+        Some("nearest")  => crate::capture::DownscaleMethod::Nearest,
+        Some("bicubic")  => crate::capture::DownscaleMethod::Bicubic,
+        Some("lanczos3") => crate::capture::DownscaleMethod::Lanczos3,
+        _                => crate::capture::DownscaleMethod::Bilinear,
+    };
 
     let (video_track, video_track_high) = if use_new {
         let (low, high) = state
@@ -161,6 +170,8 @@ pub async fn media_start_screen_share(
             fps.unwrap_or(30),
             bitrate_kbps.unwrap_or(0),
             use_new,
+            inline,
+            method,
         )
         .await
 }

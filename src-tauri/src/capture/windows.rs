@@ -130,7 +130,9 @@ impl ScreenCapturer for WgcCapturer {
             app: config.app,
             preview_dir: config.preview_dir,
             use_new_pipeline: config.use_new_pipeline,
+            inline_preview: config.inline_preview,
             rt: tokio::runtime::Handle::current(),
+            downscale_method: config.downscale_method,
         };
 
         match source_type {
@@ -366,6 +368,8 @@ fn spawn_encoder_thread(
     rt: tokio::runtime::Handle,
     preview_dir: Option<std::path::PathBuf>,
     app: tauri::AppHandle,
+    inline_preview: bool,
+    _downscale_method: super::DownscaleMethod,
 ) -> crossbeam_channel::Sender<EncoderFrame> {
     let (tx, rx) = crossbeam_channel::bounded::<EncoderFrame>(2);
     let label = label.to_string();
@@ -444,29 +448,50 @@ fn spawn_encoder_thread(
                 }
 
                 // Preview: generate from whichever thread owns the preview_dir
-                if preview_dir.is_some() {
-                    if let Some(ref dir) = preview_dir {
-                        let preview_path = dir.join("self.jpg");
-                        // Convert YUV420 → RGB for color preview (BT.709 inverse)
-                        let mut rgba_preview = vec![255u8; dst_w * dst_h * 4];
-                        for py in 0..dst_h {
-                            for px in 0..dst_w {
-                                let yi = py * dst_w + px;
-                                let ci = (py / 2) * (dst_w / 2) + (px / 2);
-                                let y_val = y_plane[yi] as f32;
-                                let u_val = u_plane[ci] as f32 - 128.0;
-                                let v_val = v_plane[ci] as f32 - 128.0;
-                                // BT.709 inverse
-                                let r = (y_val + 1.5748 * v_val).clamp(0.0, 255.0) as u8;
-                                let g = (y_val - 0.1873 * u_val - 0.4681 * v_val).clamp(0.0, 255.0) as u8;
-                                let b = (y_val + 1.8556 * u_val).clamp(0.0, 255.0) as u8;
-                                let di = (py * dst_w + px) * 4;
-                                rgba_preview[di] = r;
-                                rgba_preview[di + 1] = g;
-                                rgba_preview[di + 2] = b;
-                                // alpha already 255
-                            }
+                let should_preview = inline_preview || preview_dir.is_some();
+                if should_preview {
+                    // Convert YUV420 → RGB for color preview (BT.709 inverse)
+                    let mut rgba_preview = vec![255u8; dst_w * dst_h * 4];
+                    for py in 0..dst_h {
+                        for px in 0..dst_w {
+                            let yi = py * dst_w + px;
+                            let ci = (py / 2) * (dst_w / 2) + (px / 2);
+                            let y_val = y_plane[yi] as f32;
+                            let u_val = u_plane[ci] as f32 - 128.0;
+                            let v_val = v_plane[ci] as f32 - 128.0;
+                            // BT.709 inverse
+                            let r = (y_val + 1.5748 * v_val).clamp(0.0, 255.0) as u8;
+                            let g = (y_val - 0.1873 * u_val - 0.4681 * v_val).clamp(0.0, 255.0) as u8;
+                            let b = (y_val + 1.8556 * u_val).clamp(0.0, 255.0) as u8;
+                            let di = (py * dst_w + px) * 4;
+                            rgba_preview[di] = r;
+                            rgba_preview[di + 1] = g;
+                            rgba_preview[di + 2] = b;
+                            // alpha already 255
                         }
+                    }
+
+                    if inline_preview {
+                        // Encode JPEG to memory → base64 → data URL (no disk I/O)
+                        use std::io::Cursor;
+                        let mut jpeg_buf = Cursor::new(Vec::with_capacity(512 * 1024));
+                        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 95);
+                        if let Ok(()) = image::DynamicImage::ImageRgba8(
+                            image::RgbaImage::from_raw(dst_w as u32, dst_h as u32, rgba_preview)
+                                .expect("invalid RGBA dimensions"),
+                        ).write_with_encoder(enc).map_err(|e| e.to_string()) {
+                            use base64::Engine;
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
+                            let data_url = format!("data:image/jpeg;base64,{b64}");
+                            let _ = app.emit("media_video_frame", serde_json::json!({
+                                "userId": "self",
+                                "frameNumber": frame.frame_number,
+                                "dataUrl": data_url,
+                            }));
+                        }
+                    } else if let Some(ref dir) = preview_dir {
+                        // Legacy disk-based preview
+                        let preview_path = dir.join("self.jpg");
                         let _ = write_jpeg_quality(
                             &rgba_preview, dst_w as u32, dst_h as u32, &preview_path, 85,
                         );
@@ -496,7 +521,9 @@ struct WgcFlags {
     app: tauri::AppHandle,
     preview_dir: Option<std::path::PathBuf>,
     use_new_pipeline: bool,
+    inline_preview: bool,
     rt: tokio::runtime::Handle,
+    downscale_method: super::DownscaleMethod,
 }
 
 struct WgcHandler {
@@ -512,9 +539,11 @@ struct WgcHandler {
     app: tauri::AppHandle,
     preview_dir: Option<std::path::PathBuf>,
     use_new_pipeline: bool,
+    inline_preview: bool,
     rt: tokio::runtime::Handle,
     encoder_tx_low: Option<crossbeam_channel::Sender<EncoderFrame>>,
     encoder_tx_high: Option<crossbeam_channel::Sender<EncoderFrame>>,
+    downscale_method: super::DownscaleMethod,
 }
 
 impl GraphicsCaptureApiHandler for WgcHandler {
@@ -536,9 +565,11 @@ impl GraphicsCaptureApiHandler for WgcHandler {
             app: flags.app,
             preview_dir: flags.preview_dir,
             use_new_pipeline: flags.use_new_pipeline,
+            inline_preview: flags.inline_preview,
             rt: flags.rt,
             encoder_tx_low: None,
             encoder_tx_high: None,
+            downscale_method: flags.downscale_method,
         })
     }
 
@@ -592,6 +623,8 @@ impl GraphicsCaptureApiHandler for WgcHandler {
                     self.frame_duration, self.rt.clone(),
                     if has_high_tier { None } else { self.preview_dir.clone() },
                     self.app.clone(),
+                    if has_high_tier { false } else { self.inline_preview },
+                    self.downscale_method,
                 ));
 
                 // Only start high tier if source is > 720p and high track exists
@@ -612,6 +645,8 @@ impl GraphicsCaptureApiHandler for WgcHandler {
                             self.bitrate_kbps_high.max(6000),
                             track_high.clone(), self.frame_duration,
                             self.rt.clone(), self.preview_dir.clone(), self.app.clone(),
+                            self.inline_preview,
+                            self.downscale_method,
                         ));
                     }
                 }
