@@ -737,6 +737,14 @@ fn spawn_encoder_thread(
                 enc_cfg,
             ).expect("failed to create encoder");
 
+            // Stats accumulation for overlay
+            let mut stats_frame_count: u64 = 0;
+            let mut stats_convert_sum_us: u64 = 0;
+            let mut stats_encode_sum_us: u64 = 0;
+            let mut stats_bytes_sum: u64 = 0;
+            let mut stats_last_emit = std::time::Instant::now();
+            let method_name = format!("{:?}", downscale_method).to_lowercase();
+
             while let Ok(frame) = rx.recv() {
                 let t_start = std::time::Instant::now();
 
@@ -767,6 +775,7 @@ fn spawn_encoder_thread(
                     Ok(bitstream) => {
                         let t_after_encode = t_start.elapsed();
                         let h264_data = bitstream.to_vec();
+                        let h264_len = h264_data.len();
                         if !h264_data.is_empty() {
                             let vt = video_track.clone();
                             let dur = frame_duration;
@@ -791,6 +800,38 @@ fn spawn_encoder_thread(
                                 total.as_secs_f64() * 1000.0,
                                 dst_w, dst_h,
                             );
+                        }
+
+                        stats_frame_count += 1;
+                        stats_convert_sum_us += t_after_convert.as_micros() as u64;
+                        stats_encode_sum_us += (t_after_encode - t_after_convert).as_micros() as u64;
+                        stats_bytes_sum += h264_len as u64;
+
+                        // Emit stats every ~500ms
+                        if stats_last_emit.elapsed() >= Duration::from_millis(500) && stats_frame_count > 0 {
+                            let avg_convert_ms = stats_convert_sum_us as f64 / stats_frame_count as f64 / 1000.0;
+                            let avg_encode_ms = stats_encode_sum_us as f64 / stats_frame_count as f64 / 1000.0;
+                            let elapsed_s = stats_last_emit.elapsed().as_secs_f64();
+                            let actual_fps = stats_frame_count as f64 / elapsed_s;
+                            let bitrate_kbps_actual = (stats_bytes_sum as f64 * 8.0 / elapsed_s / 1000.0) as u64;
+
+                            let _ = app.emit("screen_share_stats", serde_json::json!({
+                                "label": label,
+                                "fps": (actual_fps * 10.0).round() / 10.0,
+                                "convertMs": (avg_convert_ms * 100.0).round() / 100.0,
+                                "encodeMs": (avg_encode_ms * 100.0).round() / 100.0,
+                                "resolution": format!("{}x{}", dst_w, dst_h),
+                                "srcResolution": format!("{}x{}", frame.src_w, frame.src_h),
+                                "bitrateKbps": bitrate_kbps_actual,
+                                "dropped": 0u64,
+                                "method": method_name,
+                            }));
+
+                            stats_frame_count = 0;
+                            stats_convert_sum_us = 0;
+                            stats_encode_sum_us = 0;
+                            stats_bytes_sum = 0;
+                            stats_last_emit = std::time::Instant::now();
                         }
                     }
                     Err(e) => log::warn!("[media-{label}] encode error: {e}"),
