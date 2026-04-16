@@ -33,6 +33,17 @@ pub struct ScreenSourceList {
     pub windows: Vec<ScreenSourceInfo>,
 }
 
+/// Downscale algorithm for screen capture frames.
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DownscaleMethod {
+    Nearest,
+    #[default]
+    Bilinear,
+    Bicubic,
+    Lanczos3,
+}
+
 /// Parameters for starting a capture session.
 pub struct CaptureConfig {
     pub source_id: String,
@@ -52,6 +63,11 @@ pub struct CaptureConfig {
     pub preview_dir: Option<std::path::PathBuf>,
     /// When true, use the new fused-YUV + simulcast pipeline.
     pub use_new_pipeline: bool,
+    /// When true, encode preview JPEG to memory and send as base64 data URL
+    /// in the event payload instead of writing to disk.
+    pub inline_preview: bool,
+    /// Downscale algorithm used when the source is larger than the target.
+    pub downscale_method: DownscaleMethod,
 }
 
 /// Platform-independent screen capture interface.

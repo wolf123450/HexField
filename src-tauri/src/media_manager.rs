@@ -784,6 +784,8 @@ impl MediaManager {
         fps: u32,
         bitrate_kbps: u32,
         use_new_pipeline: bool,
+        inline_preview: bool,
+        downscale_method: crate::capture::DownscaleMethod,
     ) -> Result<(), String> {
         log::info!("[media] start_screen_share called: source_id={source_id} fps={fps}");
         if !self.capturer.is_supported() {
@@ -814,8 +816,10 @@ impl MediaManager {
             bitrate_kbps_high: if use_new_pipeline { 6000 } else { 0 },
             screen_active,
             force_keyframe: self.force_keyframe.clone(),
-            preview_dir,
+            preview_dir: if inline_preview { None } else { preview_dir },
             use_new_pipeline,
+            inline_preview,
+            downscale_method,
         };
 
         let task = tokio::task::spawn_blocking(move || {
