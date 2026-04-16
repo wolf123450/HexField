@@ -56,24 +56,9 @@ pub struct AudioDeviceList {
 
 // ── Screen source info ───────────────────────────────────────────────────────
 
-/// Information about a capturable screen source (monitor or window).
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct ScreenSourceInfo {
-    pub id: String,
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    /// "monitor" or "window"
-    pub source_type: String,
-    /// Base64 JPEG thumbnail for the picker UI.
-    pub thumbnail: Option<String>,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct ScreenSourceList {
-    pub monitors: Vec<ScreenSourceInfo>,
-    pub windows: Vec<ScreenSourceInfo>,
-}
+// Re-export from capture module so external code (media_commands.rs) can
+// access the types through `media_manager::ScreenSourceList`.
+pub use crate::capture::ScreenSourceList;
 
 // ── Per-peer playback state ──────────────────────────────────────────────────
 
@@ -111,6 +96,9 @@ pub struct MediaManager {
     peer_volumes: Arc<Mutex<HashMap<String, PeerPlayback>>>,
     /// Whether loopback (hear own mic) is enabled.
     loopback: Arc<AtomicBool>,
+    /// Handle to the loopback output stream (hear own mic via speakers).
+    /// Uses std::sync::Mutex because cpal::Stream is !Send on some platforms.
+    loopback_stream: Arc<std::sync::Mutex<Option<cpal::Stream>>>,
     /// Handle to the active cpal input stream (keeps it alive).
     /// Uses std::sync::Mutex because cpal::Stream is !Send on some platforms.
     input_stream: Arc<std::sync::Mutex<Option<cpal::Stream>>>,
@@ -131,7 +119,11 @@ pub struct MediaManager {
     /// The shared video track being written to (if screen share active).
     video_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
     /// Background device-change watcher task.
-    device_watcher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    device_watcher: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
+    /// Platform-specific screen capturer.
+    capturer: Box<dyn crate::capture::ScreenCapturer>,
+    /// Set to true when a new peer joins to force the encoder to emit an IDR keyframe.
+    force_keyframe: Arc<AtomicBool>,
 }
 
 impl MediaManager {
@@ -142,6 +134,7 @@ impl MediaManager {
             deafened: Arc::new(AtomicBool::new(false)),
             peer_volumes: Arc::new(Mutex::new(HashMap::new())),
             loopback: Arc::new(AtomicBool::new(false)),
+            loopback_stream: Arc::new(std::sync::Mutex::new(None)),
             input_stream: Arc::new(std::sync::Mutex::new(None)),
             encode_task: Arc::new(Mutex::new(None)),
             audio_track: Arc::new(Mutex::new(None)),
@@ -152,6 +145,8 @@ impl MediaManager {
             screen_task: Arc::new(Mutex::new(None)),
             video_track: Arc::new(Mutex::new(None)),
             device_watcher: Arc::new(Mutex::new(None)),
+            capturer: crate::capture::create(),
+            force_keyframe: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -171,7 +166,8 @@ impl MediaManager {
             .map(|devices| {
                 devices
                     .filter_map(|d| {
-                        let name = d.name().unwrap_or_else(|_| "<unnamed>".into());
+                        let name = d.description().map(|desc| desc.name().to_string())
+                            .unwrap_or_else(|_| "<unnamed>".into());
                         Some(AudioDeviceInfo {
                             id: name.clone(),
                             name,
@@ -186,7 +182,8 @@ impl MediaManager {
             .map(|devices| {
                 devices
                     .filter_map(|d| {
-                        let name = d.name().unwrap_or_else(|_| "<unnamed>".into());
+                        let name = d.description().map(|desc| desc.name().to_string())
+                            .unwrap_or_else(|_| "<unnamed>".into());
                         Some(AudioDeviceInfo {
                             id: name.clone(),
                             name,
@@ -205,7 +202,7 @@ impl MediaManager {
     /// emits a `media_devices_changed` Tauri event when the list changes.
     pub fn start_device_watcher(&self, app: tauri::AppHandle) {
         let watcher = self.device_watcher.clone();
-        let handle = tokio::spawn(async move {
+        let handle = tauri::async_runtime::spawn(async move {
             let mut prev = Self::enumerate_devices_inner();
             loop {
                 tokio::time::sleep(Duration::from_secs(3)).await;
@@ -218,9 +215,9 @@ impl MediaManager {
                 }
             }
         });
-        // Store watcher handle synchronously (block_on is fine at startup)
+        // Store watcher handle synchronously
         let watcher_clone = watcher.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let mut guard = watcher_clone.lock().await;
             *guard = Some(handle);
         });
@@ -260,7 +257,7 @@ impl MediaManager {
             if let Some(name) = sel.as_ref() {
                 host.input_devices()
                     .map_err(|e| e.to_string())?
-                    .find(|d| d.name().map(|n| &n == name).unwrap_or(false))
+                    .find(|d| d.description().map(|desc| desc.name() == name).unwrap_or(false))
                     .ok_or_else(|| format!("input device '{}' not found", name))?
             } else {
                 host.default_input_device()
@@ -268,7 +265,8 @@ impl MediaManager {
             }
         };
 
-        let device_name = device.name().unwrap_or_else(|_| "unknown".into());
+        let device_name = device.description().map(|desc| desc.name().to_string())
+            .unwrap_or_else(|_| "unknown".into());
         log::info!("[media] starting mic capture on: {device_name}");
 
         // Configure for 48kHz mono f32 (Opus native format)
@@ -315,7 +313,60 @@ impl MediaManager {
         *self.input_stream.lock().unwrap() = Some(stream);
         *self.audio_track.lock().await = Some(audio_track.clone());
 
+        // Create loopback output stream (hear own mic via speakers)
+        // Use VecDeque for sample-level buffering to avoid dropping partial frames
+        let loopback_buf: Arc<std::sync::Mutex<std::collections::VecDeque<f32>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::with_capacity(48000)));
+        let loopback_buf_for_output = loopback_buf.clone();
+        let deafened_for_loopback = self.deafened.clone();
+
+        let loopback_device = {
+            let sel = self.selected_output.lock().await;
+            if let Some(name) = sel.as_ref() {
+                host.output_devices()
+                    .ok()
+                    .and_then(|mut devs| devs.find(|d| d.description().map(|desc| desc.name() == name).unwrap_or(false)))
+            } else {
+                host.default_output_device()
+            }
+        };
+
+        if let Some(out_dev) = loopback_device {
+            let lb_config = cpal::StreamConfig {
+                channels: 1,
+                sample_rate: 48000,
+                buffer_size: cpal::BufferSize::Default,
+            };
+
+            match out_dev.build_output_stream(
+                &lb_config,
+                move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    if deafened_for_loopback.load(Ordering::Relaxed) {
+                        output.fill(0.0);
+                        return;
+                    }
+                    let mut buf = loopback_buf_for_output.lock().unwrap();
+                    for sample in output.iter_mut() {
+                        *sample = buf.pop_front().unwrap_or(0.0);
+                    }
+                },
+                |err| log::error!("[media] loopback output error: {err}"),
+                None,
+            ) {
+                Ok(lb_stream) => {
+                    let _ = lb_stream.play();
+                    *self.loopback_stream.lock().unwrap() = Some(lb_stream);
+                }
+                Err(e) => {
+                    log::warn!("[media] failed to create loopback stream: {e}");
+                }
+            }
+        } else {
+            log::warn!("[media] no output device available for loopback");
+        }
+
         // Spawn the Opus encoding task
+        let loopback_flag = self.loopback.clone();
         let app_clone = app.clone();
         let encode_handle = tokio::task::spawn(async move {
             let mut encoder =
@@ -378,6 +429,16 @@ impl MediaManager {
                             }
                         }
 
+                        // Fork PCM to loopback output if enabled
+                        if loopback_flag.load(Ordering::Relaxed) {
+                            let mut buf = loopback_buf.lock().unwrap();
+                            buf.extend(frame_buf.iter());
+                            // Cap at 1 second to prevent unbounded growth
+                            while buf.len() > 48000 {
+                                buf.pop_front();
+                            }
+                        }
+
                         // Encode PCM → Opus
                         let encoded_len = match encoder.encode_float(&frame_buf, &mut encoded_buf) {
                             Ok(n) => n,
@@ -422,6 +483,9 @@ impl MediaManager {
 
         // Drop the input stream (stops cpal capture, closes the pcm channel)
         *self.input_stream.lock().unwrap() = None;
+        // Drop the loopback output stream and reset loopback flag
+        *self.loopback_stream.lock().unwrap() = None;
+        self.loopback.store(false, Ordering::Release);
         // The encode task will exit when the channel closes
         if let Some(handle) = self.encode_task.lock().await.take() {
             handle.abort();
@@ -507,13 +571,21 @@ impl MediaManager {
         track: Arc<TrackRemote>,
         app: tauri::AppHandle,
     ) -> Result<(), String> {
+        // Don't create playback pipelines if we're not in a voice session.
+        // This prevents audio leak when a peer adds tracks during SDP
+        // renegotiation after we've left the voice channel.
+        if !self.mic_active.load(Ordering::Acquire) {
+            log::info!("[media] ignoring remote audio track from {peer_id} — not in voice session");
+            return Ok(());
+        }
+
         let host = cpal::default_host();
         let device = {
             let sel = self.selected_output.lock().await;
             if let Some(name) = sel.as_ref() {
                 host.output_devices()
                     .map_err(|e| e.to_string())?
-                    .find(|d| d.name().map(|n| &n == name).unwrap_or(false))
+                    .find(|d| d.description().map(|desc| desc.name() == name).unwrap_or(false))
                     .ok_or_else(|| format!("output device '{}' not found", name))?
             } else {
                 host.default_output_device()
@@ -527,15 +599,16 @@ impl MediaManager {
             buffer_size: cpal::BufferSize::Default,
         };
 
-        // Ring buffer: decoded PCM from the decode task → cpal output callback
-        let (pcm_tx, pcm_rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(64);
+        // Sample-level ring buffer: decoded PCM from the decode task → cpal output callback.
+        // Using VecDeque avoids the partial-frame-drop bug that occurs with mpsc channels
+        // when cpal's output buffer size doesn't align with the Opus frame size (960 samples).
+        let pcm_buf: Arc<std::sync::Mutex<std::collections::VecDeque<f32>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::with_capacity(48000)));
+        let pcm_buf_for_output = pcm_buf.clone();
 
         let deafened = self.deafened.clone();
         let peer_volumes = self.peer_volumes.clone();
         let pid_for_output = peer_id.clone();
-
-        // Wrap pcm_rx in Arc<std::sync::Mutex> so we can move it into the callback
-        let pcm_rx = Arc::new(std::sync::Mutex::new(pcm_rx));
 
         // cpal output stream — pulls decoded PCM and plays it
         let output_stream = device
@@ -554,24 +627,9 @@ impl MediaManager {
                         .and_then(|pv| pv.get(&pid_for_output).map(|p| p.volume))
                         .unwrap_or(1.0);
 
-                    let rx = pcm_rx.lock().unwrap();
-                    let mut written = 0;
-                    while written < output.len() {
-                        match rx.try_recv() {
-                            Ok(frame) => {
-                                for sample in &frame {
-                                    if written < output.len() {
-                                        output[written] = sample * volume;
-                                        written += 1;
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                // Underrun — fill remaining with silence
-                                output[written..].fill(0.0);
-                                break;
-                            }
-                        }
+                    let mut buf = pcm_buf_for_output.lock().unwrap();
+                    for sample in output.iter_mut() {
+                        *sample = buf.pop_front().unwrap_or(0.0) * volume;
                     }
                 },
                 move |err| {
@@ -646,7 +704,12 @@ impl MediaManager {
                             }
                         }
 
-                        let _ = pcm_tx.try_send(pcm.to_vec());
+                        let mut buf = pcm_buf.lock().unwrap();
+                        buf.extend(pcm.iter());
+                        // Cap at 1 second to prevent unbounded latency buildup
+                        while buf.len() > 48000 {
+                            buf.pop_front();
+                        }
                     }
                     Err(e) => {
                         log::debug!("[media] track read ended for {pid_for_task}: {e}");
@@ -695,92 +758,20 @@ impl MediaManager {
     // ── Screen source enumeration ────────────────────────────────────────────
 
     /// List available monitors and windows for screen sharing.
-    /// Includes small JPEG thumbnails for the picker UI.
-    pub fn enumerate_screens(&self) -> ScreenSourceList {
-        let monitors = xcap::Monitor::all()
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .map(|(i, m)| {
-                let name = m.name().unwrap_or_default();
-                let width = m.width().unwrap_or(0);
-                let height = m.height().unwrap_or(0);
-                let thumbnail = Self::capture_thumbnail_monitor(&m);
-                ScreenSourceInfo {
-                    id: format!("monitor:{i}"),
-                    name: if name.is_empty() {
-                        format!("Monitor {}", i + 1)
-                    } else {
-                        name
-                    },
-                    width,
-                    height,
-                    source_type: "monitor".to_string(),
-                    thumbnail,
-                }
-            })
-            .collect();
-
-        let windows = xcap::Window::all()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|w| !w.is_minimized().unwrap_or(true) && !w.title().unwrap_or_default().is_empty() && w.width().unwrap_or(0) > 0)
-            .enumerate()
-            .map(|(i, w)| {
-                let title = w.title().unwrap_or_default();
-                let app = w.app_name().unwrap_or_default();
-                let width = w.width().unwrap_or(0);
-                let height = w.height().unwrap_or(0);
-                let name = if title.is_empty() {
-                    app
-                } else {
-                    format!("{app} — {title}")
-                };
-                let thumbnail = Self::capture_thumbnail_window(&w);
-                ScreenSourceInfo {
-                    id: format!("window:{i}"),
-                    name,
-                    width,
-                    height,
-                    source_type: "window".to_string(),
-                    thumbnail,
-                }
-            })
-            .collect();
-
-        ScreenSourceList { monitors, windows }
+    pub fn enumerate_screens(&self) -> Result<ScreenSourceList, String> {
+        self.capturer.enumerate()
     }
 
-    fn capture_thumbnail_monitor(monitor: &xcap::Monitor) -> Option<String> {
-        let img = monitor.capture_image().ok()?;
-        Self::rgba_to_thumbnail_b64(&img)
-    }
-
-    fn capture_thumbnail_window(window: &xcap::Window) -> Option<String> {
-        let img = window.capture_image().ok()?;
-        Self::rgba_to_thumbnail_b64(&img)
-    }
-
-    /// Resize an RGBA image to a small thumbnail and encode as base64 JPEG.
-    fn rgba_to_thumbnail_b64(img: &image::RgbaImage) -> Option<String> {
-        use image::imageops::FilterType;
-        let thumb_w = 320u32;
-        let thumb_h = thumb_w * img.height() / img.width().max(1);
-        let thumb = image::imageops::resize(img, thumb_w, thumb_h, FilterType::Triangle);
-        let mut buf = Vec::new();
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 60);
-        image::DynamicImage::ImageRgba8(thumb)
-            .write_with_encoder(encoder)
-            .ok()?;
-        use base64::Engine;
-        Some(base64::engine::general_purpose::STANDARD.encode(&buf))
+    /// Whether screen capture is supported on this platform.
+    pub fn is_screen_share_supported(&self) -> bool {
+        self.capturer.is_supported()
     }
 
     // ── Screen capture pipeline ──────────────────────────────────────────────
 
     /// Start sharing a screen or window.
     ///
-    /// `source_id`: "monitor:0", "monitor:1", "window:3", etc.
+    /// `source_id`: "monitor:\\.\DISPLAY1", "window:12345678", etc.
     /// `video_track`: from WebRTCManager::add_video_track_to_all()
     /// `fps`: target frames per second
     /// `bitrate_kbps`: target bitrate (0 = auto)
@@ -792,158 +783,47 @@ impl MediaManager {
         fps: u32,
         bitrate_kbps: u32,
     ) -> Result<(), String> {
-        if self.screen_active.load(Ordering::Acquire) {
-            return Err("screen share already active".into());
+        log::info!("[media] start_screen_share called: source_id={source_id} fps={fps}");
+        if !self.capturer.is_supported() {
+            return Err("Screen sharing is not yet supported on this platform".to_string());
         }
 
-        let (source_type, index_str) = source_id
-            .split_once(':')
-            .ok_or("invalid source_id format")?;
-        let index: usize = index_str
-            .parse()
-            .map_err(|e: std::num::ParseIntError| e.to_string())?;
-
-        // Validate the source exists
-        match source_type {
-            "monitor" => {
-                let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
-                if index >= monitors.len() {
-                    return Err("monitor index out of range".into());
-                }
-            }
-            "window" => {
-                let windows: Vec<_> = xcap::Window::all()
-                    .map_err(|e| e.to_string())?
-                    .into_iter()
-                    .filter(|w| !w.is_minimized().unwrap_or(true) && !w.title().unwrap_or_default().is_empty() && w.width().unwrap_or(0) > 0)
-                    .collect();
-                if index >= windows.len() {
-                    return Err("window index out of range".into());
-                }
-            }
-            _ => return Err(format!("unsupported source type: {source_type}")),
+        if self.screen_active.load(Ordering::Acquire) {
+            return Err("screen share already active".into());
         }
 
         *self.video_track.lock().await = Some(video_track.clone());
         self.screen_active.store(true, Ordering::Release);
 
-        let frame_duration = Duration::from_millis(1000 / fps.max(1) as u64);
         let screen_active = self.screen_active.clone();
-        let bitrate_bps = if bitrate_kbps > 0 {
-            bitrate_kbps * 1000
-        } else {
-            1_000_000
-        };
-        let source_type_owned = source_type.to_string();
         let source_id_owned = source_id.to_string();
         let app_clone = app.clone();
+        let preview_dir = Self::frame_output_dir(&app).ok();
+
+        // Build a new capturer for the blocking task (trait object is Send+Sync)
+        let capturer = crate::capture::create();
+        let config = crate::capture::CaptureConfig {
+            source_id: source_id_owned.clone(),
+            video_track,
+            video_track_high: None,
+            app: app_clone.clone(),
+            fps,
+            bitrate_kbps,
+            bitrate_kbps_high: 0,
+            screen_active,
+            force_keyframe: self.force_keyframe.clone(),
+            preview_dir,
+            use_new_pipeline: false,
+        };
 
         let task = tokio::task::spawn_blocking(move || {
-            let mut encoder: Option<openh264::encoder::Encoder> = None;
-            let mut frame_count: u64 = 0;
-
-            while screen_active.load(Ordering::Acquire) {
-                let capture_start = std::time::Instant::now();
-
-                // Re-enumerate each frame to handle source changes
-                let img = match source_type_owned.as_str() {
-                    "monitor" => {
-                        let monitors = match xcap::Monitor::all() {
-                            Ok(m) => m,
-                            Err(e) => {
-                                log::warn!("[media] monitor enumerate error: {e}");
-                                std::thread::sleep(frame_duration);
-                                continue;
-                            }
-                        };
-                        monitors.into_iter().nth(index).and_then(|m| m.capture_image().ok())
-                    }
-                    "window" => {
-                        let windows: Vec<_> = xcap::Window::all()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .filter(|w| !w.is_minimized().unwrap_or(true) && !w.title().unwrap_or_default().is_empty() && w.width().unwrap_or(0) > 0)
-                            .collect();
-                        windows.into_iter().nth(index).and_then(|w| w.capture_image().ok())
-                    }
-                    _ => None,
-                };
-
-                let img = match img {
-                    Some(i) => i,
-                    None => {
-                        log::warn!("[media] capture failed, source may be gone");
-                        let _ = app_clone.emit(
-                            "media_screen_share_error",
-                            serde_json::json!({ "error": "capture source lost" }),
-                        );
-                        break;
-                    }
-                };
-
-                let w = img.width() as usize;
-                let h = img.height() as usize;
-
-                // Initialize encoder on first frame or if dimensions changed
-                if encoder.is_none()
-                    || encoder
-                        .as_ref()
-                        .map(|_| false)
-                        .unwrap_or(true)
-                {
-                    let config = openh264::encoder::EncoderConfig::new()
-                        .bitrate(openh264::encoder::BitRate::from_bps(bitrate_bps as u32))
-                        .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps as f32))
-                        .rate_control_mode(openh264::encoder::RateControlMode::Bitrate);
-                    match openh264::encoder::Encoder::with_api_config(
-                        openh264::OpenH264API::from_source(),
-                        config,
-                    ) {
-                        Ok(e) => encoder = Some(e),
-                        Err(e) => {
-                            log::error!("[media] H.264 encoder init failed: {e}");
-                            break;
-                        }
-                    }
-                }
-
-                let enc = encoder.as_mut().unwrap();
-                let rgba_data = img.as_raw();
-                let src = openh264::formats::RgbaSliceU8::new(rgba_data, (w, h));
-                let yuv = openh264::formats::YUVBuffer::from_rgb_source(src);
-
-                match enc.encode(&yuv) {
-                    Ok(bitstream) => {
-                        let h264_data = bitstream.to_vec();
-                        if !h264_data.is_empty() {
-                            let vt = video_track.clone();
-                            let dur = frame_duration;
-                            let rt = tokio::runtime::Handle::current();
-                            let _ = rt.block_on(async {
-                                vt.write_sample(&Sample {
-                                    data: Bytes::from(h264_data),
-                                    duration: dur,
-                                    ..Default::default()
-                                })
-                                .await
-                            });
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("[media] H.264 encode error: {e}");
-                    }
-                }
-
-                frame_count += 1;
-
-                // Sleep to maintain target FPS
-                let elapsed = capture_start.elapsed();
-                if elapsed < frame_duration {
-                    std::thread::sleep(frame_duration - elapsed);
-                }
+            if let Err(e) = capturer.start(config) {
+                log::error!("[media] screen capture failed: {e}");
+                let _ = app_clone.emit(
+                    "media_screen_share_error",
+                    serde_json::json!({ "error": e }),
+                );
             }
-
-            log::debug!("[media] screen capture task exited after {frame_count} frames");
         });
 
         *self.screen_task.lock().await = Some(task);
@@ -966,13 +846,19 @@ impl MediaManager {
 
         *self.video_track.lock().await = None;
 
-        let _ = app.emit("media_screen_share_stopped", serde_json::json!({}));
+        let _ = app.emit("media_screen_share_stopped", serde_json::json!({ "userId": "self" }));
         Ok(())
     }
 
     /// Whether screen share is currently active.
     pub fn is_screen_sharing(&self) -> bool {
         self.screen_active.load(Ordering::Acquire)
+    }
+
+    /// Request the screen capture encoder to emit an IDR keyframe on the next frame.
+    /// Called when a new peer joins and needs to start decoding immediately.
+    pub fn request_keyframe(&self) {
+        self.force_keyframe.store(true, Ordering::Release);
     }
 
     // ── Video receive helpers ────────────────────────────────────────────────
@@ -1008,6 +894,10 @@ impl MediaManager {
         };
 
         let (w, h) = yuv.dimensions();
+        if w < 2 || h < 2 || w % 2 != 0 || h % 2 != 0 {
+            // openh264 write_rgb8 requires even dimensions; skip degenerate frames
+            return Ok(false);
+        }
         let mut rgb = vec![0u8; w * h * 3];
         yuv.write_rgb8(&mut rgb);
 
@@ -1025,7 +915,7 @@ impl MediaManager {
     }
 
     /// Write RGBA pixels as a JPEG file (atomic via temp rename).
-    fn write_jpeg_frame(
+    pub fn write_jpeg_frame(
         rgba: &[u8],
         width: u32,
         height: u32,
