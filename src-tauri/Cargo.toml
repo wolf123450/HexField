@@ -75,6 +75,9 @@ bytes              = "1"
 # Compiles OpenH264 from bundled source (no system deps).
 openh264           = "0.9"
 
+# Lock-free bounded channels for encoder thread pipeline
+crossbeam-channel  = "0.5"
+
 # Image encoding/decoding (JPEG for frame delivery to frontend via asset://)
 image              = "0.25"
 
