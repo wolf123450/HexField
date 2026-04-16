@@ -181,7 +181,7 @@ export const useVoiceStore = defineStore('voice', () => {
     const settings = useSettingsStore().settings
 
     const bitrateMap: Record<string, number | undefined> = {
-      'auto': undefined, '500kbps': 500, '1mbps': 1000, '2.5mbps': 2500, '5mbps': 5000,
+      'auto': undefined, '500kbps': 500, '1mbps': 1000, '2.5mbps': 2500, '5mbps': 5000, '10mbps': 10000,
     }
     const maxBitrateKbps = bitrateMap[settings.videoBitrate]
 
