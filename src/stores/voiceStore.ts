@@ -12,6 +12,19 @@ export const useVoiceStore = defineStore('voice', () => {
   const session         = ref<VoiceSession | null>(null)
   const screenShareActive = ref<boolean>(false)
   const screenFrameUrls   = ref<Record<string, string>>({}) // asset:// URLs per peer for screen frames
+  const screenDownscaleMethod = ref<'nearest' | 'bilinear' | 'bicubic' | 'lanczos3' | null>(null)
+  const screenShareStats = ref<{
+    label: string;
+    fps: number;
+    convertMs: number;
+    encodeMs: number;
+    resolution: string;
+    srcResolution: string;
+    bitrateKbps: number;
+    dropped: number;
+    method: string;
+  } | null>(null)
+  const showScreenOverlay = ref(false)
   const streamQualityTier = ref<Record<string, 'low' | 'high'>>({})
   const isMuted         = ref<boolean>(false)
   const isDeafened      = ref<boolean>(false)
@@ -169,6 +182,19 @@ export const useVoiceStore = defineStore('voice', () => {
   // Check on store init
   checkScreenShareSupport()
 
+  // Listen for encoder stats
+  async function _listenStats() {
+    const { listen } = await import('@tauri-apps/api/event')
+    await listen<{
+      label: string; fps: number; convertMs: number; encodeMs: number;
+      resolution: string; srcResolution: string; bitrateKbps: number;
+      dropped: number; method: string;
+    }>('screen_share_stats', (event) => {
+      screenShareStats.value = event.payload
+    })
+  }
+  _listenStats().catch(() => {})
+
   async function startScreenShare(): Promise<void> {
     const { useUIStore } = await import('./uiStore')
     const uiStore = useUIStore()
@@ -186,12 +212,16 @@ export const useVoiceStore = defineStore('voice', () => {
     const maxBitrateKbps = bitrateMap[settings.videoBitrate]
 
     const useNewPipeline = localStorage.getItem('hexfield_new_pipeline') !== 'false'
+    const inlinePreview = localStorage.getItem('hexfield_inline_preview') !== 'false'
+    const downscaleMethod = screenDownscaleMethod.value ?? settings.videoDownscaleMethod ?? 'bilinear'
 
     await webrtcService.addScreenShareTrack(
       sourceId,
       settings.videoFrameRate,
       maxBitrateKbps,
       useNewPipeline,
+      inlinePreview,
+      downscaleMethod,
     )
 
     screenShareActive.value = true
@@ -208,6 +238,8 @@ export const useVoiceStore = defineStore('voice', () => {
     await webrtcService.removeScreenShareTrack()
     screenShareActive.value = false
     delete screenFrameUrls.value['self']
+    screenShareStats.value = null
+    screenDownscaleMethod.value = null
 
     const { useNetworkStore } = await import('./networkStore')
     useNetworkStore().broadcast({ type: 'voice_screen_share_stop' })
@@ -268,6 +300,9 @@ export const useVoiceStore = defineStore('voice', () => {
     screenShareActive,
     screenShareSupported,
     screenFrameUrls,
+    screenDownscaleMethod,
+    screenShareStats,
+    showScreenOverlay,
     streamQualityTier,
     isMuted,
     isDeafened,
