@@ -81,6 +81,17 @@ pub async fn webrtc_send(
     state.webrtc_manager.send(&peer_id, data).await
 }
 
+/// Ensure existing audio/video tracks are added to a specific peer.
+/// Call when a new peer connects while already in a voice channel.
+#[tauri::command]
+pub async fn webrtc_ensure_tracks(
+    peer_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.webrtc_manager.ensure_tracks_for_peer(&peer_id, &app, &state.media_manager).await
+}
+
 /// Close and remove the peer connection for `peer_id`.
 #[tauri::command]
 pub async fn webrtc_close_peer(

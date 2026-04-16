@@ -21,7 +21,8 @@ export const useVoiceStore = defineStore('voice', () => {
   const speakingPeers      = ref<Set<string>>(new Set())
   const peerVolumes        = ref<Record<string, number>>({})
   // Tracks which voice channel each remote peer is currently in (even if we are not in the channel)
-  const peerVoiceChannels  = ref<Record<string, string>>({})
+  // Keyed by userId → { channelId, serverId } to prevent cross-server interference
+  const peerVoiceChannels  = ref<Record<string, { channelId: string; serverId: string }>>({})
 
   const peerCount     = computed(() => Object.keys(peers.value).length)
   const meshWarning   = computed(() => peerCount.value >= MESH_PEER_LIMIT)
@@ -154,6 +155,19 @@ export const useVoiceStore = defineStore('voice', () => {
 
   // ── Screen share ──────────────────────────────────────────────────────────
 
+  const screenShareSupported = ref(false)
+
+  async function checkScreenShareSupport(): Promise<void> {
+    try {
+      screenShareSupported.value = await webrtcService.isScreenShareSupported()
+    } catch {
+      screenShareSupported.value = false
+    }
+  }
+
+  // Check on store init
+  checkScreenShareSupport()
+
   async function startScreenShare(): Promise<void> {
     const { useUIStore } = await import('./uiStore')
     const uiStore = useUIStore()
@@ -170,10 +184,13 @@ export const useVoiceStore = defineStore('voice', () => {
     }
     const maxBitrateKbps = bitrateMap[settings.videoBitrate]
 
+    const useNewPipeline = localStorage.getItem('hexfield_new_pipeline') === 'true'
+
     await webrtcService.addScreenShareTrack(
       sourceId,
       settings.videoFrameRate,
       maxBitrateKbps,
+      useNewPipeline,
     )
 
     screenShareActive.value = true
@@ -189,6 +206,7 @@ export const useVoiceStore = defineStore('voice', () => {
     if (!screenShareActive.value) return
     await webrtcService.removeScreenShareTrack()
     screenShareActive.value = false
+    delete screenFrameUrls.value['self']
 
     const { useNetworkStore } = await import('./networkStore')
     useNetworkStore().broadcast({ type: 'voice_screen_share_stop' })
@@ -205,6 +223,7 @@ export const useVoiceStore = defineStore('voice', () => {
   }
 
   function updatePeer(userId: string, patch: Partial<Peer>): void {
+    if (!userId) return
     peers.value[userId] = { ...(peers.value[userId] ?? defaultPeer(userId)), ...patch }
   }
 
@@ -216,8 +235,8 @@ export const useVoiceStore = defineStore('voice', () => {
     speakingPeers.value = next
   }
 
-  function setPeerVoiceChannel(userId: string, channelId: string): void {
-    peerVoiceChannels.value[userId] = channelId
+  function setPeerVoiceChannel(userId: string, channelId: string, serverId: string): void {
+    peerVoiceChannels.value[userId] = { channelId, serverId }
   }
 
   function clearPeerVoiceChannel(userId: string): void {
@@ -236,6 +255,7 @@ export const useVoiceStore = defineStore('voice', () => {
   return {
     session,
     screenShareActive,
+    screenShareSupported,
     screenFrameUrls,
     isMuted,
     isDeafened,

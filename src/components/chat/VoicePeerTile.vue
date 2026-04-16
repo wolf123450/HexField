@@ -50,7 +50,7 @@ const isPersonalMuted = computed(() => personalBlocksStore.isMuted(props.peer.us
 
 const member = computed(() => serversStore.members[props.serverId]?.[props.peer.userId])
 
-const displayName = computed(() => member.value?.displayName ?? props.peer.userId.slice(0, 8))
+const displayName = computed(() => member.value?.displayName ?? props.peer.userId?.slice(0, 8) ?? 'Unknown')
 </script>
 
 <style scoped>

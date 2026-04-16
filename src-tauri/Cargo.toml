@@ -4,6 +4,7 @@ version = "0.2.5"
 description = "HexField — privacy-first P2P chat"
 authors = []
 edition = "2021"
+default-run = "hexfield"
 
 [lib]
 name = "hexfield_lib"
@@ -68,8 +69,7 @@ opus               = "0.3"
 # Byte buffer ergonomics (already a transitive dep of webrtc, but pin explicitly)
 bytes              = "1"
 
-# Screen/window capture (cross-platform: DXGI, CoreGraphics, XCB)
-xcap               = "0.9"
+
 
 # H.264 video codec — encode captured frames, decode received frames
 # Compiles OpenH264 from bundled source (no system deps).
@@ -80,6 +80,8 @@ image              = "0.25"
 
 # WebRTC (Rust-native data channels; replaces browser RTCPeerConnection on Linux)
 webrtc             = "0.17.1"
+# RTP H.264 depacketizer (transitive dep of webrtc, pinned for direct import)
+rtp                = "0.17.1"
 
 # Both `webrtc`/`dtls` and `reqwest`/`hyper-rustls` pull in rustls with different
 # crypto provider features (ring vs aws-lc-rs), making auto-selection panic.
@@ -92,6 +94,7 @@ keyring            = "3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows            = { version = "0.62.2", features = ["Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Registry"] }
+windows-capture    = "2.0.0"
 
 # tauri-pilot: AI-agent / developer testing CLI (Linux + debug builds only).
 # Not available on Windows/macOS (uses Unix sockets; cross-platform support planned upstream).
@@ -100,3 +103,20 @@ tauri-plugin-pilot = { git = "https://github.com/mpiton/tauri-pilot" }
 
 [dev-dependencies]
 tempfile = "3"
+
+# Dev profile: optimize the main crate's hot pixel loops (BGRA→RGBA swap,
+# image::resize call site). Without this a 4K frame swap takes ~1.9s;
+# with opt-level 1 it drops to ~20ms. Keeps debuginfo and fast iterative
+# compiles. Deps that do heavy pixel processing get level 2 separately.
+[profile.dev.package.hexfield]
+opt-level = 1
+
+# Pixel-processing deps benefit from full optimization (level 2).
+[profile.dev.package.openh264]
+opt-level = 2
+
+[profile.dev.package.openh264-sys2]
+opt-level = 2
+
+[profile.dev.package.image]
+opt-level = 2

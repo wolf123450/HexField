@@ -41,6 +41,7 @@ pub async fn media_stop_mic(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.media_manager.stop_mic(&app).await?;
+    state.media_manager.stop_all_remote_playback().await;
     state
         .webrtc_manager
         .remove_audio_tracks_from_all(&app)
@@ -113,7 +114,15 @@ pub async fn media_set_output_device(
 pub async fn media_enumerate_screens(
     state: State<'_, AppState>,
 ) -> Result<ScreenSourceList, String> {
-    Ok(state.media_manager.enumerate_screens())
+    state.media_manager.enumerate_screens()
+}
+
+/// Check if screen sharing is supported on this platform.
+#[tauri::command]
+pub async fn media_screen_share_supported(
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    Ok(state.media_manager.is_screen_share_supported())
 }
 
 /// Start screen sharing. Adds a video track to all peers and begins capture.
@@ -122,6 +131,7 @@ pub async fn media_start_screen_share(
     source_id: String,
     fps: Option<u32>,
     bitrate_kbps: Option<u32>,
+    use_new_pipeline: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -138,6 +148,7 @@ pub async fn media_start_screen_share(
             app,
             fps.unwrap_or(30),
             bitrate_kbps.unwrap_or(0),
+            use_new_pipeline.unwrap_or(false),
         )
         .await
 }

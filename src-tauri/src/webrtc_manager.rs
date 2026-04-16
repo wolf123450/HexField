@@ -34,7 +34,9 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
+use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::signaling_state::RTCSignalingState;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
 use webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver;
@@ -42,6 +44,11 @@ use webrtc::rtp_transceiver::RTCRtpTransceiver;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_remote::TrackRemote;
+
+// H.264 RTP depacketizer — reassembles FU-A fragments and STAP-A aggregates into
+// complete NAL units (Annex-B format) that openh264 can decode.
+use rtp::codecs::h264::H264Packet;
+use rtp::packetizer::Depacketizer;
 
 use crate::media_manager::MediaManager;
 
@@ -121,6 +128,10 @@ pub struct WebRTCManager {
     /// arrive before the peer entry exists or before set_remote_description
     /// completes.  Drained immediately after set_remote_description succeeds.
     ice_queue: Arc<Mutex<HashMap<String, Vec<RTCIceCandidateInit>>>>,
+    /// The local audio track being sent to all peers (if mic active).
+    local_audio_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
+    /// The local video track being sent to all peers (if screen share active).
+    local_video_track: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
 }
 
 impl WebRTCManager {
@@ -129,6 +140,8 @@ impl WebRTCManager {
             local_user_id: Arc::new(std::sync::Mutex::new(String::new())),
             peers: Arc::new(Mutex::new(HashMap::new())),
             ice_queue: Arc::new(Mutex::new(HashMap::new())),
+            local_audio_track: Arc::new(Mutex::new(None)),
+            local_video_track: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -166,6 +179,37 @@ impl WebRTCManager {
             .await
             .map(Arc::new)
             .map_err(|e| e.to_string())
+    }
+
+    // ── Internal: create and emit an SDP offer if the PC is in Stable state ─
+
+    /// Returns `true` if renegotiation was triggered, `false` if skipped
+    /// (because the PC was not in Stable signaling state).
+    async fn try_renegotiate(
+        &self,
+        pc: &Arc<RTCPeerConnection>,
+        peer_id: &str,
+        app: &AppHandle,
+    ) -> Result<bool, String> {
+        if pc.signaling_state() != RTCSignalingState::Stable {
+            return Ok(false);
+        }
+        let offer = pc
+            .create_offer(None)
+            .await
+            .map_err(|e| format!("create_offer renegotiate {peer_id}: {e}"))?;
+        pc.set_local_description(offer.clone())
+            .await
+            .map_err(|e| format!("set_local_desc renegotiate {peer_id}: {e}"))?;
+
+        let _ = app.emit(
+            "webrtc_offer",
+            OfferEvent {
+                to: peer_id.to_string(),
+                sdp: offer.sdp,
+            },
+        );
+        Ok(true)
     }
 
     // ── Internal: wire ICE, state, and on_data_channel callbacks ───────────
@@ -214,7 +258,6 @@ impl WebRTCManager {
                 if matches!(
                     s,
                     RTCPeerConnectionState::Failed
-                        | RTCPeerConnectionState::Disconnected
                         | RTCPeerConnectionState::Closed
                 ) {
                     // Skip emitting disconnect if this entry has been superseded by a
@@ -285,7 +328,7 @@ impl WebRTCManager {
                         }
                     });
                 } else {
-                    // Video tracks — decode H.264 → JPEG → emit frame events
+                    // Video tracks — depacketize RTP → decode H.264 → JPEG → emit frame events
                     let track_clone = track.clone();
                     let pid3 = pid2.clone();
                     let app3 = app2.clone();
@@ -306,14 +349,35 @@ impl WebRTCManager {
                             }
                         };
 
+                        // Depacketizer reassembles FU-A fragments and STAP-A aggregates
+                        // into complete Annex-B NAL units for the openh264 decoder.
+                        let mut h264_depacketizer = H264Packet::default();
                         let mut frame_number: u64 = 0;
 
                         loop {
                             match track_clone.read_rtp().await {
                                 Ok((pkt, _attr)) => {
+                                    // Depacketize RTP payload into H.264 NAL unit(s)
+                                    let nal_data = match h264_depacketizer
+                                        .depacketize(&pkt.payload)
+                                    {
+                                        Ok(data) => data,
+                                        Err(e) => {
+                                            log::debug!(
+                                                "[webrtc] H.264 depacketize error for {pid3}: {e}"
+                                            );
+                                            continue;
+                                        }
+                                    };
+
+                                    // Empty means FU-A fragment still accumulating
+                                    if nal_data.is_empty() {
+                                        continue;
+                                    }
+
                                     match MediaManager::decode_and_write_jpeg(
                                         &mut decoder,
-                                        &pkt.payload,
+                                        &nal_data,
                                         &frame_path,
                                     ) {
                                         Ok(true) => {
@@ -430,15 +494,19 @@ impl WebRTCManager {
         //   b) its data channel never opens and never fires a spurious webrtc_connected
         //      (which would cause waitForPeer to resolve while sendToPeer still uses this
         //       new PC whose DC slot is still None, silently dropping the first message).
-        let old_pc_to_close: Option<Arc<RTCPeerConnection>> = {
+        let old_pc_to_close: Option<(Arc<RTCPeerConnection>, Arc<Mutex<Option<Arc<RTCDataChannel>>>>)> = {
             let peers = self.peers.lock().await;
             peers.get(peer_id).map(|old| {
                 old.being_replaced.store(true, Ordering::Release);
-                old.pc.clone()
+                (old.pc.clone(), old.dc.clone())
             })
         };
-        if let Some(old_pc) = old_pc_to_close {
-            tokio::spawn(async move { let _ = old_pc.close().await; });
+        if let Some((old_pc, old_dc_slot)) = old_pc_to_close {
+            // Clear the old DC slot to prevent its on_open from firing webrtc_connected
+            tokio::spawn(async move {
+                *old_dc_slot.lock().await = None;
+                let _ = old_pc.close().await;
+            });
         }
 
         Self::wire_callbacks(pc.clone(), peer_id.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone());
@@ -487,23 +555,100 @@ impl WebRTCManager {
         app: &AppHandle,
     ) -> Result<(), String> {
         log::debug!("[webrtc] handle_offer from {from}");
+
+        // Check if this is a renegotiation (existing peer with a Connected PC).
+        // Renegotiation offers (e.g. adding audio/video tracks) must be applied to the
+        // EXISTING PeerConnection to preserve the data channel. Creating a new PC would
+        // destroy the data channel and break the connection.
+        let existing = {
+            let peers = self.peers.lock().await;
+            peers.get(from).map(|entry| {
+                (
+                    entry.pc.clone(),
+                    entry.remote_desc_ready.clone(),
+                    entry.pc.connection_state(),
+                )
+            })
+        };
+
+        if let Some((pc, remote_desc_ready, state)) = existing {
+            if state == RTCPeerConnectionState::Connected {
+                log::debug!("[webrtc] renegotiation offer from {from} — reusing existing PC");
+
+                // Handle "glare" — both sides sent offers simultaneously.
+                // Use polite-peer pattern: lower user ID yields (rolls back).
+                let sig_state = pc.signaling_state();
+                if sig_state == RTCSignalingState::HaveLocalOffer {
+                    let local_id = self.local_user_id.lock().unwrap().clone();
+                    if local_id < from.to_string() {
+                        // We're the polite peer — roll back our offer and accept theirs
+                        log::info!("[webrtc] glare with {from}: we are polite, rolling back");
+                        let mut rollback: RTCSessionDescription = Default::default();
+                        rollback.sdp_type = RTCSdpType::Rollback;
+                        pc.set_local_description(rollback)
+                            .await
+                            .map_err(|e| format!("rollback local desc for {from}: {e}"))?;
+                    } else {
+                        // We're the impolite peer — ignore their offer
+                        log::info!("[webrtc] glare with {from}: we are impolite, ignoring offer");
+                        return Ok(());
+                    }
+                } else if sig_state != RTCSignalingState::Stable {
+                    // PC is in some other non-stable state (e.g. HaveRemoteOffer from
+                    // a previous offer still being processed). Skip this offer.
+                    log::warn!("[webrtc] renegotiation from {from} skipped — signaling state {sig_state:?}");
+                    return Ok(());
+                }
+
+                let offer = RTCSessionDescription::offer(sdp).map_err(|e| e.to_string())?;
+                pc.set_remote_description(offer)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                remote_desc_ready.store(true, Ordering::Release);
+                self.drain_ice_queue(from, &pc).await;
+
+                let answer = pc.create_answer(None).await.map_err(|e| e.to_string())?;
+                pc.set_local_description(answer.clone())
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                app.emit(
+                    "webrtc_answer",
+                    AnswerEvent {
+                        to: from.to_string(),
+                        sdp: answer.sdp,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+
+                return Ok(());
+            }
+            // PC exists but is not Connected (Failed/Closed/Connecting) — treat as
+            // a fresh connection attempt and replace the old PC below.
+            log::debug!("[webrtc] replacing non-Connected PC ({state:?}) for {from}");
+        }
+
+        // Initial offer (or replacing a dead PC) — create a new PeerConnection
         let pc = Self::build_pc().await?;
         let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
         let remote_desc_ready = Arc::new(AtomicBool::new(false));
         let being_replaced = Arc::new(AtomicBool::new(false));
 
-        // Mark any existing entry as being_replaced and close its PC (same reasoning as
-        // create_offer: prevents the old DC from opening and firing a spurious
-        // webrtc_connected that races with the new connection's DC readiness).
-        let old_pc_to_close: Option<Arc<RTCPeerConnection>> = {
+        // Mark any existing entry as being_replaced and close its PC (prevents stale
+        // webrtc_connected / webrtc_disconnected events from the old PC).
+        let old_pc_to_close: Option<(Arc<RTCPeerConnection>, Arc<Mutex<Option<Arc<RTCDataChannel>>>>)> = {
             let peers = self.peers.lock().await;
             peers.get(from).map(|old| {
                 old.being_replaced.store(true, Ordering::Release);
-                old.pc.clone()
+                (old.pc.clone(), old.dc.clone())
             })
         };
-        if let Some(old_pc) = old_pc_to_close {
-            tokio::spawn(async move { let _ = old_pc.close().await; });
+        if let Some((old_pc, old_dc_slot)) = old_pc_to_close {
+            tokio::spawn(async move {
+                *old_dc_slot.lock().await = None;
+                let _ = old_pc.close().await;
+            });
         }
 
         Self::wire_callbacks(pc.clone(), from.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone());
@@ -663,6 +808,9 @@ impl WebRTCManager {
         &self,
         app: &AppHandle,
     ) -> Result<Arc<TrackLocalStaticSample>, String> {
+        // Use a unique track ID each session so add_track() creates a fresh
+        // transceiver instead of trying to reuse a stopped sender from a
+        // previous voice session (which fails with "envelope" mismatch).
         let track = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability {
                 mime_type: "audio/opus".to_owned(),
@@ -670,7 +818,7 @@ impl WebRTCManager {
                 channels: 1,
                 ..Default::default()
             },
-            "hexfield-audio".to_owned(),
+            format!("hexfield-audio-{}", uuid::Uuid::new_v4()),
             "hexfield-stream".to_owned(),
         ));
 
@@ -687,32 +835,25 @@ impl WebRTCManager {
             // Store a clone in the entry
             *entry.audio_track.lock().await = Some(track.clone());
 
-            // Trigger renegotiation — create a new offer and emit it
-            let offer = entry
-                .pc
-                .create_offer(None)
-                .await
-                .map_err(|e| format!("create_offer renegotiate {peer_id}: {e}"))?;
-            entry
-                .pc
-                .set_local_description(offer.clone())
-                .await
-                .map_err(|e| format!("set_local_desc renegotiate {peer_id}: {e}"))?;
-
-            let _ = app.emit(
-                "webrtc_offer",
-                OfferEvent {
-                    to: peer_id.clone(),
-                    sdp: offer.sdp,
-                },
-            );
+            // Trigger renegotiation — create a new offer and emit it.
+            // Skip if PC is not in Stable signaling state (avoids race with
+            // a concurrent renegotiation from the remote side).
+            if !self.try_renegotiate(&entry.pc, peer_id, app).await? {
+                log::warn!("[webrtc] add_audio: skipped renegotiation for {peer_id} — not stable");
+            }
         }
+
+        // Store track at manager level for late-joining peers
+        *self.local_audio_track.lock().await = Some(track.clone());
 
         Ok(track)
     }
 
     /// Remove audio tracks from all peers and trigger SDP renegotiation.
     pub async fn remove_audio_tracks_from_all(&self, app: &AppHandle) -> Result<(), String> {
+        // Clear manager-level track first
+        *self.local_audio_track.lock().await = None;
+
         let peers = self.peers.lock().await;
         for (peer_id, entry) in peers.iter() {
             // Clear the stored track
@@ -732,25 +873,70 @@ impl WebRTCManager {
                 }
             }
 
-            // Trigger renegotiation
-            let offer = entry
-                .pc
-                .create_offer(None)
-                .await
-                .map_err(|e| format!("create_offer renegotiate {peer_id}: {e}"))?;
-            entry
-                .pc
-                .set_local_description(offer.clone())
-                .await
-                .map_err(|e| format!("set_local_desc renegotiate {peer_id}: {e}"))?;
+            // Trigger renegotiation (skip if not in stable state)
+            if !self.try_renegotiate(&entry.pc, peer_id, app).await? {
+                log::warn!("[webrtc] remove_audio: skipped renegotiation for {peer_id} — not stable");
+            }
+        }
 
-            let _ = app.emit(
-                "webrtc_offer",
-                OfferEvent {
-                    to: peer_id.clone(),
-                    sdp: offer.sdp,
-                },
-            );
+        Ok(())
+    }
+
+    /// Ensure existing media tracks are added to a specific peer's connection.
+    /// Called when a new peer connects while the local user is already in a voice
+    /// channel or sharing their screen, so they receive the existing audio/video.
+    pub async fn ensure_tracks_for_peer(
+        &self,
+        peer_id: &str,
+        app: &AppHandle,
+        media_manager: &Arc<MediaManager>,
+    ) -> Result<(), String> {
+        // Use the manager-level local tracks (set by add_audio/video_track_to_all)
+        // rather than iterating other peers — the sender may be alone with no
+        // other peers to copy from.
+        let local_audio = self.local_audio_track.lock().await.clone();
+        let local_video = self.local_video_track.lock().await.clone();
+
+        let peers = self.peers.lock().await;
+        let entry = match peers.get(peer_id) {
+            Some(e) => e,
+            None => return Ok(()),
+        };
+
+        let mut needs_reneg = false;
+
+        // Add local audio track to the new peer if not already present
+        if let Some(track) = local_audio {
+            let this_audio = entry.audio_track.lock().await;
+            if this_audio.is_none() {
+                drop(this_audio);
+                let track_local: Arc<dyn TrackLocal + Send + Sync> = track.clone();
+                entry.pc.add_track(track_local).await
+                    .map_err(|e| format!("add_track audio to {peer_id}: {e}"))?;
+                *entry.audio_track.lock().await = Some(track);
+                needs_reneg = true;
+            }
+        }
+
+        // Add local video track to the new peer if not already present
+        if let Some(track) = local_video {
+            let this_video = entry.video_track.lock().await;
+            if this_video.is_none() {
+                drop(this_video);
+                let track_local: Arc<dyn TrackLocal + Send + Sync> = track.clone();
+                entry.pc.add_track(track_local).await
+                    .map_err(|e| format!("add_track video to {peer_id}: {e}"))?;
+                *entry.video_track.lock().await = Some(track);
+                needs_reneg = true;
+                // Force an IDR keyframe so the new peer can decode immediately
+                media_manager.request_keyframe();
+            }
+        }
+
+        if needs_reneg {
+            if !self.try_renegotiate(&entry.pc, peer_id, app).await? {
+                log::warn!("[webrtc] ensure_tracks: skipped renegotiation for {peer_id} — not stable");
+            }
         }
 
         Ok(())
@@ -768,7 +954,7 @@ impl WebRTCManager {
                 clock_rate: 90000,
                 ..Default::default()
             },
-            "hexfield-video".to_owned(),
+            format!("hexfield-video-{}", uuid::Uuid::new_v4()),
             "hexfield-screen".to_owned(),
         ));
 
@@ -783,32 +969,23 @@ impl WebRTCManager {
 
             *entry.video_track.lock().await = Some(track.clone());
 
-            // Trigger renegotiation
-            let offer = entry
-                .pc
-                .create_offer(None)
-                .await
-                .map_err(|e| format!("video renegotiate create_offer {peer_id}: {e}"))?;
-            entry
-                .pc
-                .set_local_description(offer.clone())
-                .await
-                .map_err(|e| format!("video renegotiate set_local {peer_id}: {e}"))?;
-
-            let _ = app.emit(
-                "webrtc_offer",
-                OfferEvent {
-                    to: peer_id.clone(),
-                    sdp: offer.sdp,
-                },
-            );
+            // Trigger renegotiation (skip if not in stable state)
+            if !self.try_renegotiate(&entry.pc, peer_id, app).await? {
+                log::warn!("[webrtc] add_video: skipped renegotiation for {peer_id} — not stable");
+            }
         }
+
+        // Store track at manager level for late-joining peers
+        *self.local_video_track.lock().await = Some(track.clone());
 
         Ok(track)
     }
 
     /// Remove video tracks from all peers and trigger SDP renegotiation.
     pub async fn remove_video_tracks_from_all(&self, app: &AppHandle) -> Result<(), String> {
+        // Clear manager-level track first
+        *self.local_video_track.lock().await = None;
+
         let peers = self.peers.lock().await;
         for (peer_id, entry) in peers.iter() {
             *entry.video_track.lock().await = None;
@@ -826,24 +1003,10 @@ impl WebRTCManager {
                 }
             }
 
-            let offer = entry
-                .pc
-                .create_offer(None)
-                .await
-                .map_err(|e| format!("video renegotiate after remove {peer_id}: {e}"))?;
-            entry
-                .pc
-                .set_local_description(offer.clone())
-                .await
-                .map_err(|e| format!("video set_local after remove {peer_id}: {e}"))?;
-
-            let _ = app.emit(
-                "webrtc_offer",
-                OfferEvent {
-                    to: peer_id.clone(),
-                    sdp: offer.sdp,
-                },
-            );
+            // Trigger renegotiation (skip if not in stable state)
+            if !self.try_renegotiate(&entry.pc, peer_id, app).await? {
+                log::warn!("[webrtc] remove_video: skipped renegotiation for {peer_id} — not stable");
+            }
         }
 
         Ok(())
