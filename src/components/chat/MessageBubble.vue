@@ -96,7 +96,10 @@
             <span class="edit-hint">Enter to save · Esc to cancel</span>
           </div>
         </template>
-        <MessageContent v-else :message="message" />
+        <template v-else>
+          <MessageContent :message="message" />
+          <span v-if="message.isEdited" class="edited-label">(edited)</span>
+        </template>
         <ReactionBar
           v-if="!isEditing && message.reactions.length > 0"
           :message-id="message.id"
