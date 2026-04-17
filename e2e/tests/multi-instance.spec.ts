@@ -146,6 +146,33 @@ async function ensureChannelSelected(page: Page, label: string): Promise<void> {
   }
 }
 
+/**
+ * Remove test-created channels (named e2e-*) from the active server
+ * so repeated runs start clean. Runs via page.evaluate on the Pinia store.
+ */
+async function cleanupTestChannels(page: Page, label: string): Promise<void> {
+  const removed = await page.evaluate(async () => {
+    const { useChannelsStore } = await import('./stores/channelsStore')
+    const { useServersStore } = await import('./stores/serversStore')
+    const channelsStore = useChannelsStore()
+    const serversStore = useServersStore()
+    const serverId = serversStore.activeServerId
+    if (!serverId) return 0
+    const channels = Object.values(channelsStore.channels)
+    let count = 0
+    for (const ch of channels) {
+      if ((ch as any).name?.startsWith('e2e-')) {
+        await channelsStore.deleteChannel((ch as any).id)
+        count++
+      }
+    }
+    return count
+  }).catch(() => 0)
+  if (removed > 0) {
+    console.log(`[setup] Cleaned up ${removed} test channel(s) on ${label}`)
+  }
+}
+
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
 let aliceBrowser: Browser
@@ -165,6 +192,10 @@ test.beforeAll(async () => {
   // Dismiss any leftover modals/context menus from previous runs
   await dismissOverlays(alicePage)
   await dismissOverlays(bobPage)
+
+  // Clean up leftover test channels from previous runs
+  await cleanupTestChannels(alicePage, 'alice')
+  await alicePage.waitForTimeout(1_000)
 })
 
 test.afterAll(async () => {
@@ -958,19 +989,6 @@ test('bob can add a second reaction and alice sees updated count', async () => {
 test('alice can create a new text channel', async () => {
   test.setTimeout(SYNC_MS)
 
-  // Check if the channel already exists from a previous test run
-  const existingChannel = alicePage.locator('.channel-name').filter({ hasText: 'e2e-test-channel' })
-  const alreadyExists = await existingChannel.first().isVisible().catch(() => false)
-  if (alreadyExists) {
-    console.log('[test] e2e-test-channel already exists — skipping creation')
-    // Verify Bob also sees it
-    const bobChannel = bobPage.locator('.channel-name').filter({ hasText: 'e2e-test-channel' })
-    await bobChannel.first().waitFor({ timeout: SYNC_MS }).catch(() => {
-      throw new Error('Channel "e2e-test-channel" exists on Alice but not Bob')
-    })
-    return
-  }
-
   // Click the "+" add channel button for text channels
   const addTextBtn = alicePage.locator('button.add-channel-btn[title="Add text channel"]')
   await addTextBtn.waitFor({ timeout: OP_MS })
@@ -1009,12 +1027,6 @@ test('alice can rename a channel', async () => {
     has: alicePage.locator('.channel-name', { hasText: 'e2e-test-channel' }),
   }).first()
 
-  const channelExists = await channelItem.isVisible({ timeout: 2_000 }).catch(() => false)
-  if (!channelExists) {
-    console.log('[test] e2e-test-channel not found — skipping rename test')
-    return
-  }
-
   await channelItem.click({ button: 'right' })
 
   // Click "Rename" in the context menu
@@ -1048,12 +1060,6 @@ test('alice can delete a channel', async () => {
   const channelItem = alicePage.locator('.channel-item').filter({
     has: alicePage.locator('.channel-name', { hasText: 'e2e-renamed' }),
   }).first()
-
-  const channelExists = await channelItem.isVisible({ timeout: 2_000 }).catch(() => false)
-  if (!channelExists) {
-    console.log('[test] e2e-renamed not found — skipping delete test')
-    return
-  }
 
   // Count channels before delete
   const aliceCountBefore = await alicePage.locator('.channel-item .channel-name').filter({ hasText: 'e2e-renamed' }).count()
