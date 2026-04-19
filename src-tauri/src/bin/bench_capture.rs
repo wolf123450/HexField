@@ -3,7 +3,9 @@
 //! Run (Windows only):
 //!   cd src-tauri && cargo run --bin bench_capture
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "windows")]
+use std::time::Instant;
 
 const FRAMES: usize = 100;
 
@@ -29,6 +31,7 @@ fn main() {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+#[cfg(target_os = "windows")]
 struct BenchResult {
     name: String,
     total: Duration,
@@ -37,6 +40,7 @@ struct BenchResult {
     bytes_per_frame: Option<usize>,
 }
 
+#[cfg(target_os = "windows")]
 impl BenchResult {
     fn print(&self) {
         println!("── {} ──", self.name);

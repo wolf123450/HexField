@@ -45,6 +45,7 @@ pub enum DownscaleMethod {
 }
 
 /// Parameters for starting a capture session.
+#[allow(dead_code)]
 pub struct CaptureConfig {
     pub source_id: String,
     pub video_track: Arc<TrackLocalStaticSample>,
