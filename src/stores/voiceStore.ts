@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import type { VoiceSession, Peer } from '@/types/core'
 import { audioService } from '@/services/audioService'
 import { webrtcService } from '@/services/webrtcService'
@@ -9,9 +10,26 @@ const MESH_PEER_LIMIT = 8
 
 export const useVoiceStore = defineStore('voice', () => {
   const session         = ref<VoiceSession | null>(null)
-  const localStream     = ref<MediaStream | null>(null)
-  const screenStream    = ref<MediaStream | null>(null)
-  const screenStreams    = ref<Record<string, MediaStream>>({}) // remote screen shares keyed by userId
+  const screenShareActive = ref<boolean>(false)
+  const screenFrameUrls   = ref<Record<string, string>>({}) // asset:// URLs per peer for screen frames
+  const screenDownscaleMethod = ref<'nearest' | 'bilinear' | 'bicubic' | 'lanczos3' | null>(null)
+  const screenShareStats = ref<{
+    label: string;
+    fps: number;
+    captureMs: number;
+    queueMs: number;
+    convertMs: number;
+    encodeMs: number;
+    writeMs: number;
+    previewMs: number;
+    resolution: string;
+    srcResolution: string;
+    bitrateKbps: number;
+    dropped: number;
+    method: string;
+  } | null>(null)
+  const showScreenOverlay = ref(false)
+  const streamQualityTier = ref<Record<string, 'low' | 'high'>>({})
   const isMuted         = ref<boolean>(false)
   const isDeafened      = ref<boolean>(false)
   const adminMuted      = ref<boolean>(false)
@@ -19,13 +37,15 @@ export const useVoiceStore = defineStore('voice', () => {
   const voiceViewActive = ref<boolean>(false) // false = minimised → show text channel
   const peers              = ref<Record<string, Peer>>({})
   const speakingPeers      = ref<Set<string>>(new Set())
+  const peerVolumes        = ref<Record<string, number>>({})
   // Tracks which voice channel each remote peer is currently in (even if we are not in the channel)
-  const peerVoiceChannels  = ref<Record<string, string>>({})
+  // Keyed by userId → { channelId, serverId } to prevent cross-server interference
+  const peerVoiceChannels  = ref<Record<string, { channelId: string; serverId: string }>>({})
 
   const peerCount     = computed(() => Object.keys(peers.value).length)
   const meshWarning   = computed(() => peerCount.value >= MESH_PEER_LIMIT)
   const hasScreenShares = computed(() =>
-    !!screenStream.value || Object.keys(screenStreams.value).length > 0
+    screenShareActive.value || Object.keys(screenFrameUrls.value).length > 0
   )
 
   // Wire audioService VAD callbacks once on store creation
@@ -44,31 +64,32 @@ export const useVoiceStore = defineStore('voice', () => {
 
     const { useSettingsStore } = await import('./settingsStore')
     const settingsStore = useSettingsStore()
-    const deviceId = settingsStore.settings.inputDeviceId
-    const ns       = settingsStore.settings.noiseSuppression
+    let deviceId: string | undefined = settingsStore.settings.inputDeviceId || undefined
 
-    const audioConstraints: MediaTrackConstraints = {
-      noiseSuppression:  ns,
-      echoCancellation:  ns,
-      autoGainControl:   ns,
+    // Validate saved input device still exists
+    if (deviceId) {
+      try {
+        const list = await invoke<{ inputs: { id: string }[] }>('media_enumerate_devices')
+        const found = list.inputs.some(d => d.id === deviceId)
+        if (!found) {
+          deviceId = undefined
+          settingsStore.updateSetting('inputDeviceId', '')
+          const { useNotificationStore } = await import('./notificationStore')
+          useNotificationStore().notify({
+            type:      'join_self',
+            titleText: 'Saved input device not found \u2014 using default',
+          }).catch(() => {})
+        }
+      } catch { /* enumerate failed — proceed with saved device */ }
     }
-    if (deviceId) audioConstraints.deviceId = { exact: deviceId }
 
-    const constraints: MediaStreamConstraints = { audio: audioConstraints, video: false }
-    const stream = await navigator.mediaDevices.getUserMedia(constraints)
+    // Start mic capture in Rust — audio flows entirely in Rust
+    // (cpal → Opus → WebRTC track). No MediaStream in JS.
+    await webrtcService.addAudioTrack(deviceId)
 
-    localStream.value = stream
     isMuted.value     = false
-    isDeafened.value  = false
-    adminMuted.value  = false
-    audioService.setLocalStream(stream)
-    audioService.setLocalMuted(false)
-    audioService.setDeafened(false)
-
-    // Add audio tracks to all existing WebRTC peer connections
-    for (const track of stream.getAudioTracks()) {
-      webrtcService.addAudioTrack(track, stream)
-    }
+    isDeafened.value   = false
+    adminMuted.value   = false
 
     voiceViewActive.value = true
     session.value = {
@@ -103,18 +124,12 @@ export const useVoiceStore = defineStore('voice', () => {
     const { useNetworkStore } = await import('./networkStore')
     useNetworkStore().broadcast({ type: 'voice_leave' })
 
-    webrtcService.removeAudioTracks()
-    webrtcService.removeScreenShareTrack()
+    await webrtcService.removeAudioTracks()
+    await webrtcService.removeScreenShareTrack()
 
-    localStream.value?.getTracks().forEach(t => t.stop())
-    screenStream.value?.getTracks().forEach(t => t.stop())
-    audioService.detachAll()
-    audioService.setLocalStream(null as unknown as MediaStream)
-
-    localStream.value     = null
-    screenStream.value    = null
-    screenStreams.value    = {}
-    voiceViewActive.value = false
+    screenShareActive.value  = false
+    screenFrameUrls.value    = {}
+    voiceViewActive.value    = false
     session.value         = null
     peers.value           = {}
     isMuted.value         = false
@@ -125,76 +140,99 @@ export const useVoiceStore = defineStore('voice', () => {
     // Don't wipe peerVoiceChannels on leave — peers may still be in voice
   }
 
-  // ── Mute / Deafen ─────────────────────────────────────────────────────────
-
-  function toggleMute(): void {
+  async function toggleMute(): Promise<void> {
     if (adminMuted.value) return  // Can't unmute while admin-muted
     isMuted.value = !isMuted.value
-    audioService.setLocalMuted(isMuted.value)
+    await invoke('media_set_muted', { muted: isMuted.value })
   }
 
   function setAdminMuted(muted: boolean): void {
     adminMuted.value = muted
     if (muted) {
       isMuted.value = true
-      audioService.setLocalMuted(true)
+      invoke('media_set_muted', { muted: true }).catch(() => {})
     }
   }
 
-  function toggleDeafen(): void {
+  async function toggleDeafen(): Promise<void> {
     isDeafened.value = !isDeafened.value
-    audioService.setDeafened(isDeafened.value)
+    await invoke('media_set_deafened', { deafened: isDeafened.value })
     if (isDeafened.value && !isMuted.value) {
       isMuted.value = true
-      audioService.setLocalMuted(true)
+      await invoke('media_set_muted', { muted: true })
     } else if (!isDeafened.value) {
       isMuted.value = false
-      audioService.setLocalMuted(false)
+      await invoke('media_set_muted', { muted: false })
     }
   }
 
-  function toggleLoopback(): void {
+  async function toggleLoopback(): Promise<void> {
     loopbackEnabled.value = !loopbackEnabled.value
-    audioService.setLoopback(loopbackEnabled.value)
+    await invoke('media_set_loopback', { enabled: loopbackEnabled.value })
   }
 
   // ── Screen share ──────────────────────────────────────────────────────────
 
+  const screenShareSupported = ref(false)
+
+  async function checkScreenShareSupport(): Promise<void> {
+    try {
+      screenShareSupported.value = await webrtcService.isScreenShareSupported()
+    } catch {
+      screenShareSupported.value = false
+    }
+  }
+
+  // Check on store init
+  checkScreenShareSupport()
+
+  // Listen for encoder stats
+  async function _listenStats() {
+    const { listen } = await import('@tauri-apps/api/event')
+    await listen<{
+      label: string; fps: number;
+      captureMs: number; queueMs: number; convertMs: number;
+      encodeMs: number; writeMs: number; previewMs: number;
+      resolution: string; srcResolution: string; bitrateKbps: number;
+      dropped: number; method: string;
+    }>('screen_share_stats', (event) => {
+      screenShareStats.value = event.payload
+    })
+  }
+  _listenStats().catch(() => {})
+
   async function startScreenShare(): Promise<void> {
-    let stream: MediaStream
+    const { useUIStore } = await import('./uiStore')
+    const uiStore = useUIStore()
+
+    // Open source picker and wait for user selection
+    const sourceId = await uiStore.openSourcePicker()
+    if (!sourceId) return // User cancelled
 
     const { useSettingsStore } = await import('./settingsStore')
     const settings = useSettingsStore().settings
 
-    // Build getDisplayMedia video constraints from user preferences
-    const qualityMap: Record<string, { width: number; height: number }> = {
-      '360p':  { width: 640,  height: 360  },
-      '720p':  { width: 1280, height: 720  },
-      '1080p': { width: 1920, height: 1080 },
-    }
-    const dim = qualityMap[settings.videoQuality]
-    const videoConstraints: MediaTrackConstraints = dim
-      ? { width: { ideal: dim.width }, height: { ideal: dim.height }, frameRate: { ideal: settings.videoFrameRate } }
-      : { frameRate: { ideal: settings.videoFrameRate } }
-
     const bitrateMap: Record<string, number | undefined> = {
-      'auto': undefined, '500kbps': 500, '1mbps': 1000, '2.5mbps': 2500, '5mbps': 5000,
+      'auto': undefined, '500kbps': 500, '1mbps': 1000, '2.5mbps': 2500, '5mbps': 5000, '10mbps': 10000,
     }
     const maxBitrateKbps = bitrateMap[settings.videoBitrate]
 
-    // getDisplayMedia() works on all platforms (Windows 10+, macOS 12.3+).
-    // The chromeMediaSourceId/Win32 custom-picker path was investigated and
-    // dropped — the system-native picker is adequate and Win32 enumeration
-    // (EnumWindows + PrintWindow + BitBlt) adds non-trivial complexity.
-    stream = await (navigator.mediaDevices as MediaDevices).getDisplayMedia({ video: videoConstraints, audio: false })
+    const useNewPipeline = settings.experimentalNewPipeline
+    const dualEncoding = settings.experimentalDualEncoding
+    const inlinePreview = settings.experimentalInlinePreview
+    const downscaleMethod = screenDownscaleMethod.value ?? settings.videoDownscaleMethod ?? 'bilinear'
 
-    screenStream.value = stream
-    const videoTrack = stream.getVideoTracks()[0]
-    if (videoTrack) {
-      webrtcService.addScreenShareTrack(videoTrack, maxBitrateKbps)
-      // Auto-stop when the user ends the share via browser UI
-      videoTrack.onended = () => stopScreenShare()
-    }
+    await webrtcService.addScreenShareTrack(
+      sourceId,
+      settings.videoFrameRate,
+      maxBitrateKbps,
+      useNewPipeline,
+      dualEncoding,
+      inlinePreview,
+      downscaleMethod,
+    )
+
+    screenShareActive.value = true
 
     const { useNetworkStore } = await import('./networkStore')
     useNetworkStore().broadcast({
@@ -203,15 +241,16 @@ export const useVoiceStore = defineStore('voice', () => {
     })
   }
 
-  function stopScreenShare(): void {
-    if (!screenStream.value) return
-    webrtcService.removeScreenShareTrack()
-    screenStream.value.getTracks().forEach(t => t.stop())
-    screenStream.value = null
+  async function stopScreenShare(): Promise<void> {
+    if (!screenShareActive.value) return
+    await webrtcService.removeScreenShareTrack()
+    screenShareActive.value = false
+    delete screenFrameUrls.value['self']
+    screenShareStats.value = null
+    screenDownscaleMethod.value = null
 
-    import('./networkStore').then(({ useNetworkStore }) => {
-      useNetworkStore().broadcast({ type: 'voice_screen_share_stop' })
-    })
+    const { useNetworkStore } = await import('./networkStore')
+    useNetworkStore().broadcast({ type: 'voice_screen_share_stop' })
   }
 
   // ── Peer management ───────────────────────────────────────────────────────
@@ -225,31 +264,54 @@ export const useVoiceStore = defineStore('voice', () => {
   }
 
   function updatePeer(userId: string, patch: Partial<Peer>): void {
+    if (!userId) return
     peers.value[userId] = { ...(peers.value[userId] ?? defaultPeer(userId)), ...patch }
   }
 
   function removePeer(userId: string): void {
     delete peers.value[userId]
-    delete screenStreams.value[userId]
+    delete screenFrameUrls.value[userId]
     const next = new Set(speakingPeers.value)
     next.delete(userId)
     speakingPeers.value = next
-    audioService.detachRemoteStream(userId)
   }
 
-  function setPeerVoiceChannel(userId: string, channelId: string): void {
-    peerVoiceChannels.value[userId] = channelId
+  function setPeerVoiceChannel(userId: string, channelId: string, serverId: string): void {
+    peerVoiceChannels.value[userId] = { channelId, serverId }
   }
 
   function clearPeerVoiceChannel(userId: string): void {
     delete peerVoiceChannels.value[userId]
   }
 
+  function getPeerVolume(userId: string): number {
+    return peerVolumes.value[userId] ?? 100
+  }
+
+  async function setPeerVolume(userId: string, volume: number): Promise<void> {
+    peerVolumes.value[userId] = volume
+    audioService.setPeerVolume(userId, volume / 100)
+  }
+
+  async function requestQuality(sharerUserId: string, tier: 'low' | 'high') {
+    streamQualityTier.value[sharerUserId] = tier
+    const { useNetworkStore } = await import('./networkStore')
+    const networkStore = useNetworkStore()
+    networkStore.sendToPeer(sharerUserId, {
+      type: 'quality_request',
+      tier,
+    })
+  }
+
   return {
     session,
-    localStream,
-    screenStream,
-    screenStreams,
+    screenShareActive,
+    screenShareSupported,
+    screenFrameUrls,
+    screenDownscaleMethod,
+    screenShareStats,
+    showScreenOverlay,
+    streamQualityTier,
     isMuted,
     isDeafened,
     adminMuted,
@@ -258,6 +320,7 @@ export const useVoiceStore = defineStore('voice', () => {
     peers,
     speakingPeers,
     peerVoiceChannels,
+    peerVolumes,
     peerCount,
     meshWarning,
     hasScreenShares,
@@ -274,6 +337,9 @@ export const useVoiceStore = defineStore('voice', () => {
     setPeerSpeaking,
     updatePeer,
     removePeer,
+    getPeerVolume,
+    setPeerVolume,
+    requestQuality,
   }
 })
 

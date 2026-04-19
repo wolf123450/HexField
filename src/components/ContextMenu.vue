@@ -22,7 +22,10 @@
           role="menuitem"
           @click="run(item)"
         >
-          <span class="item-label">{{ item.label }}</span>
+          <span class="item-label-group">
+            <span v-if="item.iconSvg" class="item-icon" v-html="item.iconSvg"></span>
+            <span class="item-label">{{ item.label }}</span>
+          </span>
           <span v-if="item.shortcut" class="item-shortcut">{{ item.shortcut }}</span>
         </button>
       </template>
@@ -118,5 +121,7 @@ onBeforeUnmount(() => {
 .context-menu-item--danger { color: var(--error-color); }
 .context-menu-item--danger:hover { background: var(--error-color); color: #fff; }
 .item-shortcut { font-size: 11px; opacity: 0.6; flex-shrink: 0; }
+.item-label-group { display: flex; align-items: center; gap: 8px; }
+.item-icon { display: flex; align-items: center; flex-shrink: 0; line-height: 0; }
 .context-menu-sep { margin: 4px 0; border: none; border-top: 1px solid var(--border-color); }
 </style>

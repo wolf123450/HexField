@@ -264,7 +264,7 @@ export const useMessagesStore = defineStore('messages', () => {
 
   // ── Receive (encrypted from network) ──────────────────────────────────────
 
-  async function receiveEncryptedMessage(rawMsg: unknown) {
+  async function receiveEncryptedMessage(rawMsg: unknown, _retryCount = 0) {
     const wire = rawMsg as ChatWireMessage
     if (!wire.envelopes || !Array.isArray(wire.envelopes)) return
 
@@ -275,20 +275,36 @@ export const useMessagesStore = defineStore('messages', () => {
     const envelope = wire.envelopes.find(e => e.recipientId === myUserId)
     if (!envelope) return
 
-    // Look up sender's public keys
+    // Look up sender's public keys (identity keys from member record,
+    // falling back to device keys if member record not yet populated)
     const { useServersStore } = await import('./serversStore')
     const serversStore = useServersStore()
     const member = serversStore.members[wire.serverId]?.[wire.authorId]
-    if (!member?.publicDHKey || !member?.publicSignKey) {
-      // Keys arrive via member_announce which has async DB writes; retry once
-      // after a short delay so the race doesn't silently lose the message.
-      console.warn('[messages] unknown sender keys for', wire.authorId, '— will retry')
-      setTimeout(() => receiveEncryptedMessage(rawMsg), 2000)
+    let senderDHKey   = member?.publicDHKey
+    let senderSignKey = member?.publicSignKey
+    if (!senderDHKey || !senderSignKey) {
+      // Device keys may have arrived via device_attest before sync delivers
+      // member_join with identity keys — try those as a fallback.
+      const { useDevicesStore } = await import('./devicesStore')
+      const devices = useDevicesStore().getActiveDevices(wire.authorId)
+      if (devices.length > 0) {
+        senderDHKey   = devices[0].publicDHKey
+        senderSignKey = devices[0].publicSignKey
+      }
+    }
+    if (!senderDHKey || !senderSignKey) {
+      // Keys not yet available from any source — retry with backoff (max 5 attempts).
+      if (_retryCount < 5) {
+        console.warn('[messages] unknown sender keys for', wire.authorId, `— retry ${_retryCount + 1}/5`)
+        setTimeout(() => receiveEncryptedMessage(rawMsg, _retryCount + 1), 2000)
+      } else {
+        console.warn('[messages] giving up on message from', wire.authorId, '— sender keys never arrived')
+      }
       return
     }
 
     // Decrypt + verify signature
-    const plaintext = cryptoService.decryptMessage(envelope, member.publicDHKey, member.publicSignKey)
+    const plaintext = cryptoService.decryptMessage(envelope, senderDHKey, senderSignKey)
     if (plaintext === null) {
       console.warn('[messages] decryption/verification failed for message', wire.messageId)
       return

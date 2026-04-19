@@ -4,6 +4,7 @@ version = "0.2.5"
 description = "HexField — privacy-first P2P chat"
 authors = []
 edition = "2021"
+default-run = "hexfield"
 
 [lib]
 name = "hexfield_lib"
@@ -11,6 +12,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 e2e-testing = ["tauri-plugin-playwright"]
+
+[[bench]]
+name = "pipeline_bench"
+harness = false
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -59,8 +64,34 @@ mdns-sd            = "0.19.0"
 # UPnP IGD + NAT-PMP port forwarding
 igd-next           = { version = "0.17", features = ["aio_tokio"] }
 
+# Audio capture & playback (mic/speaker access)
+cpal               = "0.17"
+
+# Opus audio codec (encode mic → WebRTC, decode WebRTC → speaker)
+opus               = "0.3"
+
+# Byte buffer ergonomics (already a transitive dep of webrtc, but pin explicitly)
+bytes              = "1"
+
+
+
+# H.264 video codec — encode captured frames, decode received frames
+# Compiles OpenH264 from bundled source (no system deps).
+openh264           = "0.9"
+
+# Lock-free bounded channels for encoder thread pipeline
+crossbeam-channel  = "0.5"
+
+# Data-parallelism (used in BGRA→YUV downscale for screen share)
+rayon              = "1.10"
+
+# Image encoding/decoding (JPEG for frame delivery to frontend via asset://)
+image              = "0.25"
+
 # WebRTC (Rust-native data channels; replaces browser RTCPeerConnection on Linux)
 webrtc             = "0.17.1"
+# RTP H.264 depacketizer (transitive dep of webrtc, pinned for direct import)
+rtp                = "0.17.1"
 
 # Both `webrtc`/`dtls` and `reqwest`/`hyper-rustls` pull in rustls with different
 # crypto provider features (ring vs aws-lc-rs), making auto-selection panic.
@@ -73,6 +104,7 @@ keyring            = "3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows            = { version = "0.62.2", features = ["Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Registry"] }
+windows-capture    = "2.0.0"
 
 # tauri-pilot: AI-agent / developer testing CLI (Linux + debug builds only).
 # Not available on Windows/macOS (uses Unix sockets; cross-platform support planned upstream).
@@ -81,3 +113,20 @@ tauri-plugin-pilot = { git = "https://github.com/mpiton/tauri-pilot" }
 
 [dev-dependencies]
 tempfile = "3"
+
+# Dev profile: use opt-level 1 globally to keep pixel-loop performance
+# (4K frame swap: ~1.9s at opt-0 → ~20ms at opt-1) while avoiding
+# LLVM anonymous-symbol mismatches between hexfield and serde_core
+# that cause LNK2019 errors with per-package opt-level on MSVC.
+[profile.dev]
+opt-level = 1
+
+# Pixel-processing deps benefit from full optimization (level 2).
+[profile.dev.package.openh264]
+opt-level = 2
+
+[profile.dev.package.openh264-sys2]
+opt-level = 2
+
+[profile.dev.package.image]
+opt-level = 2

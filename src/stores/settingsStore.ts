@@ -59,8 +59,9 @@ export interface UserSettings {
   customTURNServers: RTCIceServer[];
   // Video quality (screen share)
   videoQuality: 'auto' | '360p' | '720p' | '1080p';
-  videoBitrate: 'auto' | '500kbps' | '1mbps' | '2.5mbps' | '5mbps';
-  videoFrameRate: 10 | 15 | 30;
+  videoBitrate: 'auto' | '500kbps' | '1mbps' | '2.5mbps' | '5mbps' | '10mbps';
+  videoFrameRate: 10 | 15 | 30 | 60;
+  videoDownscaleMethod: 'nearest' | 'bilinear' | 'bicubic' | 'lanczos3';
   // Network
   rendezvousServerUrl: string;
   userDiscoverability: 'public' | 'private';
@@ -72,6 +73,10 @@ export interface UserSettings {
   keywordFilters:           KeywordFilter[];
   // Per-event custom sound overrides (data: URLs)
   customSounds:             Partial<Record<SoundEvent, string>>;
+  // Experimental
+  experimentalNewPipeline: boolean;
+  experimentalDualEncoding: boolean;
+  experimentalInlinePreview: boolean;
   // Developer
   logLevel:                 LogLevel;
 }
@@ -109,7 +114,8 @@ const defaultSettings: UserSettings = {
   // Video quality (screen share)
   videoQuality: 'auto',
   videoBitrate: 'auto',
-  videoFrameRate: 30,
+  videoFrameRate: 60,
+  videoDownscaleMethod: 'bilinear',
   // Network
   rendezvousServerUrl: '',
   userDiscoverability: 'public',
@@ -119,6 +125,10 @@ const defaultSettings: UserSettings = {
   channelNotificationPrefs: {},
   keywordFilters:           [],
   customSounds:             {},
+  // Experimental
+  experimentalNewPipeline: true,
+  experimentalDualEncoding: false,
+  experimentalInlinePreview: true,
   logLevel:                 'info',
 };
 

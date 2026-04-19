@@ -180,6 +180,10 @@ export const useNetworkStore = defineStore('network', () => {
         // in the right order (SCTP preserves send order).
         gossipOwnDevice(userId).catch(e => logger.warn('network', 'gossipOwnDevice error:', e))
         gossipOwnPresence(userId).catch(e => logger.warn('network', 'gossipOwnPresence error:', e))
+        gossipOwnVoiceState(userId).catch(e => logger.warn('network', 'gossipOwnVoiceState error:', e))
+        gossipOwnProfile(userId).catch(e => logger.warn('network', 'gossipOwnProfile error:', e))
+        // If we're in a voice channel, ensure our audio/video tracks reach the new peer
+        ensureTracksForPeer(userId).catch(e => logger.warn('network', 'ensureTracksForPeer error:', e))
         // Record heartbeat baseline so the watchdog doesn't immediately time this peer out.
         lastHeartbeatFrom.set(userId, Date.now())
         // Start history reconciliation with newly connected peer
@@ -206,7 +210,6 @@ export const useNetworkStore = defineStore('network', () => {
         // Clean up voice state if the peer disconnects
         handleVoicePeerDisconnect(userId)
       },
-      handleRemoteTrack,
     )
 
     // Listen for mDNS-discovered peers (auto-connect on same LAN).
@@ -221,6 +224,66 @@ export const useNetworkStore = defineStore('network', () => {
     // Relay Rust-native WebRTC signaling events out through the signaling transport.
     // NOTE: 'from' must be included so remote peers know who sent the signal;
     // the old browser-RTCPeerConnection implementation always set this explicitly.
+
+    // Listen for incoming media tracks from Rust WebRTC on_track callback
+    listen<{ userId: string; kind: string; trackId: string; streamId: string }>(
+      'webrtc_track',
+      async ({ payload }) => {
+        if (payload.kind === 'audio') {
+          // Only update voice UI if this peer is in the same voice channel
+          const { useVoiceStore } = await import('./voiceStore')
+          const voiceStore = useVoiceStore()
+          const peerChannel = voiceStore.peerVoiceChannels[payload.userId]
+          if (
+            voiceStore.session &&
+            peerChannel &&
+            peerChannel.channelId === voiceStore.session.channelId &&
+            peerChannel.serverId === voiceStore.session.serverId
+          ) {
+            voiceStore.updatePeer(payload.userId, { audioEnabled: true })
+          }
+        }
+        // Video tracks are decoded in Rust — frames arrive via media_video_frame event
+      },
+    ).catch(e => logger.warn('network', 'webrtc_track listen failed:', e))
+
+    // Incoming decoded video frames from Rust screen share pipeline
+    // Rust emits either { path } (disk-based preview) or { dataUrl } (inline preview)
+    listen<{ userId: string; frameNumber: number; path?: string; dataUrl?: string }>(
+      'media_video_frame',
+      async ({ payload }) => {
+        const { useVoiceStore } = await import('./voiceStore')
+        const voiceStore = useVoiceStore()
+        let url: string
+        if (payload.dataUrl) {
+          url = payload.dataUrl
+        } else if (payload.path) {
+          const { convertFileSrc } = await import('@tauri-apps/api/core')
+          url = convertFileSrc(payload.path) + `?v=${payload.frameNumber}`
+        } else {
+          return // neither path nor dataUrl — skip
+        }
+        voiceStore.screenFrameUrls[payload.userId] = url
+        // Don't create a peer entry for the local user's own preview
+        if (payload.userId !== 'self') {
+          voiceStore.updatePeer(payload.userId, { screenSharing: true })
+        }
+      },
+    ).catch(e => logger.warn('network', 'media_video_frame listen failed:', e))
+
+    listen<{ userId: string }>(
+      'media_screen_share_stopped',
+      async ({ payload }) => {
+        const { useVoiceStore } = await import('./voiceStore')
+        const voiceStore = useVoiceStore()
+        delete voiceStore.screenFrameUrls[payload.userId]
+        // Don't update peer entry for the local user's own preview
+        if (payload.userId !== 'self') {
+          voiceStore.updatePeer(payload.userId, { screenSharing: false })
+        }
+      },
+    ).catch(e => logger.warn('network', 'media_screen_share_stopped listen failed:', e))
+
     listen<{ to: string; sdp: string }>('webrtc_offer', ({ payload }) => {
       sendSignal({ type: 'signal_offer', to: payload.to, from: localUserId, sdp: payload.sdp })
         .catch(e => logger.warn('webrtc', 'relay webrtc_offer error:', e))
@@ -570,6 +633,11 @@ export const useNetworkStore = defineStore('network', () => {
           logger.warn('network', 'server_avatar_update error:', e)
         )
         break
+      case 'voice_state':
+        handleVoiceState(userId, msg).catch(e =>
+          logger.warn('network', 'voice_state error:', e)
+        )
+        break
       case 'voice_join':
         if (!isValidVoiceJoin(msg)) { logger.warn('network', 'invalid voice_join from', userId); return }
         handleVoiceJoin(userId, msg)
@@ -582,6 +650,9 @@ export const useNetworkStore = defineStore('network', () => {
         break
       case 'voice_screen_share_stop':
         handleVoiceScreenShareStop(userId)
+        break
+      case 'quality_request':
+        handleQualityRequest(userId, msg)
         break
       case 'sync_neg_init':
       case 'sync_neg_reply':
@@ -649,6 +720,14 @@ export const useNetworkStore = defineStore('network', () => {
       verified:   true,
     }
     await messagesStore.applyMutation(mutation)
+
+    // Channel-level mutations: hydrate in-memory channel list
+    if (['channel_create', 'channel_update', 'channel_delete', 'channel_acl_update'].includes(mutation.type)) {
+      const { useChannelsStore } = await import('./channelsStore')
+      const channelsStore = useChannelsStore()
+      await channelsStore.applyChannelMutation(mutation)
+    }
+
     // Server-level mutations also update in-memory server/member state
     if (['server_update', 'role_assign', 'role_revoke',
          'member_kick', 'member_ban', 'member_unban',
@@ -691,7 +770,7 @@ export const useNetworkStore = defineStore('network', () => {
         }
       } else {
         // Someone else was kicked — remove them from voice peer state
-        if (voiceStore.peerVoiceChannels[mutation.targetId] === channelId) {
+        if (voiceStore.peerVoiceChannels[mutation.targetId]?.channelId === channelId) {
           voiceStore.removePeer(mutation.targetId)
           voiceStore.clearPeerVoiceChannel(mutation.targetId)
         }
@@ -853,6 +932,10 @@ export const useNetworkStore = defineStore('network', () => {
         revoked:       false,
         createdAt:     new Date().toISOString(),
       },
+      // Include identity keys so the peer can populate member records
+      // for message decryption before sync delivers member_join mutations.
+      identitySignKey: identityStore.publicSignKey,
+      identityDHKey:   identityStore.publicDHKey,
     })
   }
 
@@ -970,6 +1053,43 @@ export const useNetworkStore = defineStore('network', () => {
         ? `${ownPublicAddr.value.ip}:3479`
         : undefined,
     })
+  }
+
+  /** Send own profile to a single newly connected peer. */
+  async function gossipOwnProfile(peerId: string) {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
+    webrtcService.sendToPeer(peerId, {
+      type:    'profile_update',
+      payload: {
+        displayName: identityStore.displayName,
+        avatarHash:  identityStore.avatarHash,
+        bio:         identityStore.bio,
+        bannerColor: identityStore.bannerColor,
+        bannerHash:  identityStore.bannerHash,
+      },
+    })
+  }
+
+  /** Send own voice state to a single newly connected peer. */
+  async function gossipOwnVoiceState(peerId: string) {
+    const { useVoiceStore } = await import('./voiceStore')
+    const voiceStore = useVoiceStore()
+    if (!voiceStore.session) return
+    webrtcService.sendToPeer(peerId, {
+      type:      'voice_state',
+      channelId: voiceStore.session.channelId,
+      serverId:  voiceStore.session.serverId,
+      screenSharing: voiceStore.screenShareActive,
+    })
+  }
+
+  /** Ensure our existing audio/video tracks are added to a newly connected peer. */
+  async function ensureTracksForPeer(peerId: string) {
+    const { useVoiceStore } = await import('./voiceStore')
+    const voiceStore = useVoiceStore()
+    if (!voiceStore.session) return
+    await invoke('webrtc_ensure_tracks', { peerId })
   }
 
   async function handleServerAvatarUpdate(msg: Record<string, unknown>) {
@@ -1095,23 +1215,39 @@ export const useNetworkStore = defineStore('network', () => {
     if (!device) return
     const { useDevicesStore } = await import('./devicesStore')
     await useDevicesStore().receiveAttestedDevice(device)
+
+    // Propagate identity keys to server member records so
+    // receiveEncryptedMessage can decrypt before sync delivers member_join.
+    const identitySignKey = msg.identitySignKey as string | undefined
+    const identityDHKey   = msg.identityDHKey   as string | undefined
+    if (identitySignKey && identityDHKey && device.userId) {
+      const { useServersStore } = await import('./serversStore')
+      const serversStore = useServersStore()
+      for (const sid of serversStore.joinedServerIds) {
+        const member = serversStore.members[sid]?.[device.userId]
+        if (member && (!member.publicSignKey || !member.publicDHKey)) {
+          member.publicSignKey = identitySignKey
+          member.publicDHKey   = identityDHKey
+        }
+      }
+    }
   }
 
-  async function handleRemoteTrack(userId: string, stream: MediaStream, track: MediaStreamTrack) {
+  /** Handle voice_state gossip received on peer connect (one-shot state sync). */
+  async function handleVoiceState(userId: string, msg: Record<string, unknown>) {
+    const channelId = msg.channelId as string | undefined
+    const serverId  = msg.serverId  as string | undefined
+    if (!channelId || !serverId) return
     const { useVoiceStore } = await import('./voiceStore')
     const voiceStore = useVoiceStore()
-    if (!voiceStore.session) return
-    if (track.kind === 'audio') {
-      const { audioService } = await import('@/services/audioService')
-      audioService.attachRemoteStream(userId, stream)
-      voiceStore.updatePeer(userId, { audioEnabled: true })
-    } else if (track.kind === 'video') {
-      voiceStore.screenStreams[userId] = stream
-      voiceStore.updatePeer(userId, { screenSharing: true })
-      track.onended = () => {
-        delete voiceStore.screenStreams[userId]
-        voiceStore.updatePeer(userId, { screenSharing: false })
-      }
+    // Track where this peer is in voice (sidebar display)
+    voiceStore.setPeerVoiceChannel(userId, channelId, serverId)
+    // If we're in the same channel, add them as a live peer
+    if (voiceStore.session?.channelId === channelId) {
+      voiceStore.updatePeer(userId, {
+        audioEnabled: true,
+        screenSharing: msg.screenSharing === true,
+      })
     }
   }
 
@@ -1119,9 +1255,10 @@ export const useNetworkStore = defineStore('network', () => {
     const { useVoiceStore }   = await import('./voiceStore')
     const voiceStore = useVoiceStore()
     const channelId  = msg.channelId as string | undefined
-    if (!channelId) return
+    const serverId   = msg.serverId  as string | undefined
+    if (!channelId || !serverId) return
     // Always track where this peer is in voice (so sidebar shows it even for non-participants)
-    voiceStore.setPeerVoiceChannel(userId, channelId)
+    voiceStore.setPeerVoiceChannel(userId, channelId, serverId)
     // Notify: someone joined a voice channel (only if we are in the same channel)
     if (voiceStore.session?.channelId === channelId) {
       const serverId = voiceStore.session?.serverId
@@ -1139,7 +1276,7 @@ export const useNetworkStore = defineStore('network', () => {
       voiceStore.updatePeer(userId, { audioEnabled: true })
       // Reply only if this is an initial announce (not a reply), to avoid a ping-pong loop.
       if (!msg.isReply) {
-        sendToPeer(userId, { type: 'voice_join', channelId, isReply: true })
+        sendToPeer(userId, { type: 'voice_join', channelId, serverId: voiceStore.session?.serverId, isReply: true })
       }
     }
   }
@@ -1172,12 +1309,26 @@ export const useNetworkStore = defineStore('network', () => {
 
   async function handleVoiceScreenShareStop(userId: string) {
     const { useVoiceStore } = await import('./voiceStore')
-    useVoiceStore().updatePeer(userId, { screenSharing: false })
+    const voiceStore = useVoiceStore()
+    delete voiceStore.screenFrameUrls[userId]
+    voiceStore.updatePeer(userId, { screenSharing: false })
+  }
+
+  async function handleQualityRequest(userId: string, msg: Record<string, unknown>) {
+    const tier = typeof msg.tier === 'string' ? msg.tier : 'low'
+    try {
+      await invoke('webrtc_set_peer_quality', { peerId: userId, tier })
+      logger.debug('network', `switched quality for peer ${userId} to ${tier}`)
+    } catch (e) {
+      logger.warn('network', 'quality switch failed:', e)
+    }
   }
 
   async function handleVoicePeerDisconnect(userId: string) {
     const { useVoiceStore } = await import('./voiceStore')
-    useVoiceStore().removePeer(userId)
+    const voiceStore = useVoiceStore()
+    voiceStore.removePeer(userId)
+    voiceStore.clearPeerVoiceChannel(userId)
   }
 
   function handleTypingStopEvent(userId: string) {
@@ -1405,6 +1556,9 @@ export const useNetworkStore = defineStore('network', () => {
     _pendingServerJoin = null
   }
 
+  /** Guard: peers currently in the middle of a connectToPeer() call. */
+  const _connectingPeers = new Set<string>()
+
   /** Auto-connect when mDNS discovers a peer on the same network. */
   async function handleLanPeerDiscovered(
     userId: string,
@@ -1413,6 +1567,7 @@ export const useNetworkStore = defineStore('network', () => {
     localUserId: string,
   ) {
     if (connectedPeers.value.includes(userId)) return
+    if (_connectingPeers.has(userId)) return
     logger.info('network', 'mDNS peer discovered:', userId, `${addr}:${port}`)
 
     try {
@@ -1420,7 +1575,12 @@ export const useNetworkStore = defineStore('network', () => {
       // Perfect negotiation: lower userId is "impolite" and initiates.
       // Higher userId is "polite" and waits for an offer.
       if (localUserId < userId) {
-        await connectToPeer(userId)
+        _connectingPeers.add(userId)
+        try {
+          await connectToPeer(userId)
+        } finally {
+          _connectingPeers.delete(userId)
+        }
       }
     } catch (e) {
       logger.warn('network', 'LAN auto-connect failed:', e)

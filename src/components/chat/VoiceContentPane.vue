@@ -37,7 +37,7 @@
       <div class="video-grid" :class="`grid-${activeTiles.length}`">
         <!-- Self avatar tile (voice-only, not sharing screen, video-only mode is off) -->
         <div
-          v-if="!voiceStore.screenStream && !hiddenStreams.has('self') && !hideNonVideo"
+          v-if="!voiceStore.screenShareActive && !hiddenStreams.has('self') && !hideNonVideo"
           class="video-tile avatar-tile"
           :class="{ speaking: voiceStore.speakingPeers.has('self') }"
         >
@@ -48,62 +48,79 @@
           </div>
         </div>
 
-        <!-- Own screen share -->
+        <!-- Own screen share (live preview from local capture pipeline) -->
         <div
-          v-if="voiceStore.screenStream && !hiddenStreams.has('local')"
+          v-if="voiceStore.screenShareActive && !hiddenStreams.has('local')"
           class="video-tile"
           :class="{ focused: focusedId === 'local' }"
           @click="toggleFocus('local')"
         >
-          <video
-            :srcObject="voiceStore.screenStream"
-            autoplay
-            muted
-            playsinline
+          <img
+            v-if="voiceStore.screenFrameUrls['self']"
+            :src="voiceStore.screenFrameUrls['self']"
+            alt="Your screen share"
             class="video-el"
-            :class="{ mirror: flippedTiles.has('local') }"
           />
+          <div v-else class="screen-placeholder">
+            <AppIcon :path="mdiMonitorShare" :size="48" />
+            <span>Starting screen share&hellip;</span>
+          </div>
           <div class="tile-overlay">
             <span class="tile-label">
               <AppIcon :path="mdiMonitorShare" :size="12" />
               You (sharing)
             </span>
-            <button class="tile-flip-btn" :class="{ active: flippedTiles.has('local') }" title="Mirror" @click.stop="toggleFlip('local')">
-              <AppIcon :path="mdiMirrorVariant" :size="14" />
-            </button>
             <button class="tile-hide-btn" title="Hide" @click.stop="hiddenStreams.add('local')">
               <AppIcon :path="mdiEyeOff" :size="14" />
             </button>
+            <button
+              class="tile-stats-btn"
+              :title="voiceStore.showScreenOverlay ? 'Hide stats' : 'Show stats'"
+              @click.stop="voiceStore.showScreenOverlay = !voiceStore.showScreenOverlay"
+            >
+              <AppIcon :path="mdiChartLine" :size="14" />
+            </button>
+          </div>
+          <!-- Performance overlay -->
+          <div v-if="voiceStore.showScreenOverlay && voiceStore.screenShareStats" class="perf-overlay">
+            <div class="perf-line">{{ voiceStore.screenShareStats.fps }} fps &middot; {{ voiceStore.screenShareStats.bitrateKbps }} kbps</div>
+            <div class="perf-line">{{ voiceStore.screenShareStats.srcResolution }} → {{ voiceStore.screenShareStats.resolution }}</div>
+            <div class="perf-line">capture: {{ voiceStore.screenShareStats.captureMs }}ms</div>
+            <div v-if="voiceStore.screenShareStats.queueMs" class="perf-line">queue: {{ voiceStore.screenShareStats.queueMs }}ms</div>
+            <div class="perf-line">convert: {{ voiceStore.screenShareStats.convertMs }}ms</div>
+            <div class="perf-line">encode: {{ voiceStore.screenShareStats.encodeMs }}ms</div>
+            <div class="perf-line">write: {{ voiceStore.screenShareStats.writeMs }}ms</div>
+            <div v-if="voiceStore.screenShareStats.previewMs" class="perf-line">preview: {{ voiceStore.screenShareStats.previewMs }}ms</div>
+            <div class="perf-line">{{ voiceStore.screenShareStats.method }}</div>
           </div>
         </div>
 
-        <!-- Remote screen shares -->
+        <!-- Remote screen shares (rendered via asset:// frame URLs) -->
         <div
-          v-for="[userId] in remoteShares"
+          v-for="[userId, frameUrl] in remoteShares"
           :key="userId"
           class="video-tile"
           :class="{ focused: focusedId === userId }"
           @click="toggleFocus(userId)"
         >
-          <video
-            :ref="el => bindVideo(el as HTMLVideoElement | null, userId)"
-            autoplay
-            playsinline
+          <img
+            :src="frameUrl"
+            :alt="'Screen share from ' + peerName(userId)"
             class="video-el"
-            :class="{ mirror: flippedTiles.has(userId) }"
           />
           <div class="tile-overlay">
             <span class="tile-label">
               <AppIcon :path="mdiMonitorShare" :size="12" />
               {{ peerName(userId) }}
             </span>
-            <button class="tile-flip-btn" :class="{ active: flippedTiles.has(userId) }" title="Mirror" @click.stop="toggleFlip(userId)">
-              <AppIcon :path="mdiMirrorVariant" :size="14" />
-            </button>
             <button class="tile-hide-btn" title="Hide" @click.stop="hiddenStreams.add(userId)">
               <AppIcon :path="mdiEyeOff" :size="14" />
             </button>
           </div>
+          <QualitySelector
+            :current-tier="voiceStore.streamQualityTier[userId] ?? 'low'"
+            @quality-change="(tier: 'low' | 'high') => voiceStore.requestQuality(userId, tier)"
+          />
         </div>
 
         <!-- Non-video remote peers (shown unless hideNonVideo) -->
@@ -113,11 +130,24 @@
             :key="peer.userId"
             class="video-tile avatar-tile"
             :class="{ speaking: voiceStore.speakingPeers.has(peer.userId) }"
+            @mouseenter="hoveredPeer = peer.userId"
+            @mouseleave="hoveredPeer = null"
           >
             <div class="av-ring" />
             <AvatarImage :hash="serversStore.members[serverId]?.[peer.userId]?.avatarHash ?? null" :name="peerName(peer.userId)" :size="64" class="av-avatar" />
             <div class="tile-overlay">
               <span class="tile-label">{{ peerName(peer.userId) }}</span>
+            </div>
+            <div v-if="hoveredPeer === peer.userId" class="volume-control">
+              <input
+                type="range"
+                class="volume-slider"
+                min="0"
+                max="200"
+                :value="voiceStore.getPeerVolume(peer.userId)"
+                @input="voiceStore.setPeerVolume(peer.userId, Number(($event.target as HTMLInputElement).value))"
+              />
+              <span class="volume-label">{{ voiceStore.getPeerVolume(peer.userId) }}%</span>
             </div>
           </div>
         </template>
@@ -145,7 +175,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, reactive, watchEffect } from 'vue'
+import { computed, ref, reactive } from 'vue'
 import {
   mdiVolumeHigh,
   mdiMonitorShare,
@@ -153,7 +183,7 @@ import {
   mdiEyeOff,
   mdiMessageText,
   mdiChevronDown,
-  mdiMirrorVariant,
+  mdiChartLine,
 } from '@mdi/js'
 import { useVoiceStore }    from '@/stores/voiceStore'
 import { useChannelsStore } from '@/stores/channelsStore'
@@ -161,6 +191,8 @@ import { useServersStore }  from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
 import MessageHistory from '@/components/chat/MessageHistory.vue'
 import MessageInput   from '@/components/chat/MessageInput.vue'
+
+import QualitySelector from './QualitySelector.vue'
 
 const voiceStore    = useVoiceStore()
 const channelsStore = useChannelsStore()
@@ -170,8 +202,8 @@ const identityStore = useIdentityStore()
 const chatOpen     = ref(false)
 const hideNonVideo = ref(false)
 const focusedId    = ref<string | null>(null)
+const hoveredPeer  = ref<string | null>(null)
 const hiddenStreams = reactive(new Set<string>())
-const flippedTiles = reactive(new Set<string>())
 
 const channelId = computed(() => voiceStore.session?.channelId ?? null)
 const serverId  = computed(() => voiceStore.session?.serverId  ?? '')
@@ -183,21 +215,21 @@ const channelName = computed(() => {
   return channelsStore.channels[sid]?.find(c => c.id === cid)?.name ?? ''
 })
 
-// Remote shares visible (not hidden)
-const remoteShares = computed<[string, MediaStream][]>(() =>
-  Object.entries(voiceStore.screenStreams).filter(([userId]) => !hiddenStreams.has(userId))
+// Remote shares visible (not hidden) — uses frame URLs from Rust decode pipeline
+const remoteShares = computed<[string, string][]>(() =>
+  Object.entries(voiceStore.screenFrameUrls).filter(([userId]) => userId !== 'self' && !hiddenStreams.has(userId))
 )
 
 // Non-video remote peers (in session, no screen share)
 const nonVideoPeers = computed(() =>
-  Object.values(voiceStore.peers).filter(p => !voiceStore.screenStreams[p.userId])
+  Object.values(voiceStore.peers).filter(p => !voiceStore.screenFrameUrls[p.userId])
 )
 
 // Total active tiles (for grid sizing) — self is always counted (voice-only or sharing)
 const activeTiles = computed(() => {
   const tiles: string[] = []
-  if (!voiceStore.screenStream && !hiddenStreams.has('self') && !hideNonVideo.value) tiles.push('self')
-  if (voiceStore.screenStream && !hiddenStreams.has('local')) tiles.push('local')
+  if (!voiceStore.screenShareActive && !hiddenStreams.has('self') && !hideNonVideo.value) tiles.push('self')
+  if (voiceStore.screenShareActive && !hiddenStreams.has('local')) tiles.push('local')
   for (const [userId] of remoteShares.value) tiles.push(userId)
   if (!hideNonVideo.value) nonVideoPeers.value.forEach(p => tiles.push(p.userId))
   return tiles
@@ -207,35 +239,9 @@ function toggleFocus(id: string) {
   focusedId.value = focusedId.value === id ? null : id
 }
 
-function toggleFlip(id: string) {
-  if (flippedTiles.has(id)) flippedTiles.delete(id)
-  else flippedTiles.add(id)
-}
-
 function clearHidden() {
   hiddenStreams.clear()
 }
-
-// Bind reactive MediaStream to <video> srcObject
-const videoRefs = new Map<string, HTMLVideoElement>()
-
-function bindVideo(el: HTMLVideoElement | null, userId: string) {
-  if (el) {
-    videoRefs.set(userId, el)
-    const stream = voiceStore.screenStreams[userId]
-    if (stream && el.srcObject !== stream) el.srcObject = stream
-  } else {
-    videoRefs.delete(userId)
-  }
-}
-
-// Re-assign srcObject when screenStreams entries change
-watchEffect(() => {
-  for (const [userId, stream] of Object.entries(voiceStore.screenStreams)) {
-    const el = videoRefs.get(userId)
-    if (el && el.srcObject !== stream) el.srcObject = stream
-  }
-})
 
 function peerName(userId: string): string {
   const sid = serverId.value
@@ -346,7 +352,19 @@ function peerName(userId: string): string {
   object-fit: contain;
   display: block;
 }
-.video-el.mirror { transform: scaleX(-1); }
+
+/* Screen share placeholder (local user) */
+.screen-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
 
 /* Avatar tile (non-video peer) */
 .avatar-tile {
@@ -475,4 +493,66 @@ function peerName(userId: string): string {
   overflow: hidden;
   background: var(--bg-primary);
 }
+
+.volume-control {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: rgba(0, 0, 0, 0.75);
+  border-radius: var(--radius-sm);
+  z-index: 2;
+}
+
+.volume-slider {
+  flex: 1;
+  height: 4px;
+  accent-color: var(--accent-color);
+  cursor: pointer;
+}
+
+.volume-label {
+  font-size: 10px;
+  color: #fff;
+  min-width: 32px;
+  text-align: right;
+}
+
+/* Performance stats overlay */
+.perf-overlay {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #0f0;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 10;
+  line-height: 1.4;
+}
+
+.perf-line {
+  white-space: nowrap;
+}
+
+.tile-stats-btn {
+  background: rgba(255, 255, 255, 0.15);
+  border: none;
+  border-radius: 4px;
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  transform: none;
+}
+.tile-stats-btn:hover { background: rgba(255, 255, 255, 0.3); }
 </style>

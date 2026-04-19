@@ -39,6 +39,32 @@
           <AppIcon :path="voiceStore.isMuted ? mdiMicrophoneOff : mdiMicrophone" :size="18" />
         </button>
 
+        <!-- Device quick-switch -->
+        <div class="device-menu-wrap">
+          <button class="ctrl-btn" title="Switch audio device" @click.stop="toggleDeviceMenu">
+            <AppIcon :path="mdiSwapHorizontal" :size="18" />
+          </button>
+          <div v-if="showDeviceMenu" class="device-menu">
+            <div class="device-section-label">Input</div>
+            <button
+              v-for="d in audioInputs" :key="d.id"
+              class="device-option"
+              :class="{ active: d.id === currentInputId }"
+              @click="switchInput(d.id)"
+            >{{ d.name }}</button>
+            <button class="device-option" :class="{ active: !currentInputId }" @click="switchInput('')">Default</button>
+            <div class="device-divider" />
+            <div class="device-section-label">Output</div>
+            <button
+              v-for="d in audioOutputs" :key="d.id"
+              class="device-option"
+              :class="{ active: d.id === currentOutputId }"
+              @click="switchOutput(d.id)"
+            >{{ d.name }}</button>
+            <button class="device-option" :class="{ active: !currentOutputId }" @click="switchOutput('')">Default</button>
+          </div>
+        </div>
+
         <!-- Deafen -->
         <button
           class="ctrl-btn"
@@ -59,12 +85,12 @@
           <AppIcon :path="mdiHeadset" :size="18" />
         </button>
 
-        <!-- Screen share (desktop only — no getDisplayMedia on mobile) -->
+        <!-- Screen share (desktop only + platform support) -->
         <button
-          v-if="!isMobile"
+          v-if="!isMobile && voiceStore.screenShareSupported"
           class="ctrl-btn"
-          :class="{ active: !!voiceStore.screenStream }"
-          :title="voiceStore.screenStream ? 'Stop share' : 'Share screen'"
+          :class="{ active: voiceStore.screenShareActive }"
+          :title="voiceStore.screenShareActive ? 'Stop share' : 'Share screen'"
           @click="toggleScreenShare"
         >
           <AppIcon :path="mdiMonitorShare" :size="18" />
@@ -79,7 +105,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   mdiVolumeHigh,
   mdiMicrophone,
@@ -90,17 +118,29 @@ import {
   mdiMonitorShare,
   mdiPhoneHangup,
   mdiAlertCircle,
+  mdiSwapHorizontal,
 } from '@mdi/js'
 import VoicePeerTile from '@/components/chat/VoicePeerTile.vue'
 import { useVoiceStore }    from '@/stores/voiceStore'
 import { useChannelsStore } from '@/stores/channelsStore'
+import { useSettingsStore } from '@/stores/settingsStore'
 import { useBreakpoint } from '@/utils/useBreakpoint'
+
+interface AudioDeviceInfo { id: string; name: string }
+interface AudioDeviceList { inputs: AudioDeviceInfo[]; outputs: AudioDeviceInfo[] }
 
 const voiceStore    = useVoiceStore()
 const channelsStore = useChannelsStore()
+const settingsStore = useSettingsStore()
 const { isMobile } = useBreakpoint()
 
-const peerList = computed(() => Object.values(voiceStore.peers))
+const showDeviceMenu = ref(false)
+const audioInputs    = ref<AudioDeviceInfo[]>([])
+const audioOutputs   = ref<AudioDeviceInfo[]>([])
+const currentInputId  = computed(() => settingsStore.settings.inputDeviceId)
+const currentOutputId = computed(() => settingsStore.settings.outputDeviceId)
+
+const peerList = computed(() => Object.values(voiceStore.peers).filter(p => p.userId))
 
 const channelName = computed(() => {
   const session = voiceStore.session
@@ -110,8 +150,8 @@ const channelName = computed(() => {
 })
 
 async function toggleScreenShare() {
-  if (voiceStore.screenStream) {
-    voiceStore.stopScreenShare()
+  if (voiceStore.screenShareActive) {
+    await voiceStore.stopScreenShare()
   } else {
     try {
       await voiceStore.startScreenShare()
@@ -120,6 +160,42 @@ async function toggleScreenShare() {
     }
   }
 }
+
+function toggleDeviceMenu() { showDeviceMenu.value = !showDeviceMenu.value }
+function closeDeviceMenu()  { showDeviceMenu.value = false }
+
+async function switchInput(deviceId: string) {
+  settingsStore.updateSetting('inputDeviceId', deviceId)
+  await invoke('media_set_input_device', { deviceName: deviceId || null }).catch(() => {})
+  closeDeviceMenu()
+}
+
+async function switchOutput(deviceId: string) {
+  settingsStore.updateSetting('outputDeviceId', deviceId)
+  await invoke('media_set_output_device', { deviceName: deviceId || null }).catch(() => {})
+  closeDeviceMenu()
+}
+
+let unlistenDevices: UnlistenFn | null = null
+
+onMounted(async () => {
+  try {
+    const list = await invoke<AudioDeviceList>('media_enumerate_devices')
+    audioInputs.value  = list.inputs
+    audioOutputs.value = list.outputs
+  } catch {}
+  unlistenDevices = await listen<AudioDeviceList>('media_devices_changed', ({ payload }) => {
+    audioInputs.value  = payload.inputs
+    audioOutputs.value = payload.outputs
+  })
+  document.addEventListener('click', closeDeviceMenu)
+})
+
+onUnmounted(() => {
+  unlistenDevices?.()
+  unlistenDevices = null
+  document.removeEventListener('click', closeDeviceMenu)
+})
 </script>
 
 <style scoped>
@@ -225,5 +301,66 @@ async function toggleScreenShare() {
 .ctrl-btn.disconnect:hover {
   background: rgba(237, 66, 69, 0.15);
   color: #ed4245;
+}
+
+.device-menu-wrap {
+  position: relative;
+}
+
+.device-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-xs);
+  min-width: 200px;
+  max-height: 300px;
+  overflow-y: auto;
+  z-index: 10;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.device-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  padding: var(--spacing-xs) var(--spacing-sm);
+}
+
+.device-divider {
+  border-top: 1px solid var(--border-color);
+  margin: 4px var(--spacing-sm);
+}
+
+.device-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px var(--spacing-sm);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transform: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.device-option:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  transform: none;
+}
+
+.device-option.active {
+  color: var(--accent-color);
 }
 </style>
