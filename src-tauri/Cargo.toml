@@ -82,6 +82,9 @@ openh264           = "0.9"
 # Lock-free bounded channels for encoder thread pipeline
 crossbeam-channel  = "0.5"
 
+# Data-parallelism (used in BGRA→YUV downscale for screen share)
+rayon              = "1.10"
+
 # Image encoding/decoding (JPEG for frame delivery to frontend via asset://)
 image              = "0.25"
 
@@ -111,11 +114,11 @@ tauri-plugin-pilot = { git = "https://github.com/mpiton/tauri-pilot" }
 [dev-dependencies]
 tempfile = "3"
 
-# Dev profile: optimize the main crate's hot pixel loops (BGRA→RGBA swap,
-# image::resize call site). Without this a 4K frame swap takes ~1.9s;
-# with opt-level 1 it drops to ~20ms. Keeps debuginfo and fast iterative
-# compiles. Deps that do heavy pixel processing get level 2 separately.
-[profile.dev.package.hexfield]
+# Dev profile: use opt-level 1 globally to keep pixel-loop performance
+# (4K frame swap: ~1.9s at opt-0 → ~20ms at opt-1) while avoiding
+# LLVM anonymous-symbol mismatches between hexfield and serde_core
+# that cause LNK2019 errors with per-package opt-level on MSVC.
+[profile.dev]
 opt-level = 1
 
 # Pixel-processing deps benefit from full optimization (level 2).

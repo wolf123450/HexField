@@ -68,7 +68,7 @@
       <p class="form-hint">Limits the maximum outgoing bitrate for screen sharing. Lower values reduce CPU and bandwidth usage.</p>
     </div>
 
-    <div class="form-row">
+    <div v-if="settingsStore.settings.experimentalNewPipeline" class="form-row">
       <label class="form-label">Screen Share Downscale Method</label>
       <select v-model="videoDownscaleMethod" class="form-select" @change="saveDownscaleMethod">
         <option value="nearest">Nearest Neighbor — Fastest, pixelated</option>

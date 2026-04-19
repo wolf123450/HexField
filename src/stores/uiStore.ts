@@ -4,7 +4,7 @@ import { useSettingsStore } from "./settingsStore";
 
 // ─── Context menu types ───────────────────────────────────────────────────────
 export type MenuItem =
-  | { type: 'action'; label: string; shortcut?: string; danger?: boolean; callback: () => void }
+  | { type: 'action'; label: string; shortcut?: string; danger?: boolean; iconSvg?: string; callback: () => void }
   | { type: 'separator' }
   | { type: 'disabled'; label: string }
 

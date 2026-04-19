@@ -806,6 +806,7 @@ impl MediaManager {
 
         // Build a new capturer for the blocking task (trait object is Send+Sync)
         let capturer = crate::capture::create();
+        let has_high_track = video_track_high.is_some();
         let config = crate::capture::CaptureConfig {
             source_id: source_id_owned.clone(),
             video_track,
@@ -813,7 +814,7 @@ impl MediaManager {
             app: app_clone.clone(),
             fps,
             bitrate_kbps,
-            bitrate_kbps_high: if use_new_pipeline { 6000 } else { 0 },
+            bitrate_kbps_high: if has_high_track { 6000 } else { 0 },
             screen_active,
             force_keyframe: self.force_keyframe.clone(),
             preview_dir: if inline_preview { None } else { preview_dir },

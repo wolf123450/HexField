@@ -4,6 +4,26 @@ use crate::media_manager::{AudioDeviceList, ScreenSourceList};
 use crate::AppState;
 use tauri::{AppHandle, State};
 
+/// Reset all media state. Called on frontend init to recover from stale state
+/// after a webview refresh (F5). Idempotent — safe to call when nothing is active.
+#[tauri::command]
+pub async fn media_reset_all(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Stop mic if active (ignore errors — may not be running)
+    let _ = state.media_manager.stop_mic(&app).await;
+    state.media_manager.stop_all_remote_playback().await;
+    let _ = state.webrtc_manager.remove_audio_tracks_from_all(&app).await;
+
+    // Stop screen share if active
+    let _ = state.media_manager.stop_screen_share(&app).await;
+    let _ = state.webrtc_manager.remove_video_tracks_from_all(&app).await;
+
+    log::info!("[media] reset_all: cleared stale media state");
+    Ok(())
+}
+
 /// List available audio input and output devices.
 #[tauri::command]
 pub async fn media_enumerate_devices(
@@ -132,12 +152,14 @@ pub async fn media_start_screen_share(
     fps: Option<u32>,
     bitrate_kbps: Option<u32>,
     use_new_pipeline: Option<bool>,
+    dual_encoding: Option<bool>,
     inline_preview: Option<bool>,
     downscale_method: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let use_new = use_new_pipeline.unwrap_or(false);
+    let dual = dual_encoding.unwrap_or(false) && use_new; // dual requires new pipeline
     let inline = inline_preview.unwrap_or(false);
     let method = match downscale_method.as_deref() {
         Some("nearest")  => crate::capture::DownscaleMethod::Nearest,
@@ -146,7 +168,7 @@ pub async fn media_start_screen_share(
         _                => crate::capture::DownscaleMethod::Bilinear,
     };
 
-    let (video_track, video_track_high) = if use_new {
+    let (video_track, video_track_high) = if dual {
         let (low, high) = state
             .webrtc_manager
             .add_video_tracks_dual(&app)

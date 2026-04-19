@@ -26,6 +26,7 @@
           <SettingsNotificationsTab v-else-if="activeTab === 'notifications'" />
           <SettingsAppearanceTab    v-else-if="activeTab === 'appearance'" />
           <SettingsShortcutsTab     v-else-if="activeTab === 'shortcuts'" />
+          <SettingsExperimentalTab  v-else-if="activeTab === 'experimental'" />
           <SettingsHelpTab          v-else-if="activeTab === 'help'" />
         </div>
 
@@ -52,6 +53,7 @@ import SettingsPrivacyTab from './settings/SettingsPrivacyTab.vue'
 import SettingsNotificationsTab from './settings/SettingsNotificationsTab.vue'
 import SettingsAppearanceTab from './settings/SettingsAppearanceTab.vue'
 import SettingsShortcutsTab from './settings/SettingsShortcutsTab.vue'
+import SettingsExperimentalTab from './settings/SettingsExperimentalTab.vue'
 import SettingsHelpTab from './settings/SettingsHelpTab.vue'
 
 const uiStore = useUIStore()
@@ -60,7 +62,7 @@ const settingsStore = useSettingsStore()
 const modalEl = ref<HTMLElement | null>(null)
 useFocusTrap(modalEl, computed(() => uiStore.showSettings))
 
-const activeTab = ref<'profile' | 'voice' | 'privacy' | 'notifications' | 'appearance' | 'shortcuts' | 'help'>('profile')
+const activeTab = ref<'profile' | 'voice' | 'privacy' | 'notifications' | 'appearance' | 'shortcuts' | 'experimental' | 'help'>('profile')
 
 const tabs = [
   { key: 'profile',       label: 'Profile' },
@@ -69,6 +71,7 @@ const tabs = [
   { key: 'notifications', label: 'Notifications' },
   { key: 'appearance',    label: 'Appearance' },
   { key: 'shortcuts',     label: 'Shortcuts' },
+  { key: 'experimental',  label: 'Experimental' },
   { key: 'help',          label: 'Help' },
 ] as const
 
@@ -99,9 +102,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
-  width: 560px;
-  max-width: calc(100vw - 32px);
-  height: 480px;
+  width: 780px;
+  max-width: calc(100vw - 64px);
+  height: 600px;
   max-height: calc(100vh - 64px);
   display: flex;
   flex-direction: column;

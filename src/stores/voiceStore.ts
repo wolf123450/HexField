@@ -16,8 +16,12 @@ export const useVoiceStore = defineStore('voice', () => {
   const screenShareStats = ref<{
     label: string;
     fps: number;
+    captureMs: number;
+    queueMs: number;
     convertMs: number;
     encodeMs: number;
+    writeMs: number;
+    previewMs: number;
     resolution: string;
     srcResolution: string;
     bitrateKbps: number;
@@ -186,7 +190,9 @@ export const useVoiceStore = defineStore('voice', () => {
   async function _listenStats() {
     const { listen } = await import('@tauri-apps/api/event')
     await listen<{
-      label: string; fps: number; convertMs: number; encodeMs: number;
+      label: string; fps: number;
+      captureMs: number; queueMs: number; convertMs: number;
+      encodeMs: number; writeMs: number; previewMs: number;
       resolution: string; srcResolution: string; bitrateKbps: number;
       dropped: number; method: string;
     }>('screen_share_stats', (event) => {
@@ -211,8 +217,9 @@ export const useVoiceStore = defineStore('voice', () => {
     }
     const maxBitrateKbps = bitrateMap[settings.videoBitrate]
 
-    const useNewPipeline = localStorage.getItem('hexfield_new_pipeline') !== 'false'
-    const inlinePreview = localStorage.getItem('hexfield_inline_preview') !== 'false'
+    const useNewPipeline = settings.experimentalNewPipeline
+    const dualEncoding = settings.experimentalDualEncoding
+    const inlinePreview = settings.experimentalInlinePreview
     const downscaleMethod = screenDownscaleMethod.value ?? settings.videoDownscaleMethod ?? 'bilinear'
 
     await webrtcService.addScreenShareTrack(
@@ -220,6 +227,7 @@ export const useVoiceStore = defineStore('voice', () => {
       settings.videoFrameRate,
       maxBitrateKbps,
       useNewPipeline,
+      dualEncoding,
       inlinePreview,
       downscaleMethod,
     )
