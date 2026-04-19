@@ -190,7 +190,7 @@ pub async fn media_start_screen_share(
             video_track_high,
             app,
             fps.unwrap_or(30),
-            bitrate_kbps.unwrap_or(0),
+            bitrate_kbps.unwrap_or(2500),
             use_new,
             inline,
             method,

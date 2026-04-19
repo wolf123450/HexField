@@ -125,6 +125,7 @@ See [TODO.md](TODO.md) for full task lists with checkboxes.
 | TURN crate | **`turn` (webrtc-rs project)** | Active; `turn-rs` is a separate unmaintained crate — do not confuse them |
 | Protocol handler | **`tauri-plugin-deep-link`** for `hexfield://` | Clickable invite links, device pairing, archive imports |
 | Storage limit | **5 GB default, 10 GB max, user configurable** | Auto-pruning (attachments first, then content); server admin can archive + re-baseline |
+| Feature flags | **Local behaviour only** | Feature flags must never change the wire protocol or inter-client message format. They control local-only behaviour (pipeline selection, UI, encoding parameters). Clients must gracefully handle unknown capabilities from peers — e.g. ignore unrecognised fields, fall back when a quality tier isn't available |
 
 ---
 
