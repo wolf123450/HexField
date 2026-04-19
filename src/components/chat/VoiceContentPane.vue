@@ -83,11 +83,14 @@
           </div>
           <!-- Performance overlay -->
           <div v-if="voiceStore.showScreenOverlay && voiceStore.screenShareStats" class="perf-overlay">
-            <div class="perf-line">{{ voiceStore.screenShareStats.fps }} fps</div>
+            <div class="perf-line">{{ voiceStore.screenShareStats.fps }} fps &middot; {{ voiceStore.screenShareStats.bitrateKbps }} kbps</div>
             <div class="perf-line">{{ voiceStore.screenShareStats.srcResolution }} → {{ voiceStore.screenShareStats.resolution }}</div>
+            <div class="perf-line">capture: {{ voiceStore.screenShareStats.captureMs }}ms</div>
+            <div v-if="voiceStore.screenShareStats.queueMs" class="perf-line">queue: {{ voiceStore.screenShareStats.queueMs }}ms</div>
             <div class="perf-line">convert: {{ voiceStore.screenShareStats.convertMs }}ms</div>
             <div class="perf-line">encode: {{ voiceStore.screenShareStats.encodeMs }}ms</div>
-            <div class="perf-line">{{ voiceStore.screenShareStats.bitrateKbps }} kbps</div>
+            <div class="perf-line">write: {{ voiceStore.screenShareStats.writeMs }}ms</div>
+            <div v-if="voiceStore.screenShareStats.previewMs" class="perf-line">preview: {{ voiceStore.screenShareStats.previewMs }}ms</div>
             <div class="perf-line">{{ voiceStore.screenShareStats.method }}</div>
           </div>
         </div>

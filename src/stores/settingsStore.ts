@@ -73,6 +73,10 @@ export interface UserSettings {
   keywordFilters:           KeywordFilter[];
   // Per-event custom sound overrides (data: URLs)
   customSounds:             Partial<Record<SoundEvent, string>>;
+  // Experimental
+  experimentalNewPipeline: boolean;
+  experimentalDualEncoding: boolean;
+  experimentalInlinePreview: boolean;
   // Developer
   logLevel:                 LogLevel;
 }
@@ -121,6 +125,10 @@ const defaultSettings: UserSettings = {
   channelNotificationPrefs: {},
   keywordFilters:           [],
   customSounds:             {},
+  // Experimental
+  experimentalNewPipeline: true,
+  experimentalDualEncoding: false,
+  experimentalInlinePreview: true,
   logLevel:                 'info',
 };
 

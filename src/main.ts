@@ -58,4 +58,14 @@ app.use(router);
 app.component('AppIcon', AppIcon);
 app.component('StatusBadge', StatusBadge);
 app.component('AvatarImage', AvatarImage);
+
+// Clear any stale Rust media state left over from a webview refresh (F5).
+// This is fire-and-forget — the app mounts immediately; voice join will work
+// even if this hasn't finished yet because it completes in ~1ms.
+import('@tauri-apps/api/core').then(({ invoke }) => {
+  invoke('media_reset_all').catch((e: unknown) => {
+    console.warn('[main] media_reset_all failed (non-fatal):', e)
+  })
+})
+
 app.mount("#app");

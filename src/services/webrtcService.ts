@@ -178,12 +178,13 @@ export class WebRTCService {
   /**
    * Start screen share via Rust capture + openh264 encode + WebRTC video track.
    */
-  async addScreenShareTrack(sourceId: string, fps?: number, bitrateKbps?: number, useNewPipeline?: boolean, inlinePreview?: boolean, downscaleMethod?: string): Promise<void> {
+  async addScreenShareTrack(sourceId: string, fps?: number, bitrateKbps?: number, useNewPipeline?: boolean, dualEncoding?: boolean, inlinePreview?: boolean, downscaleMethod?: string): Promise<void> {
     await invoke('media_start_screen_share', {
       sourceId,
       fps: fps ?? 30,
       bitrateKbps: bitrateKbps ?? 0,
       useNewPipeline: useNewPipeline ?? false,
+      dualEncoding: dualEncoding ?? false,
       inlinePreview: inlinePreview ?? false,
       downscaleMethod: downscaleMethod ?? 'bilinear',
     })

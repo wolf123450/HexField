@@ -271,6 +271,7 @@ pub fn run() {
             sync_save_mutations,
             sync_list_channels,
             // Media (Rust-native audio)
+            media_reset_all,
             media_enumerate_devices,
             media_start_mic,
             media_stop_mic,

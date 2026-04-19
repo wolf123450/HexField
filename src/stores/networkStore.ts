@@ -239,13 +239,21 @@ export const useNetworkStore = defineStore('network', () => {
     ).catch(e => logger.warn('network', 'webrtc_track listen failed:', e))
 
     // Incoming decoded video frames from Rust screen share pipeline
-    listen<{ userId: string; frameNumber: number; path: string }>(
+    // Rust emits either { path } (disk-based preview) or { dataUrl } (inline preview)
+    listen<{ userId: string; frameNumber: number; path?: string; dataUrl?: string }>(
       'media_video_frame',
       async ({ payload }) => {
-        const { convertFileSrc } = await import('@tauri-apps/api/core')
         const { useVoiceStore } = await import('./voiceStore')
         const voiceStore = useVoiceStore()
-        const url = convertFileSrc(payload.path) + `?v=${payload.frameNumber}`
+        let url: string
+        if (payload.dataUrl) {
+          url = payload.dataUrl
+        } else if (payload.path) {
+          const { convertFileSrc } = await import('@tauri-apps/api/core')
+          url = convertFileSrc(payload.path) + `?v=${payload.frameNumber}`
+        } else {
+          return // neither path nor dataUrl — skip
+        }
         voiceStore.screenFrameUrls[payload.userId] = url
         // Don't create a peer entry for the local user's own preview
         if (payload.userId !== 'self') {
