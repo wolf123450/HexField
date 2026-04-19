@@ -882,6 +882,47 @@ impl MediaManager {
         Ok(dir)
     }
 
+    /// Decode an H.264 frame and return as a JPEG data URL (in-memory, no disk I/O).
+    /// Returns Ok(Some(data_url)) if a frame was produced, Ok(None) if the decoder
+    /// needs more data.
+    pub fn decode_to_data_url(
+        decoder: &mut openh264::decoder::Decoder,
+        h264_data: &[u8],
+    ) -> Result<Option<String>, String> {
+        use openh264::formats::YUVSource;
+
+        let decoded = decoder
+            .decode(h264_data)
+            .map_err(|e| format!("H.264 decode error: {e}"))?;
+
+        let yuv = match decoded {
+            Some(y) => y,
+            None => return Ok(None),
+        };
+
+        let (w, h) = yuv.dimensions();
+        if w < 2 || h < 2 || w % 2 != 0 || h % 2 != 0 {
+            return Ok(None);
+        }
+        let mut rgb = vec![0u8; w * h * 3];
+        yuv.write_rgb8(&mut rgb);
+
+        // Encode directly as JPEG in memory (skip RGBA conversion — use RGB8)
+        use std::io::Cursor;
+        let mut jpeg_buf = Cursor::new(Vec::with_capacity(512 * 1024));
+        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 90);
+        image::DynamicImage::ImageRgb8(
+            image::RgbImage::from_raw(w as u32, h as u32, rgb)
+                .ok_or("invalid RGB dimensions")?,
+        )
+        .write_with_encoder(enc)
+        .map_err(|e| e.to_string())?;
+
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
+        Ok(Some(format!("data:image/jpeg;base64,{b64}")))
+    }
+
     /// Decode an H.264 frame and write as JPEG to `path`. Returns Ok(true) if
     /// a frame was produced, Ok(false) if the decoder needs more data.
     pub fn decode_and_write_jpeg(

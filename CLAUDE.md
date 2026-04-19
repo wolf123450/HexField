@@ -425,6 +425,7 @@ Issues that have already been encountered and fixed. **Do not re-introduce these
 See [`docs/architecture-plan.md`](docs/architecture-plan.md) for the full log. Quick reference:
 
 - **P2P first** — no central server required; rendezvous server is optional convenience
+- **Feature flags are local-only** — feature flags must never change the wire protocol or inter-client message format; they control local behaviour (pipeline, UI, encoding params). Clients must gracefully handle unknown capabilities from peers (ignore unknown fields, fall back when a feature isn't available)
 - **libsodium-wrappers (WASM)** for all crypto — keys stay in JS, never cross IPC boundary
 - **rusqlite (bundled)** for SQLite — sync API, `Mutex<Connection>` in `AppState`
 - **TanStack Virtual** for message list — headless, handles 100k+ rows

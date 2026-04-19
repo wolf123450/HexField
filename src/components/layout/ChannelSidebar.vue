@@ -252,11 +252,15 @@ function peerDisplayName(userId: string): string {
  * returns ids from peerVoiceChannels (presence gossiped via voice_join).
  */
 function voiceChannelPeerIds(channelId: string): string[] {
-  if (voiceStore.session?.channelId === channelId) {
-    return Object.keys(voiceStore.peers)
-  }
   const sid = serversStore.activeServerId
   if (!sid) return []
+  if (voiceStore.session?.channelId === channelId && voiceStore.session?.serverId === sid) {
+    // Local user is in this channel — filter peers by those who are in the same channel+server
+    return Object.keys(voiceStore.peers).filter(uid => {
+      const pc = voiceStore.peerVoiceChannels[uid]
+      return pc && pc.channelId === channelId && pc.serverId === sid
+    })
+  }
   return Object.entries(voiceStore.peerVoiceChannels)
     .filter(([, v]) => v.channelId === channelId && v.serverId === sid)
     .map(([uid]) => uid)

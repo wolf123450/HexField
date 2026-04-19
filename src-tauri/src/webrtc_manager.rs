@@ -352,14 +352,6 @@ impl WebRTCManager {
                     let pid3 = pid2.clone();
                     let app3 = app2.clone();
                     tokio::spawn(async move {
-                        let frame_dir = match MediaManager::frame_output_dir(&app3) {
-                            Ok(d) => d,
-                            Err(e) => {
-                                log::error!("[webrtc] failed to get frame dir: {e}");
-                                return;
-                            }
-                        };
-                        let frame_path = frame_dir.join(format!("{pid3}.jpg"));
                         let mut decoder = match openh264::decoder::Decoder::new() {
                             Ok(d) => d,
                             Err(e) => {
@@ -394,23 +386,22 @@ impl WebRTCManager {
                                         continue;
                                     }
 
-                                    match MediaManager::decode_and_write_jpeg(
+                                    match MediaManager::decode_to_data_url(
                                         &mut decoder,
                                         &nal_data,
-                                        &frame_path,
                                     ) {
-                                        Ok(true) => {
+                                        Ok(Some(data_url)) => {
                                             frame_number += 1;
                                             let _ = app3.emit(
                                                 "media_video_frame",
                                                 serde_json::json!({
                                                     "userId": pid3,
                                                     "frameNumber": frame_number,
-                                                    "path": frame_path.to_string_lossy(),
+                                                    "dataUrl": data_url,
                                                 }),
                                             );
                                         }
-                                        Ok(false) => {
+                                        Ok(None) => {
                                             // Decoder needs more data
                                         }
                                         Err(e) => {
@@ -425,8 +416,7 @@ impl WebRTCManager {
                             }
                         }
 
-                        // Clean up frame file
-                        let _ = std::fs::remove_file(&frame_path);
+                        // No frame file to clean up anymore
                         let _ = app3.emit(
                             "media_video_frame_ended",
                             serde_json::json!({ "userId": pid3 }),

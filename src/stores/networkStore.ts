@@ -230,9 +230,18 @@ export const useNetworkStore = defineStore('network', () => {
       'webrtc_track',
       async ({ payload }) => {
         if (payload.kind === 'audio') {
-          // Audio is handled entirely in Rust (MediaManager) — just update voice UI
+          // Only update voice UI if this peer is in the same voice channel
           const { useVoiceStore } = await import('./voiceStore')
-          useVoiceStore().updatePeer(payload.userId, { audioEnabled: true })
+          const voiceStore = useVoiceStore()
+          const peerChannel = voiceStore.peerVoiceChannels[payload.userId]
+          if (
+            voiceStore.session &&
+            peerChannel &&
+            peerChannel.channelId === voiceStore.session.channelId &&
+            peerChannel.serverId === voiceStore.session.serverId
+          ) {
+            voiceStore.updatePeer(payload.userId, { audioEnabled: true })
+          }
         }
         // Video tracks are decoded in Rust — frames arrive via media_video_frame event
       },

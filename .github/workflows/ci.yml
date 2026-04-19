@@ -41,6 +41,7 @@ jobs:
             libsoup-3.0-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
+            libasound2-dev \
             patchelf \
             libssl-dev \
             pkg-config
