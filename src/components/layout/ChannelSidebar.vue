@@ -176,7 +176,7 @@
       <div class="self-info">
         <div
           class="self-avatar-wrap"
-          title="View profile (right-click to set status)"
+          :title="manualStatusSet ? `Status: ${statusLabel} (manually set — right-click to clear)` : 'View profile (right-click to set status)'"
           @click="uiStore.openUserProfile(identityStore.userId ?? '', serversStore.activeServerId ?? '')"
           @contextmenu.prevent="openStatusPicker"
         >
@@ -186,6 +186,9 @@
             :size="12"
             class="self-status-badge"
           />
+          <span v-if="manualStatusSet" class="manual-status-pin" title="Status manually set">
+            <AppIcon :path="mdiPin" :size="8" />
+          </span>
         </div>
         <div class="self-name">{{ identityStore.displayName }}</div>
       </div>
@@ -208,7 +211,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watchEffect, onMounted, onUnmounted, nextTick } from 'vue'
-import { mdiCog, mdiMicrophone, mdiMicrophoneOff, mdiAccountPlus, mdiChevronLeft } from '@mdi/js'
+import { mdiCog, mdiMicrophone, mdiMicrophoneOff, mdiAccountPlus, mdiChevronLeft, mdiPin } from '@mdi/js'
 import { useServersStore } from '@/stores/serversStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useMessagesStore } from '@/stores/messagesStore'
@@ -249,11 +252,17 @@ function peerDisplayName(userId: string): string {
  * returns ids from peerVoiceChannels (presence gossiped via voice_join).
  */
 function voiceChannelPeerIds(channelId: string): string[] {
-  if (voiceStore.session?.channelId === channelId) {
-    return Object.keys(voiceStore.peers)
+  const sid = serversStore.activeServerId
+  if (!sid) return []
+  if (voiceStore.session?.channelId === channelId && voiceStore.session?.serverId === sid) {
+    // Local user is in this channel — filter peers by those who are in the same channel+server
+    return Object.keys(voiceStore.peers).filter(uid => {
+      const pc = voiceStore.peerVoiceChannels[uid]
+      return pc && pc.channelId === channelId && pc.serverId === sid
+    })
   }
   return Object.entries(voiceStore.peerVoiceChannels)
-    .filter(([, cid]) => cid === channelId)
+    .filter(([, v]) => v.channelId === channelId && v.serverId === sid)
     .map(([uid]) => uid)
 }
 
@@ -512,12 +521,30 @@ function openServerInvite() {
 // ── Own status ────────────────────────────────────────────────────────────────
 
 const STATUS_KEY = 'hexfield_own_status'
+const MANUAL_KEY = 'hexfield_manual_status'
 const statusKey  = () => identityStore.userId ? `${STATUS_KEY}_${identityStore.userId}` : STATUS_KEY
-// Read the correct scoped key once userId is known (identity loads asynchronously).
+const manualKey  = () => identityStore.userId ? `${MANUAL_KEY}_${identityStore.userId}` : MANUAL_KEY
+
 const ownStatus = ref<'online' | 'idle' | 'dnd' | 'offline'>('online')
+const manualStatusSet = ref(false)
+
+const STATUS_LABELS: Record<typeof ownStatus.value, string> = {
+  online: 'Online', idle: 'Idle', dnd: 'Do Not Disturb', offline: 'Invisible',
+}
+const statusLabel = computed(() => STATUS_LABELS[ownStatus.value])
+
 watchEffect(() => {
   if (identityStore.userId) {
-    ownStatus.value = (localStorage.getItem(statusKey()) as typeof ownStatus.value | null) ?? 'online'
+    const saved = localStorage.getItem(statusKey()) as typeof ownStatus.value | null
+    const wasManual = localStorage.getItem(manualKey()) === '1'
+    // Auto-idle shouldn't survive a restart — reset to online unless user manually chose idle
+    if (saved === 'idle' && !wasManual) {
+      ownStatus.value = 'online'
+      localStorage.setItem(statusKey(), 'online')
+    } else {
+      ownStatus.value = saved ?? 'online'
+    }
+    manualStatusSet.value = wasManual && ownStatus.value !== 'online'
   }
 })
 
@@ -530,10 +557,12 @@ let idleTimer: ReturnType<typeof setTimeout> | null = null
 let autoIdled = false
 
 function onWindowBlur() {
+  // Don't auto-idle if user manually set a status (dnd, idle, offline)
+  if (manualStatusSet.value) return
   if (ownStatus.value !== 'online') return
   idleTimer = setTimeout(() => {
     autoIdled = true
-    setOwnStatus('idle')
+    setOwnStatus('idle', false)
   }, IDLE_DELAY_MS)
 }
 
@@ -541,7 +570,7 @@ function onWindowFocus() {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
   if (autoIdled) {
     autoIdled = false
-    setOwnStatus('online')
+    setOwnStatus('online', false)
   }
 }
 
@@ -556,24 +585,53 @@ onUnmounted(() => {
   if (idleTimer) clearTimeout(idleTimer)
 })
 
+// Status badge SVGs for the context menu (matching StatusBadge.vue shapes and colors)
+function statusSvg(status: 'online' | 'idle' | 'dnd' | 'offline'): string {
+  const size = 12
+  const svgStart = `<svg width="${size}" height="${size}" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg">`
+  const svgEnd = '</svg>'
+  switch (status) {
+    case 'online':
+      return `${svgStart}<circle cx="6" cy="6" r="5" fill="var(--success-color, #3ba55d)"/>${svgEnd}`
+    case 'idle':
+      return `${svgStart}<path fill-rule="evenodd" fill="var(--warning-color, #faa61a)" d="M6 1a5 5 0 1 0 0 10A5 5 0 0 0 6 1ZM7.7 2.7a3.5 3.5 0 1 1 0 6.6 3.5 3.5 0 0 1 0-6.6Z"/>${svgEnd}`
+    case 'dnd':
+      return `${svgStart}<path fill-rule="evenodd" fill="var(--error-color, #ed4245)" d="M6 1a5 5 0 1 0 0 10A5 5 0 0 0 6 1ZM2.5 5H9.5V7H2.5Z"/>${svgEnd}`
+    case 'offline':
+      return `${svgStart}<circle cx="6" cy="6" r="3.5" fill="none" stroke="var(--text-tertiary, #747f8d)" stroke-width="2"/>${svgEnd}`
+  }
+}
+
 function openStatusPicker(e: MouseEvent) {
   const items: MenuItem[] = [
-    { type: 'action', label: '\u25cf Online',         callback: () => setOwnStatus('online') },
-    { type: 'action', label: '\u25cf Idle',           callback: () => setOwnStatus('idle') },
-    { type: 'action', label: '\u25cf Do Not Disturb', callback: () => setOwnStatus('dnd') },
-    { type: 'action', label: '\u25cb Invisible',      callback: () => setOwnStatus('offline') },
+    { type: 'action', label: 'Online',         iconSvg: statusSvg('online'),  callback: () => setOwnStatus('online', true) },
+    { type: 'action', label: 'Idle',           iconSvg: statusSvg('idle'),    callback: () => setOwnStatus('idle', true) },
+    { type: 'action', label: 'Do Not Disturb', iconSvg: statusSvg('dnd'),     callback: () => setOwnStatus('dnd', true) },
+    { type: 'action', label: 'Invisible',      iconSvg: statusSvg('offline'), callback: () => setOwnStatus('offline', true) },
   ]
+  if (manualStatusSet.value) {
+    items.push({ type: 'separator' })
+    items.push({ type: 'action', label: 'Clear manual status', callback: () => setOwnStatus('online', false) })
+  }
   uiStore.showContextMenu(e.clientX, e.clientY, items)
 }
 
-function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline') {
-  // If the user manually sets a status, cancel any pending auto-idle and clear the flag.
-  if (!autoIdled) {
-    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
-  }
+function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline', manual?: boolean) {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
   autoIdled = false
+
   ownStatus.value = status
   localStorage.setItem(statusKey(), status)
+
+  // Track whether the user manually chose this status
+  const isManual = manual === true && status !== 'online'
+  manualStatusSet.value = isManual
+  if (isManual) {
+    localStorage.setItem(manualKey(), '1')
+  } else {
+    localStorage.removeItem(manualKey())
+  }
+
   // Update member record for every joined server
   const uid = identityStore.userId
   if (!uid) return
@@ -770,6 +828,15 @@ function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline') {
   border-radius: 50%;
   padding: 1px;
   box-sizing: content-box;
+}
+
+.manual-status-pin {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  color: var(--text-tertiary);
+  line-height: 0;
+  pointer-events: none;
 }
 
 .self-name {

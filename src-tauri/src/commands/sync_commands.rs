@@ -279,6 +279,7 @@ pub fn sync_get_mutations(
 }
 
 /// Batch-save incoming message rows from a peer (INSERT OR IGNORE — never overwrite local edits).
+/// Silently skips rows that violate FK constraints (e.g. channel not yet synced).
 #[tauri::command]
 pub fn sync_save_messages(
     state: State<AppState>,
@@ -286,7 +287,7 @@ pub fn sync_save_messages(
 ) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     for msg in &messages {
-        conn.execute(
+        match conn.execute(
             "INSERT OR IGNORE INTO messages
              (id, channel_id, server_id, author_id, content, content_type,
               reply_to_id, created_at, logical_ts, verified, raw_attachments)
@@ -296,8 +297,17 @@ pub fn sync_save_messages(
                 msg.content, msg.content_type, msg.reply_to_id,
                 msg.created_at, msg.logical_ts, msg.verified as i64, msg.raw_attachments
             ],
-        )
-        .map_err(|e| e.to_string())?;
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ffi::ErrorCode::ConstraintViolation =>
+            {
+                // FK constraint — channel/server not created yet; skip silently.
+                // The next sync round will pick up the missing messages.
+                log::debug!("sync_save_messages: skipping msg {} (FK constraint)", msg.id);
+            }
+            Err(e) => return Err(e.to_string()),
+        }
     }
     Ok(())
 }

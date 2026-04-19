@@ -23,7 +23,7 @@ pub async fn webrtc_create_offer(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.webrtc_manager.create_offer(&peer_id, &app).await
+    state.webrtc_manager.create_offer(&peer_id, &state.media_manager, &app).await
 }
 
 /// Accept an incoming offer from `from`. Emits `webrtc_answer` event.
@@ -34,7 +34,7 @@ pub async fn webrtc_handle_offer(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.webrtc_manager.handle_offer(&from, sdp, &app).await
+    state.webrtc_manager.handle_offer(&from, sdp, &state.media_manager, &app).await
 }
 
 /// Process an answer received from `from` (must have an existing peer entry).
@@ -79,6 +79,17 @@ pub async fn webrtc_send(
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
     state.webrtc_manager.send(&peer_id, data).await
+}
+
+/// Ensure existing audio/video tracks are added to a specific peer.
+/// Call when a new peer connects while already in a voice channel.
+#[tauri::command]
+pub async fn webrtc_ensure_tracks(
+    peer_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.webrtc_manager.ensure_tracks_for_peer(&peer_id, &app, &state.media_manager).await
 }
 
 /// Close and remove the peer connection for `peer_id`.

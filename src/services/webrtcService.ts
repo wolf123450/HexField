@@ -14,7 +14,6 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { logger } from '@/utils/logger'
 
 export type DataChannelMessageHandler = (userId: string, data: unknown) => void
-export type RemoteTrackHandler = (userId: string, stream: MediaStream, track: MediaStreamTrack) => void
 
 interface WebRtcConnEvent    { userId: string }
 interface WebRtcDataEvent    { from: string; payload: string }
@@ -41,7 +40,6 @@ export class WebRTCService {
     onDataMessage: DataChannelMessageHandler,
     onPeerConnected?: (userId: string) => void,
     onPeerDisconnected?: (userId: string) => void,
-    _onRemoteTrack?: RemoteTrackHandler,
   ): void {
     this._onDataMessage = onDataMessage
     this._onPeerConnected = onPeerConnected ?? null
@@ -153,23 +151,47 @@ export class WebRTCService {
     // ICE configuration is handled in Rust (webrtc_manager.rs).
   }
 
-  // ── Phase 2 stubs (voice / screen share) ─────────────────────────────────
-  // These are no-ops until Rust media track support is implemented.
+  // ── Media control (Rust-native audio pipeline) ─────────────────────────────
 
-  addAudioTrack(_track: MediaStreamTrack, _stream: MediaStream): void {
-    logger.warn('webrtc', 'addAudioTrack: not yet implemented in Rust backend (Phase 2)')
+  /**
+   * Start mic capture in Rust. Audio flows entirely in Rust:
+   * cpal → Opus encode → WebRTC track. No MediaStream crosses IPC.
+   */
+  async addAudioTrack(deviceId?: string): Promise<void> {
+    await invoke('media_start_mic', { deviceId: deviceId ?? null })
   }
 
-  removeAudioTracks(): void {
-    logger.warn('webrtc', 'removeAudioTracks: not yet implemented in Rust backend (Phase 2)')
+  /**
+   * Stop mic capture and remove audio tracks from all peers.
+   */
+  async removeAudioTracks(): Promise<void> {
+    await invoke('media_stop_mic')
   }
 
-  addScreenShareTrack(_track: MediaStreamTrack, _maxBitrateKbps?: number): void {
-    logger.warn('webrtc', 'addScreenShareTrack: not yet implemented in Rust backend (Phase 2)')
+  /**
+   * Check if screen sharing is supported on this platform.
+   */
+  async isScreenShareSupported(): Promise<boolean> {
+    return await invoke<boolean>('media_screen_share_supported')
   }
 
-  removeScreenShareTrack(): void {
-    logger.warn('webrtc', 'removeScreenShareTrack: not yet implemented in Rust backend (Phase 2)')
+  /**
+   * Start screen share via Rust capture + openh264 encode + WebRTC video track.
+   */
+  async addScreenShareTrack(sourceId: string, fps?: number, bitrateKbps?: number, useNewPipeline?: boolean, dualEncoding?: boolean, inlinePreview?: boolean, downscaleMethod?: string): Promise<void> {
+    await invoke('media_start_screen_share', {
+      sourceId,
+      fps: fps ?? 30,
+      bitrateKbps: bitrateKbps ?? 0,
+      useNewPipeline: useNewPipeline ?? false,
+      dualEncoding: dualEncoding ?? false,
+      inlinePreview: inlinePreview ?? false,
+      downscaleMethod: downscaleMethod ?? 'bilinear',
+    })
+  }
+
+  async removeScreenShareTrack(): Promise<void> {
+    await invoke('media_stop_screen_share')
   }
 }
 

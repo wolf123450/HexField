@@ -20,16 +20,18 @@
       <label class="form-label">Input Device (Microphone)</label>
       <select v-model="inputDevice" class="form-select" @change="saveInputDevice">
         <option value="">Default</option>
-        <option v-for="d in audioInputs" :key="d.deviceId" :value="d.deviceId">{{ d.label || d.deviceId }}</option>
+        <option v-for="d in audioInputs" :key="d.id" :value="d.id">{{ d.name }}</option>
       </select>
+      <div v-if="inputDeviceMissing" class="device-warning">⚠ Selected input device not found — Default will be used</div>
     </div>
 
     <div class="form-row">
       <label class="form-label">Output Device (Speaker/Headphones)</label>
       <select v-model="outputDevice" class="form-select" @change="saveOutputDevice">
         <option value="">Default</option>
-        <option v-for="d in audioOutputs" :key="d.deviceId" :value="d.deviceId">{{ d.label || d.deviceId }}</option>
+        <option v-for="d in audioOutputs" :key="d.id" :value="d.id">{{ d.name }}</option>
       </select>
+      <div v-if="outputDeviceMissing" class="device-warning">⚠ Selected output device not found — Default will be used</div>
     </div>
 
     <div class="form-row">
@@ -49,6 +51,7 @@
         <option :value="10">10 fps — Minimal bandwidth</option>
         <option :value="15">15 fps — Balanced</option>
         <option :value="30">30 fps — Smooth</option>
+        <option :value="60">60 fps — Ultra smooth</option>
       </select>
     </div>
 
@@ -60,8 +63,20 @@
         <option value="1mbps">1 Mbps — Balanced</option>
         <option value="2.5mbps">2.5 Mbps — High</option>
         <option value="5mbps">5 Mbps — Very High</option>
+        <option value="10mbps">10 Mbps — Maximum</option>
       </select>
       <p class="form-hint">Limits the maximum outgoing bitrate for screen sharing. Lower values reduce CPU and bandwidth usage.</p>
+    </div>
+
+    <div v-if="settingsStore.settings.experimentalNewPipeline" class="form-row">
+      <label class="form-label">Screen Share Downscale Method</label>
+      <select v-model="videoDownscaleMethod" class="form-select" @change="saveDownscaleMethod">
+        <option value="nearest">Nearest Neighbor — Fastest, pixelated</option>
+        <option value="bilinear">Bilinear — Smooth, balanced</option>
+        <option value="bicubic">Bicubic — Sharp, detailed</option>
+        <option value="lanczos3">Lanczos-3 — Sharpest, most CPU</option>
+      </select>
+      <p class="form-hint">Algorithm used when downscaling to the target resolution. Takes effect on next screen share.</p>
     </div>
 
     <div class="form-row">
@@ -99,9 +114,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useNetworkStore } from '@/stores/networkStore'
+
+interface AudioDeviceInfo { id: string; name: string }
+interface AudioDeviceList { inputs: AudioDeviceInfo[]; outputs: AudioDeviceInfo[] }
 
 const settingsStore = useSettingsStore()
 const networkStore  = useNetworkStore()
@@ -127,30 +147,55 @@ const natDescription = computed(() => ({
 const noiseSuppression = ref(settingsStore.settings.noiseSuppression)
 const videoQuality  = ref(settingsStore.settings.videoQuality)
 const videoBitrate  = ref(settingsStore.settings.videoBitrate)
-const videoFrameRate = ref<10 | 15 | 30>(settingsStore.settings.videoFrameRate)
-const audioInputs   = ref<MediaDeviceInfo[]>([])
-const audioOutputs  = ref<MediaDeviceInfo[]>([])
+const videoFrameRate = ref<10 | 15 | 30 | 60>(settingsStore.settings.videoFrameRate)
+const videoDownscaleMethod = ref(settingsStore.settings.videoDownscaleMethod)
+const audioInputs   = ref<AudioDeviceInfo[]>([])
+const audioOutputs  = ref<AudioDeviceInfo[]>([])
+const inputDeviceMissing  = computed(() => inputDevice.value !== '' && audioInputs.value.length > 0 && !audioInputs.value.some(d => d.id === inputDevice.value))
+const outputDeviceMissing = computed(() => outputDevice.value !== '' && audioOutputs.value.length > 0 && !audioOutputs.value.some(d => d.id === outputDevice.value))
 const turnServersText = ref(
   settingsStore.settings.customTURNServers.length
     ? JSON.stringify(settingsStore.settings.customTURNServers, null, 2)
     : ''
 )
 
-onMounted(async () => {
+let unlistenDevices: UnlistenFn | null = null
+
+async function refreshDevices() {
   try {
-    const devices = await navigator.mediaDevices.enumerateDevices()
-    audioInputs.value  = devices.filter(d => d.kind === 'audioinput')
-    audioOutputs.value = devices.filter(d => d.kind === 'audiooutput')
+    const list = await invoke<AudioDeviceList>('media_enumerate_devices')
+    audioInputs.value  = list.inputs
+    audioOutputs.value = list.outputs
   } catch {}
+}
+
+onMounted(async () => {
+  await refreshDevices()
+  unlistenDevices = await listen<AudioDeviceList>('media_devices_changed', ({ payload }) => {
+    audioInputs.value  = payload.inputs
+    audioOutputs.value = payload.outputs
+  })
 })
 
-function saveInputDevice()   { settingsStore.updateSetting('inputDeviceId', inputDevice.value) }
-function saveOutputDevice()  { settingsStore.updateSetting('outputDeviceId', outputDevice.value) }
+onUnmounted(() => {
+  unlistenDevices?.()
+  unlistenDevices = null
+})
+
+function saveInputDevice() {
+  settingsStore.updateSetting('inputDeviceId', inputDevice.value)
+  invoke('media_set_input_device', { deviceName: inputDevice.value || null }).catch(() => {})
+}
+function saveOutputDevice() {
+  settingsStore.updateSetting('outputDeviceId', outputDevice.value)
+  invoke('media_set_output_device', { deviceName: outputDevice.value || null }).catch(() => {})
+}
 function saveRendezvousUrl() { settingsStore.updateSetting('rendezvousServerUrl', rendezvousUrl.value.trim()) }
 function saveNoiseSuppression() { settingsStore.updateSetting('noiseSuppression', noiseSuppression.value) }
 function saveVideoQuality()  { settingsStore.updateSetting('videoQuality', videoQuality.value) }
 function saveVideoBitrate()  { settingsStore.updateSetting('videoBitrate', videoBitrate.value) }
 function saveVideoFrameRate() { settingsStore.updateSetting('videoFrameRate', videoFrameRate.value) }
+function saveDownscaleMethod() { settingsStore.updateSetting('videoDownscaleMethod', videoDownscaleMethod.value as 'nearest' | 'bilinear' | 'bicubic' | 'lanczos3') }
 function saveTURNServers() {
   try {
     const servers = turnServersText.value.trim() ? JSON.parse(turnServersText.value) : []
@@ -178,4 +223,5 @@ function saveTURNServers() {
 .nat-symmetric  { background: rgba(237, 66,  69,  0.15); color: var(--error-color); }
 .nat-unknown    { background: var(--bg-secondary); color: var(--text-secondary); }
 .nat-hint { font-size: 12px; color: var(--text-secondary); }
+.device-warning { font-size: 11px; color: var(--warning-color); margin-top: var(--spacing-xs); }
 </style>

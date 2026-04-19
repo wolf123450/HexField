@@ -311,7 +311,28 @@ screenStreams: Map<userId, MediaStream>  // keyed by userId, populated by networ
 
 ---
 
-## 14. Video Quality & Bitrate Settings
+## 14. Feature Flag Policy for Voice & Screen Share
+
+Experimental feature flags (`experimentalNewPipeline`, `experimentalDualEncoding`, `experimentalInlinePreview`) control **local-only behaviour**. They must never alter the wire protocol or the format of messages exchanged between peers.
+
+### Rules
+
+1. **Feature flags dictate local behaviour only.** A flag may change which encoder pipeline runs locally, what preview method is used, or what encoding parameters are applied — but the output sent over WebRTC must remain compatible regardless of flag state.
+2. **You cannot feature-flag inter-client communication details.** If a change affects the wire format, signaling protocol, or data channel message schema, it is a protocol change — not a feature flag.
+3. **Gracefully handle peers with different capabilities.** A client that doesn't support dual encoding must silently ignore a `quality_request` it can't fulfil. A client receiving an unknown field in a broadcast (e.g. `availableTiers`) must ignore it without error. The general principle: unknown fields are ignored, missing optional fields use defaults.
+4. **No capability negotiation required.** Since flags are local-only and the output format is stable (H.264 over RTP), peers don't need to negotiate capabilities. Each side independently decides how to encode/decode.
+
+### Current flags
+
+| Flag | Controls | Wire impact |
+|------|----------|-------------|
+| `experimentalNewPipeline` | Threaded encoder vs inline WGC callback | None — both produce H.264 RTP |
+| `experimentalDualEncoding` | Low+high quality tiers | Graceful — `quality_request` silently ignored by peers without dual encoding |
+| `experimentalInlinePreview` | Local self-preview method (base64 vs disk) | None — purely local |
+
+---
+
+## 15. Video Quality & Bitrate Settings
 
 Add to `Settings > Voice & Video` tab.
 

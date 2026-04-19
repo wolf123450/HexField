@@ -47,5 +47,5 @@ export function isValidProfileUpdate(msg: Obj): boolean {
 }
 
 export function isValidVoiceJoin(msg: Obj): boolean {
-  return isString(msg.channelId)
+  return isString(msg.channelId) && isString(msg.serverId)
 }

@@ -125,3 +125,25 @@ See [TODO.md](TODO.md) for full task lists with checkboxes.
 | TURN crate | **`turn` (webrtc-rs project)** | Active; `turn-rs` is a separate unmaintained crate — do not confuse them |
 | Protocol handler | **`tauri-plugin-deep-link`** for `hexfield://` | Clickable invite links, device pairing, archive imports |
 | Storage limit | **5 GB default, 10 GB max, user configurable** | Auto-pruning (attachments first, then content); server admin can archive + re-baseline |
+| Feature flags | **Local behaviour only** | Feature flags must never change the wire protocol or inter-client message format. They control local-only behaviour (pipeline selection, UI, encoding parameters). Clients must gracefully handle unknown capabilities from peers — e.g. ignore unrecognised fields, fall back when a quality tier isn't available |
+
+---
+
+## Superpowers — Feature Extensions & Infrastructure
+
+These are extended feature specifications and infrastructure improvements beyond the core Phase 1–8 roadmap. Full specifications and detailed implementation plans live in [`docs/superpowers/`](superpowers/).
+
+### Infrastructure & Migration Plans
+
+| Plan | Feature Area | File |
+|------|--------------|------|
+| Client App Diesel ORM | Migrate src-tauri from raw `rusqlite` to Diesel 2 ORM | [`docs/superpowers/plans/2026-04-09-diesel-migration.md`](superpowers/plans/2026-04-09-diesel-migration.md) |
+| Rendezvous Server | Full `hexfield-server` implementation (auth, discovery, relay, TURN) | [`docs/superpowers/plans/2026-04-09-rendezvous-server.md`](superpowers/plans/2026-04-09-rendezvous-server.md) |
+| UPnP Port Forwarding | Auto-forward LAN port, discover public IP, embed endpoints in invites | [`docs/superpowers/plans/2026-04-09-upnp-public-endpoint.md`](superpowers/plans/2026-04-09-upnp-public-endpoint.md) |
+| Image Asset Protocol | Replace data URLs with asset protocol, optimize image serving | [`docs/superpowers/plans/2026-04-10-image-asset-protocol.md`](superpowers/plans/2026-04-10-image-asset-protocol.md) |
+
+### Feature Enhancement Specs
+
+| Spec | Feature Area | File |
+|------|--------------|------|
+| Moderation & Access Control | Kick, ban, voice mute, ACL, personal block, audit logs, closed servers | [`docs/superpowers/specs/2026-04-04-moderation-and-access-control.md`](superpowers/specs/2026-04-04-moderation-and-access-control.md) |

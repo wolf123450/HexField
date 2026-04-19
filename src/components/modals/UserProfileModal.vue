@@ -309,6 +309,13 @@ async function saveAvatar(dataUrl: string) {
 
   // Broadcast to peers — send hash, not data URL
   networkStore.broadcastProfile({ avatarHash: hash }).catch(() => {})
+
+  // Persist as a mutation so avatar survives reconnects/restarts
+  if (uid) {
+    for (const sid of serversStore.joinedServerIds) {
+      serversStore.broadcastProfileMutation(sid, { avatarHash: hash }).catch(() => {})
+    }
+  }
 }
 
 async function saveBio() {
@@ -318,6 +325,7 @@ async function saveBio() {
   if (uid) {
     for (const sid of serversStore.joinedServerIds) {
       serversStore.updateMemberProfile(sid, uid, { bio: text })
+      serversStore.broadcastProfileMutation(sid, { bio: text }).catch(() => {})
     }
   }
   networkStore.broadcastProfile({ bio: text }).catch(() => {})

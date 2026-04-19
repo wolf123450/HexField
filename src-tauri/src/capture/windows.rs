@@ -1,0 +1,1508 @@
+//! Windows screen capture via Windows Graphics Capture (WGC).
+//!
+//! Uses the `windows-capture` crate which wraps the WinRT
+//! Windows.Graphics.Capture API. Delivers frames at compositor
+//! refresh rate (~60fps) with GPU-resident textures.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use bytes::Bytes;
+use tauri::Emitter;
+use webrtc::media::Sample;
+use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
+use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
+use windows_capture::frame::Frame;
+use windows_capture::graphics_capture_api::InternalCaptureControl;
+use windows_capture::monitor::Monitor as WcMonitor;
+use windows_capture::settings::{
+    ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
+    MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
+};
+use windows_capture::window::Window as WcWindow;
+
+use super::{CaptureConfig, ScreenCapturer, ScreenSourceInfo, ScreenSourceList};
+use rayon::prelude::*;
+
+pub struct WgcCapturer;
+
+impl WgcCapturer {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Sanitize Windows monitor name: "\\.\DISPLAY2" → "Display 2"
+    fn sanitize_monitor_name(raw: &str, index: usize) -> String {
+        let stripped = raw
+            .trim_start_matches("\\\\")
+            .trim_start_matches('.')
+            .trim_start_matches('\\');
+
+        if let Some(num_start) = stripped.find(|c: char| c.is_ascii_digit()) {
+            let prefix = &stripped[..num_start];
+            let number = &stripped[num_start..];
+            let mut title = String::new();
+            for (i, c) in prefix.chars().enumerate() {
+                if i == 0 {
+                    title.extend(c.to_uppercase());
+                } else {
+                    title.extend(c.to_lowercase());
+                }
+            }
+            format!("{title} {number}")
+        } else if stripped.is_empty() {
+            format!("Display {}", index + 1)
+        } else {
+            stripped.to_string()
+        }
+    }
+}
+
+impl ScreenCapturer for WgcCapturer {
+    fn is_supported(&self) -> bool {
+        true
+    }
+
+    fn enumerate(&self) -> Result<ScreenSourceList, String> {
+        let monitors: Vec<ScreenSourceInfo> = WcMonitor::enumerate()
+            .map_err(|e| format!("monitor enumerate: {e}"))?
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let raw_name = m.name().unwrap_or_default();
+                let device_name = m.device_name().unwrap_or_default();
+                let width = m.width().unwrap_or(0);
+                let height = m.height().unwrap_or(0);
+                let name = if raw_name.is_empty() {
+                    format!("Display {}", i + 1)
+                } else {
+                    Self::sanitize_monitor_name(&raw_name, i)
+                };
+                ScreenSourceInfo {
+                    id: format!("monitor:{device_name}"),
+                    name,
+                    width,
+                    height,
+                    source_type: "monitor".to_string(),
+                    thumbnail: None,
+                }
+            })
+            .collect();
+
+        let windows: Vec<ScreenSourceInfo> = WcWindow::enumerate()
+            .map_err(|e| format!("window enumerate: {e}"))?
+            .into_iter()
+            .filter(|w| !w.title().unwrap_or_default().is_empty())
+            .enumerate()
+            .map(|(_i, w)| {
+                let title = w.title().unwrap_or_default();
+                let hwnd = w.as_raw_hwnd() as usize;
+                let width = w.width().unwrap_or(0) as u32;
+                let height = w.height().unwrap_or(0) as u32;
+                ScreenSourceInfo {
+                    id: format!("window:{hwnd}"),
+                    name: title,
+                    width,
+                    height,
+                    source_type: "window".to_string(),
+                    thumbnail: None,
+                }
+            })
+            .collect();
+
+        Ok(ScreenSourceList { monitors, windows })
+    }
+
+    fn start(&self, config: CaptureConfig) -> Result<(), String> {
+        let (source_type, source_key) = config
+            .source_id
+            .split_once(':')
+            .ok_or("invalid source_id format")?;
+
+        let flags = WgcFlags {
+            video_track: config.video_track,
+            video_track_high: config.video_track_high,
+            frame_duration: Duration::from_millis(1000 / config.fps.max(1) as u64),
+            bitrate_kbps: config.bitrate_kbps,
+            bitrate_kbps_high: config.bitrate_kbps_high,
+            screen_active: config.screen_active,
+            force_keyframe: config.force_keyframe,
+            app: config.app,
+            preview_dir: config.preview_dir,
+            use_new_pipeline: config.use_new_pipeline,
+            inline_preview: config.inline_preview,
+            rt: tokio::runtime::Handle::current(),
+            downscale_method: config.downscale_method,
+        };
+
+        match source_type {
+            "monitor" => {
+                let monitors = WcMonitor::enumerate().map_err(|e| e.to_string())?;
+                let monitor = monitors
+                    .into_iter()
+                    .find(|m| m.device_name().unwrap_or_default() == source_key)
+                    .ok_or_else(|| format!("monitor not found: {source_key}"))?;
+
+                let settings = Settings::new(
+                    monitor,
+                    CursorCaptureSettings::WithoutCursor,
+                    DrawBorderSettings::WithoutBorder,
+                    SecondaryWindowSettings::Default,
+                    MinimumUpdateIntervalSettings::Default,
+                    DirtyRegionSettings::Default,
+                    ColorFormat::Bgra8,
+                    flags,
+                );
+
+                WgcHandler::start(settings).map_err(|e| e.to_string())
+            }
+            "window" => {
+                let hwnd_val: usize = source_key.parse()
+                    .map_err(|e: std::num::ParseIntError| e.to_string())?;
+                let window = WcWindow::from_raw_hwnd(hwnd_val as *mut std::ffi::c_void);
+                if !window.is_valid() {
+                    return Err(format!("window not found: HWND {hwnd_val}"));
+                }
+
+                let settings = Settings::new(
+                    window,
+                    CursorCaptureSettings::WithoutCursor,
+                    DrawBorderSettings::WithoutBorder,
+                    SecondaryWindowSettings::Default,
+                    MinimumUpdateIntervalSettings::Default,
+                    DirtyRegionSettings::Default,
+                    ColorFormat::Bgra8,
+                    flags,
+                );
+
+                WgcHandler::start(settings).map_err(|e| e.to_string())
+            }
+            _ => Err(format!("unsupported source type: {source_type}")),
+        }
+    }
+}
+
+// ── Fused BGRA → YUV420 BT.709 conversion ──────────────────────────────────
+
+// BT.709 fixed-point coefficients (×65536)
+const YR: i32 = 13933;
+const YG: i32 = 46871;
+const YB: i32 = 4732;
+const UR: i32 = -7509;
+const UG: i32 = -25259;
+const UB: i32 = 32768;
+const VR: i32 = 32768;
+const VG: i32 = -29763;
+const VB: i32 = -3005;
+
+/// Convert BGRA pixel data to YUV420 planar (BT.709) in a single pass.
+///
+/// Returns `(Y_plane, U_plane, V_plane)` where Y is `w*h` bytes and
+/// U/V are `(w/2)*(h/2)` bytes each (4:2:0 subsampling).
+pub(crate) fn bgra_to_yuv420_bt709(bgra: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let uv_w = w / 2;
+    let uv_h = h / 2;
+    let mut y_plane = vec![0u8; w * h];
+    let mut u_plane = vec![0u8; uv_w * uv_h];
+    let mut v_plane = vec![0u8; uv_w * uv_h];
+
+    let stride = w * 4; // BGRA bytes per row
+
+    // Luma (parallel rows)
+    y_plane.par_chunks_mut(w).enumerate().for_each(|(row, y_row)| {
+        let row_off = row * stride;
+        for col in 0..w {
+            let px = row_off + col * 4;
+            let b = bgra[px] as i32;
+            let g = bgra[px + 1] as i32;
+            let r = bgra[px + 2] as i32;
+
+            let y = ((YR * r + YG * g + YB * b + 32768) >> 16).clamp(0, 255);
+            y_row[col] = y as u8;
+        }
+    });
+
+    // Chroma: average each 2×2 block (parallel rows)
+    let uv_planes: Vec<(u8, u8)> = (0..uv_h).into_par_iter().flat_map(|uv_row| {
+        let src_row = uv_row * 2;
+        (0..uv_w).map(move |uv_col| {
+            let src_col = uv_col * 2;
+
+            let mut sum_r: i32 = 0;
+            let mut sum_g: i32 = 0;
+            let mut sum_b: i32 = 0;
+            for dy in 0..2 {
+                let row_off = (src_row + dy) * stride;
+                for dx in 0..2 {
+                    let px = row_off + (src_col + dx) * 4;
+                    sum_b += bgra[px] as i32;
+                    sum_g += bgra[px + 1] as i32;
+                    sum_r += bgra[px + 2] as i32;
+                }
+            }
+            let avg_r = sum_r / 4;
+            let avg_g = sum_g / 4;
+            let avg_b = sum_b / 4;
+
+            let u = ((UR * avg_r + UG * avg_g + UB * avg_b + 32768) >> 16) + 128;
+            let v = ((VR * avg_r + VG * avg_g + VB * avg_b + 32768) >> 16) + 128;
+
+            (u.clamp(0, 255) as u8, v.clamp(0, 255) as u8)
+        }).collect::<Vec<_>>()
+    }).collect();
+
+    for (idx, (u, v)) in uv_planes.into_iter().enumerate() {
+        u_plane[idx] = u;
+        v_plane[idx] = v;
+    }
+
+    (y_plane, u_plane, v_plane)
+}
+
+/// Convert BGRA pixel data to YUV420 planar (BT.709) with nearest-neighbor
+/// downscaling from `(src_w, src_h)` to `(dst_w, dst_h)` in a single pass.
+pub(crate) fn bgra_to_yuv420_bt709_downscale(
+    bgra: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let uv_w = dst_w / 2;
+    let uv_h = dst_h / 2;
+    let mut y_plane = vec![0u8; dst_w * dst_h];
+    let mut u_plane = vec![0u8; uv_w * uv_h];
+    let mut v_plane = vec![0u8; uv_w * uv_h];
+
+    let src_stride = src_w * 4;
+
+    // Luma: nearest-neighbor sample for each destination pixel (parallel rows)
+    y_plane.par_chunks_mut(dst_w).enumerate().for_each(|(dst_row, row)| {
+        let src_row = dst_row * src_h / dst_h;
+        let row_off = src_row * src_stride;
+        for dst_col in 0..dst_w {
+            let src_col = dst_col * src_w / dst_w;
+            let px = row_off + src_col * 4;
+            let b = bgra[px] as i32;
+            let g = bgra[px + 1] as i32;
+            let r = bgra[px + 2] as i32;
+
+            let y = ((YR * r + YG * g + YB * b + 32768) >> 16).clamp(0, 255);
+            row[dst_col] = y as u8;
+        }
+    });
+
+    // Chroma: nearest-neighbor sample 2×2 blocks (parallel rows)
+    let uv_planes: Vec<(u8, u8)> = (0..uv_h).into_par_iter().flat_map(|uv_row| {
+        let dst_row = uv_row * 2;
+        (0..uv_w).map(move |uv_col| {
+            let dst_col = uv_col * 2;
+
+            let mut sum_r: i32 = 0;
+            let mut sum_g: i32 = 0;
+            let mut sum_b: i32 = 0;
+            for dy in 0..2 {
+                let src_row = (dst_row + dy) * src_h / dst_h;
+                let row_off = src_row * src_stride;
+                for dx in 0..2 {
+                    let src_col = (dst_col + dx) * src_w / dst_w;
+                    let px = row_off + src_col * 4;
+                    sum_b += bgra[px] as i32;
+                    sum_g += bgra[px + 1] as i32;
+                    sum_r += bgra[px + 2] as i32;
+                }
+            }
+            let avg_r = sum_r / 4;
+            let avg_g = sum_g / 4;
+            let avg_b = sum_b / 4;
+
+            let u = ((UR * avg_r + UG * avg_g + UB * avg_b + 32768) >> 16) + 128;
+            let v = ((VR * avg_r + VG * avg_g + VB * avg_b + 32768) >> 16) + 128;
+
+            (u.clamp(0, 255) as u8, v.clamp(0, 255) as u8)
+        }).collect::<Vec<_>>()
+    }).collect();
+
+    for (idx, (u, v)) in uv_planes.into_iter().enumerate() {
+        u_plane[idx] = u;
+        v_plane[idx] = v;
+    }
+
+    (y_plane, u_plane, v_plane)
+}
+
+/// Fused BGRA→YUV420 BT.709 with bilinear downscaling.
+pub(crate) fn bgra_to_yuv420_bt709_downscale_bilinear(
+    bgra: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let uv_w = dst_w / 2;
+    let uv_h = dst_h / 2;
+    let mut y_plane = vec![0u8; dst_w * dst_h];
+    let mut u_plane = vec![0u8; uv_w * uv_h];
+    let mut v_plane = vec![0u8; uv_w * uv_h];
+    let src_stride = src_w * 4;
+
+    let x_ratio = ((src_w as u64 - 1) << 16) / dst_w as u64;
+    let y_ratio = ((src_h as u64 - 1) << 16) / dst_h as u64;
+
+    #[inline(always)]
+    fn sample_bilinear(bgra: &[u8], src_stride: usize, src_w: usize, src_h: usize,
+                       sx_fp: u64, sy_fp: u64) -> (i32, i32, i32) {
+        let x0 = (sx_fp >> 16) as usize;
+        let y0 = (sy_fp >> 16) as usize;
+        let x1 = (x0 + 1).min(src_w - 1);
+        let y1 = (y0 + 1).min(src_h - 1);
+        let fx = (sx_fp & 0xFFFF) as i32;
+        let fy = (sy_fp & 0xFFFF) as i32;
+        let ifx = 65536 - fx;
+        let ify = 65536 - fy;
+
+        let p00 = y0 * src_stride + x0 * 4;
+        let p10 = y0 * src_stride + x1 * 4;
+        let p01 = y1 * src_stride + x0 * 4;
+        let p11 = y1 * src_stride + x1 * 4;
+
+        let interp = |ch: usize| -> i32 {
+            let top = ifx * bgra[p00 + ch] as i32 + fx * bgra[p10 + ch] as i32;
+            let bot = ifx * bgra[p01 + ch] as i32 + fx * bgra[p11 + ch] as i32;
+            ((ify as i64 * (top >> 8) as i64 + fy as i64 * (bot >> 8) as i64) >> 24) as i32
+        };
+
+        (interp(2), interp(1), interp(0)) // r, g, b (BGRA layout)
+    }
+
+    // Luma plane (parallel rows)
+    y_plane.par_chunks_mut(dst_w).enumerate().for_each(|(dst_row, row)| {
+        let sy = dst_row as u64 * y_ratio;
+        for dst_col in 0..dst_w {
+            let sx = dst_col as u64 * x_ratio;
+            let (r, g, b) = sample_bilinear(bgra, src_stride, src_w, src_h, sx, sy);
+            let y = ((YR * r + YG * g + YB * b + 32768) >> 16).clamp(0, 255);
+            row[dst_col] = y as u8;
+        }
+    });
+
+    // Chroma planes (parallel rows)
+    let uv_planes: Vec<(u8, u8)> = (0..uv_h).into_par_iter().flat_map(|uv_row| {
+        (0..uv_w).map(move |uv_col| {
+            let mut sum_r: i32 = 0;
+            let mut sum_g: i32 = 0;
+            let mut sum_b: i32 = 0;
+            for dy in 0..2u64 {
+                let dst_row = uv_row as u64 * 2 + dy;
+                let sy = dst_row * y_ratio;
+                for dx in 0..2u64 {
+                    let dst_col = uv_col as u64 * 2 + dx;
+                    let sx = dst_col * x_ratio;
+                    let (r, g, b) = sample_bilinear(bgra, src_stride, src_w, src_h, sx, sy);
+                    sum_r += r;
+                    sum_g += g;
+                    sum_b += b;
+                }
+            }
+            let avg_r = sum_r / 4;
+            let avg_g = sum_g / 4;
+            let avg_b = sum_b / 4;
+            let u = ((UR * avg_r + UG * avg_g + UB * avg_b + 32768) >> 16) + 128;
+            let v = ((VR * avg_r + VG * avg_g + VB * avg_b + 32768) >> 16) + 128;
+            (u.clamp(0, 255) as u8, v.clamp(0, 255) as u8)
+        }).collect::<Vec<_>>()
+    }).collect();
+
+    for (idx, (u, v)) in uv_planes.into_iter().enumerate() {
+        u_plane[idx] = u;
+        v_plane[idx] = v;
+    }
+
+    (y_plane, u_plane, v_plane)
+}
+
+/// Fused BGRA→YUV420 BT.709 with bicubic (Catmull-Rom) downscaling.
+pub(crate) fn bgra_to_yuv420_bt709_downscale_bicubic(
+    bgra: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let uv_w = dst_w / 2;
+    let uv_h = dst_h / 2;
+    let mut y_plane = vec![0u8; dst_w * dst_h];
+    let mut u_plane = vec![0u8; uv_w * uv_h];
+    let mut v_plane = vec![0u8; uv_w * uv_h];
+    let src_stride = src_w * 4;
+
+    // Catmull-Rom weight (a = -0.5), input t is 16.16 fixed-point absolute distance
+    // Returns weight * 4096 (fixed-point 12-bit)
+    #[inline(always)]
+    fn catmull_rom_fp(t: i32) -> i32 {
+        let t = t.unsigned_abs() as i32;
+        if t <= 65536 {
+            let tn = t as i64;
+            let t2 = (tn * tn) >> 16;
+            let t3 = (t2 * tn) >> 16;
+            let w = ((6144 * t3 - 10240 * t2) >> 16) + 4096;
+            w as i32
+        } else if t <= 131072 {
+            let tn = t as i64;
+            let t2 = (tn * tn) >> 16;
+            let t3 = (t2 * tn) >> 16;
+            let w = ((-2048 * t3 + 10240 * t2 - 16384 * tn) >> 16) + 8192;
+            w as i32
+        } else {
+            0
+        }
+    }
+
+    #[inline(always)]
+    fn sample_bicubic(bgra: &[u8], src_stride: usize, src_w: usize, src_h: usize,
+                      sx_fp: u64, sy_fp: u64) -> (i32, i32, i32) {
+        let ix = (sx_fp >> 16) as i32;
+        let iy = (sy_fp >> 16) as i32;
+        let fx = (sx_fp & 0xFFFF) as i32;
+        let fy = (sy_fp & 0xFFFF) as i32;
+
+        let mut sum_r: i64 = 0;
+        let mut sum_g: i64 = 0;
+        let mut sum_b: i64 = 0;
+        let mut sum_w: i64 = 0;
+
+        for j in -1i32..=2 {
+            let sy = (iy + j).clamp(0, src_h as i32 - 1) as usize;
+            let wy = catmull_rom_fp((j * 65536 - fy).unsigned_abs() as i32) as i64;
+            let row_off = sy * src_stride;
+            for i in -1i32..=2 {
+                let sx = (ix + i).clamp(0, src_w as i32 - 1) as usize;
+                let wx = catmull_rom_fp((i * 65536 - fx).unsigned_abs() as i32) as i64;
+                let w = wx * wy;
+                let px = row_off + sx * 4;
+                sum_b += w * bgra[px] as i64;
+                sum_g += w * bgra[px + 1] as i64;
+                sum_r += w * bgra[px + 2] as i64;
+                sum_w += w;
+            }
+        }
+
+        if sum_w == 0 {
+            return (0, 0, 0);
+        }
+        let r = (sum_r / sum_w).clamp(0, 255) as i32;
+        let g = (sum_g / sum_w).clamp(0, 255) as i32;
+        let b = (sum_b / sum_w).clamp(0, 255) as i32;
+        (r, g, b)
+    }
+
+    let x_ratio = ((src_w as u64 - 1) << 16) / dst_w as u64;
+    let y_ratio = ((src_h as u64 - 1) << 16) / dst_h as u64;
+
+    // Luma (parallel rows)
+    y_plane.par_chunks_mut(dst_w).enumerate().for_each(|(dst_row, row)| {
+        let sy = dst_row as u64 * y_ratio;
+        for dst_col in 0..dst_w {
+            let sx = dst_col as u64 * x_ratio;
+            let (r, g, b) = sample_bicubic(bgra, src_stride, src_w, src_h, sx, sy);
+            let y = ((YR * r + YG * g + YB * b + 32768) >> 16).clamp(0, 255);
+            row[dst_col] = y as u8;
+        }
+    });
+
+    // Chroma (parallel rows)
+    let uv_planes: Vec<(u8, u8)> = (0..uv_h).into_par_iter().flat_map(|uv_row| {
+        (0..uv_w).map(move |uv_col| {
+            let mut sum_r: i32 = 0;
+            let mut sum_g: i32 = 0;
+            let mut sum_b: i32 = 0;
+            for dy in 0..2u64 {
+                let dst_row = uv_row as u64 * 2 + dy;
+                let sy = dst_row * y_ratio;
+                for dx in 0..2u64 {
+                    let dst_col = uv_col as u64 * 2 + dx;
+                    let sx = dst_col * x_ratio;
+                    let (r, g, b) = sample_bicubic(bgra, src_stride, src_w, src_h, sx, sy);
+                    sum_r += r;
+                    sum_g += g;
+                    sum_b += b;
+                }
+            }
+            let avg_r = sum_r / 4;
+            let avg_g = sum_g / 4;
+            let avg_b = sum_b / 4;
+            let u = ((UR * avg_r + UG * avg_g + UB * avg_b + 32768) >> 16) + 128;
+            let v = ((VR * avg_r + VG * avg_g + VB * avg_b + 32768) >> 16) + 128;
+            (u.clamp(0, 255) as u8, v.clamp(0, 255) as u8)
+        }).collect::<Vec<_>>()
+    }).collect();
+
+    for (idx, (u, v)) in uv_planes.into_iter().enumerate() {
+        u_plane[idx] = u;
+        v_plane[idx] = v;
+    }
+
+    (y_plane, u_plane, v_plane)
+}
+
+/// Fused BGRA→YUV420 BT.709 with Lanczos-3 downscaling.
+pub(crate) fn bgra_to_yuv420_bt709_downscale_lanczos3(
+    bgra: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let uv_w = dst_w / 2;
+    let uv_h = dst_h / 2;
+    let mut y_plane = vec![0u8; dst_w * dst_h];
+    let mut u_plane = vec![0u8; uv_w * uv_h];
+    let mut v_plane = vec![0u8; uv_w * uv_h];
+    let src_stride = src_w * 4;
+
+    #[inline(always)]
+    fn lanczos3_weight(x: f32) -> f32 {
+        if x.abs() < 1e-6 {
+            return 1.0;
+        }
+        if x.abs() >= 3.0 {
+            return 0.0;
+        }
+        let pi_x = std::f32::consts::PI * x;
+        let pi_x_3 = pi_x / 3.0;
+        (pi_x.sin() / pi_x) * (pi_x_3.sin() / pi_x_3)
+    }
+
+    #[inline(always)]
+    fn sample_lanczos3(bgra: &[u8], src_stride: usize, src_w: usize, src_h: usize,
+                       sx_fp: u64, sy_fp: u64) -> (i32, i32, i32) {
+        let ix = (sx_fp >> 16) as i32;
+        let iy = (sy_fp >> 16) as i32;
+        let fx = (sx_fp & 0xFFFF) as f32 / 65536.0;
+        let fy = (sy_fp & 0xFFFF) as f32 / 65536.0;
+
+        let mut sum_r: f32 = 0.0;
+        let mut sum_g: f32 = 0.0;
+        let mut sum_b: f32 = 0.0;
+        let mut sum_w: f32 = 0.0;
+
+        for j in -2i32..=3 {
+            let sy = (iy + j).clamp(0, src_h as i32 - 1) as usize;
+            let wy = lanczos3_weight(j as f32 - fy);
+            let row_off = sy * src_stride;
+            for i in -2i32..=3 {
+                let sx = (ix + i).clamp(0, src_w as i32 - 1) as usize;
+                let wx = lanczos3_weight(i as f32 - fx);
+                let w = wx * wy;
+                let px = row_off + sx * 4;
+                sum_b += w * bgra[px] as f32;
+                sum_g += w * bgra[px + 1] as f32;
+                sum_r += w * bgra[px + 2] as f32;
+                sum_w += w;
+            }
+        }
+
+        if sum_w.abs() < 1e-6 {
+            return (0, 0, 0);
+        }
+        let r = (sum_r / sum_w).clamp(0.0, 255.0) as i32;
+        let g = (sum_g / sum_w).clamp(0.0, 255.0) as i32;
+        let b = (sum_b / sum_w).clamp(0.0, 255.0) as i32;
+        (r, g, b)
+    }
+
+    let x_ratio = ((src_w as u64 - 1) << 16) / dst_w as u64;
+    let y_ratio = ((src_h as u64 - 1) << 16) / dst_h as u64;
+
+    // Luma (parallel rows)
+    y_plane.par_chunks_mut(dst_w).enumerate().for_each(|(dst_row, row)| {
+        let sy = dst_row as u64 * y_ratio;
+        for dst_col in 0..dst_w {
+            let sx = dst_col as u64 * x_ratio;
+            let (r, g, b) = sample_lanczos3(bgra, src_stride, src_w, src_h, sx, sy);
+            let y = ((YR * r + YG * g + YB * b + 32768) >> 16).clamp(0, 255);
+            row[dst_col] = y as u8;
+        }
+    });
+
+    // Chroma (parallel rows)
+    let uv_planes: Vec<(u8, u8)> = (0..uv_h).into_par_iter().flat_map(|uv_row| {
+        (0..uv_w).map(move |uv_col| {
+            let mut sum_r: i32 = 0;
+            let mut sum_g: i32 = 0;
+            let mut sum_b: i32 = 0;
+            for dy in 0..2u64 {
+                let dst_row = uv_row as u64 * 2 + dy;
+                let sy = dst_row * y_ratio;
+                for dx in 0..2u64 {
+                    let dst_col = uv_col as u64 * 2 + dx;
+                    let sx = dst_col * x_ratio;
+                    let (r, g, b) = sample_lanczos3(bgra, src_stride, src_w, src_h, sx, sy);
+                    sum_r += r;
+                    sum_g += g;
+                    sum_b += b;
+                }
+            }
+            let avg_r = sum_r / 4;
+            let avg_g = sum_g / 4;
+            let avg_b = sum_b / 4;
+            let u = ((UR * avg_r + UG * avg_g + UB * avg_b + 32768) >> 16) + 128;
+            let v = ((VR * avg_r + VG * avg_g + VB * avg_b + 32768) >> 16) + 128;
+            (u.clamp(0, 255) as u8, v.clamp(0, 255) as u8)
+        }).collect::<Vec<_>>()
+    }).collect();
+
+    for (idx, (u, v)) in uv_planes.into_iter().enumerate() {
+        u_plane[idx] = u;
+        v_plane[idx] = v;
+    }
+
+    (y_plane, u_plane, v_plane)
+}
+
+/// Dispatch to the appropriate fused BGRA→YUV420 downscale implementation.
+pub(crate) fn bgra_to_yuv420_bt709_downscale_with_method(
+    bgra: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    method: super::DownscaleMethod,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    match method {
+        super::DownscaleMethod::Nearest => {
+            bgra_to_yuv420_bt709_downscale(bgra, src_w, src_h, dst_w, dst_h)
+        }
+        super::DownscaleMethod::Bilinear => {
+            bgra_to_yuv420_bt709_downscale_bilinear(bgra, src_w, src_h, dst_w, dst_h)
+        }
+        super::DownscaleMethod::Bicubic => {
+            bgra_to_yuv420_bt709_downscale_bicubic(bgra, src_w, src_h, dst_w, dst_h)
+        }
+        super::DownscaleMethod::Lanczos3 => {
+            bgra_to_yuv420_bt709_downscale_lanczos3(bgra, src_w, src_h, dst_w, dst_h)
+        }
+    }
+}
+
+// ── WGC callback handler ────────────────────────────────────────────────────
+
+struct EncoderFrame {
+    bgra: Vec<u8>,
+    src_w: usize,
+    src_h: usize,
+    frame_number: u64,
+    force_keyframe: bool,
+    /// When the BGRA copy finished in on_frame_arrived (for queue-latency measurement)
+    captured_at: std::time::Instant,
+    /// How long on_frame_arrived spent acquiring + copying pixels
+    capture_us: u64,
+}
+
+fn write_jpeg_quality(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+    quality: u8,
+) -> Result<(), String> {
+    use std::io::BufWriter;
+    let tmp = path.with_extension("tmp");
+    let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let writer = BufWriter::new(file);
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(writer, quality);
+    image::DynamicImage::ImageRgba8(
+        image::RgbaImage::from_raw(width, height, rgba.to_vec())
+            .ok_or("invalid RGBA dimensions")?,
+    )
+    .write_with_encoder(encoder)
+    .map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn spawn_encoder_thread(
+    label: &str,
+    dst_w: usize,
+    dst_h: usize,
+    fps: f32,
+    bitrate_kbps: u32,
+    video_track: Arc<TrackLocalStaticSample>,
+    frame_duration: Duration,
+    rt: tokio::runtime::Handle,
+    preview_dir: Option<std::path::PathBuf>,
+    app: tauri::AppHandle,
+    inline_preview: bool,
+    downscale_method: super::DownscaleMethod,
+) -> crossbeam_channel::Sender<EncoderFrame> {
+    let (tx, rx) = crossbeam_channel::bounded::<EncoderFrame>(2);
+    let label = label.to_string();
+
+    std::thread::Builder::new()
+        .name(format!("encoder-{label}"))
+        .spawn(move || {
+            let mut enc_cfg = openh264::encoder::EncoderConfig::new()
+                .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps));
+            if bitrate_kbps > 0 {
+                enc_cfg = enc_cfg
+                    .bitrate(openh264::encoder::BitRate::from_bps(bitrate_kbps * 1000))
+                    .rate_control_mode(openh264::encoder::RateControlMode::Bitrate);
+            }
+            let mut encoder = openh264::encoder::Encoder::with_api_config(
+                openh264::OpenH264API::from_source(),
+                enc_cfg,
+            ).expect("failed to create encoder");
+
+            // Stats accumulation for overlay
+            let mut stats_frame_count: u64 = 0;
+            let mut stats_capture_sum_us: u64 = 0;
+            let mut stats_queue_sum_us: u64 = 0;
+            let mut stats_convert_sum_us: u64 = 0;
+            let mut stats_encode_sum_us: u64 = 0;
+            let mut stats_write_sum_us: u64 = 0;
+            let mut stats_preview_sum_us: u64 = 0;
+            let mut stats_bytes_sum: u64 = 0;
+            let mut stats_last_emit = std::time::Instant::now();
+            let method_name = format!("{:?}", downscale_method).to_lowercase();
+
+            while let Ok(frame) = rx.recv() {
+                let t_recv = std::time::Instant::now();
+                let queue_us = t_recv.duration_since(frame.captured_at).as_micros() as u64;
+                let t_start = std::time::Instant::now();
+
+                if frame.force_keyframe {
+                    encoder.force_intra_frame();
+                }
+
+                let needs_downscale = frame.src_w > dst_w || frame.src_h > dst_h;
+                let (y_plane, u_plane, v_plane) = if needs_downscale {
+                    bgra_to_yuv420_bt709_downscale_with_method(
+                        &frame.bgra, frame.src_w, frame.src_h, dst_w, dst_h,
+                        downscale_method,
+                    )
+                } else {
+                    bgra_to_yuv420_bt709(&frame.bgra, frame.src_w, frame.src_h)
+                };
+
+                let t_after_convert = t_start.elapsed();
+
+                // Use YUVSlices (zero-copy encode from separate plane slices)
+                let slices = openh264::formats::YUVSlices::new(
+                    (&y_plane, &u_plane, &v_plane),
+                    (dst_w, dst_h),
+                    (dst_w, dst_w / 2, dst_w / 2),
+                );
+
+                match encoder.encode(&slices) {
+                    Ok(bitstream) => {
+                        let t_after_encode = t_start.elapsed();
+                        let h264_data = bitstream.to_vec();
+                        let h264_len = h264_data.len();
+                        if !h264_data.is_empty() {
+                            let vt = video_track.clone();
+                            let dur = frame_duration;
+                            let _ = rt.block_on(async {
+                                vt.write_sample(&Sample {
+                                    data: Bytes::from(h264_data),
+                                    duration: dur,
+                                    ..Default::default()
+                                }).await
+                            });
+                        }
+                        let t_after_send = t_start.elapsed();
+
+                        if frame.frame_number == 1 || frame.frame_number % 300 == 0 {
+                            let total = t_start.elapsed();
+                            log::info!(
+                                "[media-{label}] frame #{}: convert={:.1}ms enc={:.1}ms send={:.1}ms total={:.1}ms ({}x{})",
+                                frame.frame_number,
+                                t_after_convert.as_secs_f64() * 1000.0,
+                                t_after_encode.as_secs_f64() * 1000.0,
+                                t_after_send.as_secs_f64() * 1000.0,
+                                total.as_secs_f64() * 1000.0,
+                                dst_w, dst_h,
+                            );
+                        }
+
+                        stats_frame_count += 1;
+                        stats_capture_sum_us += frame.capture_us;
+                        stats_queue_sum_us += queue_us;
+                        stats_convert_sum_us += t_after_convert.as_micros() as u64;
+                        stats_encode_sum_us += (t_after_encode - t_after_convert).as_micros() as u64;
+                        stats_write_sum_us += (t_after_send - t_after_encode).as_micros() as u64;
+                        stats_bytes_sum += h264_len as u64;
+
+                        // Emit stats every ~500ms
+                        if stats_last_emit.elapsed() >= Duration::from_millis(500) && stats_frame_count > 0 {
+                            let n = stats_frame_count as f64;
+                            let avg_capture_ms = stats_capture_sum_us as f64 / n / 1000.0;
+                            let avg_queue_ms = stats_queue_sum_us as f64 / n / 1000.0;
+                            let avg_convert_ms = stats_convert_sum_us as f64 / n / 1000.0;
+                            let avg_encode_ms = stats_encode_sum_us as f64 / n / 1000.0;
+                            let avg_write_ms = stats_write_sum_us as f64 / n / 1000.0;
+                            let avg_preview_ms = stats_preview_sum_us as f64 / n / 1000.0;
+                            let elapsed_s = stats_last_emit.elapsed().as_secs_f64();
+                            let actual_fps = stats_frame_count as f64 / elapsed_s;
+                            let bitrate_kbps_actual = (stats_bytes_sum as f64 * 8.0 / elapsed_s / 1000.0) as u64;
+
+                            let _ = app.emit("screen_share_stats", serde_json::json!({
+                                "label": label,
+                                "fps": (actual_fps * 10.0).round() / 10.0,
+                                "captureMs": (avg_capture_ms * 100.0).round() / 100.0,
+                                "queueMs": (avg_queue_ms * 100.0).round() / 100.0,
+                                "convertMs": (avg_convert_ms * 100.0).round() / 100.0,
+                                "encodeMs": (avg_encode_ms * 100.0).round() / 100.0,
+                                "writeMs": (avg_write_ms * 100.0).round() / 100.0,
+                                "previewMs": (avg_preview_ms * 100.0).round() / 100.0,
+                                "resolution": format!("{}x{}", dst_w, dst_h),
+                                "srcResolution": format!("{}x{}", frame.src_w, frame.src_h),
+                                "bitrateKbps": bitrate_kbps_actual,
+                                "dropped": 0u64,
+                                "method": method_name,
+                            }));
+
+                            stats_frame_count = 0;
+                            stats_capture_sum_us = 0;
+                            stats_queue_sum_us = 0;
+                            stats_convert_sum_us = 0;
+                            stats_encode_sum_us = 0;
+                            stats_write_sum_us = 0;
+                            stats_preview_sum_us = 0;
+                            stats_bytes_sum = 0;
+                            stats_last_emit = std::time::Instant::now();
+                        }
+                    }
+                    Err(e) => log::warn!("[media-{label}] encode error: {e}"),
+                }
+
+                // Preview: generate from whichever thread owns the preview_dir
+                let t_preview_start = std::time::Instant::now();
+                let should_preview = inline_preview || preview_dir.is_some();
+                if should_preview {
+                    // Convert YUV420 → RGB for color preview (BT.709 inverse)
+                    let mut rgba_preview = vec![255u8; dst_w * dst_h * 4];
+                    for py in 0..dst_h {
+                        for px in 0..dst_w {
+                            let yi = py * dst_w + px;
+                            let ci = (py / 2) * (dst_w / 2) + (px / 2);
+                            let y_val = y_plane[yi] as f32;
+                            let u_val = u_plane[ci] as f32 - 128.0;
+                            let v_val = v_plane[ci] as f32 - 128.0;
+                            // BT.709 inverse
+                            let r = (y_val + 1.5748 * v_val).clamp(0.0, 255.0) as u8;
+                            let g = (y_val - 0.1873 * u_val - 0.4681 * v_val).clamp(0.0, 255.0) as u8;
+                            let b = (y_val + 1.8556 * u_val).clamp(0.0, 255.0) as u8;
+                            let di = (py * dst_w + px) * 4;
+                            rgba_preview[di] = r;
+                            rgba_preview[di + 1] = g;
+                            rgba_preview[di + 2] = b;
+                            // alpha already 255
+                        }
+                    }
+
+                    if inline_preview {
+                        // Encode JPEG to memory → base64 → data URL (no disk I/O)
+                        use std::io::Cursor;
+                        let mut jpeg_buf = Cursor::new(Vec::with_capacity(512 * 1024));
+                        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 95);
+                        if let Ok(()) = image::DynamicImage::ImageRgba8(
+                            image::RgbaImage::from_raw(dst_w as u32, dst_h as u32, rgba_preview)
+                                .expect("invalid RGBA dimensions"),
+                        ).write_with_encoder(enc).map_err(|e| e.to_string()) {
+                            use base64::Engine;
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
+                            let data_url = format!("data:image/jpeg;base64,{b64}");
+                            let _ = app.emit("media_video_frame", serde_json::json!({
+                                "userId": "self",
+                                "frameNumber": frame.frame_number,
+                                "dataUrl": data_url,
+                            }));
+                        }
+                    } else if let Some(ref dir) = preview_dir {
+                        // Legacy disk-based preview
+                        let preview_path = dir.join("self.jpg");
+                        let _ = write_jpeg_quality(
+                            &rgba_preview, dst_w as u32, dst_h as u32, &preview_path, 85,
+                        );
+                        let _ = app.emit("media_video_frame", serde_json::json!({
+                            "userId": "self",
+                            "frameNumber": frame.frame_number,
+                            "path": preview_path.to_string_lossy(),
+                        }));
+                    }
+                }
+                stats_preview_sum_us += t_preview_start.elapsed().as_micros() as u64;
+            }
+            log::info!("[media-{label}] encoder thread exiting");
+        })
+        .expect("failed to spawn encoder thread");
+
+    tx
+}
+
+struct WgcFlags {
+    video_track: Arc<TrackLocalStaticSample>,
+    video_track_high: Option<Arc<TrackLocalStaticSample>>,
+    frame_duration: Duration,
+    bitrate_kbps: u32,
+    bitrate_kbps_high: u32,
+    screen_active: Arc<AtomicBool>,
+    force_keyframe: Arc<AtomicBool>,
+    app: tauri::AppHandle,
+    preview_dir: Option<std::path::PathBuf>,
+    use_new_pipeline: bool,
+    inline_preview: bool,
+    rt: tokio::runtime::Handle,
+    downscale_method: super::DownscaleMethod,
+}
+
+struct WgcHandler {
+    video_track: Arc<TrackLocalStaticSample>,
+    video_track_high: Option<Arc<TrackLocalStaticSample>>,
+    encoder: Option<openh264::encoder::Encoder>,
+    frame_count: u64,
+    frame_duration: Duration,
+    bitrate_kbps: u32,
+    bitrate_kbps_high: u32,
+    screen_active: Arc<AtomicBool>,
+    force_keyframe: Arc<AtomicBool>,
+    app: tauri::AppHandle,
+    preview_dir: Option<std::path::PathBuf>,
+    use_new_pipeline: bool,
+    inline_preview: bool,
+    rt: tokio::runtime::Handle,
+    encoder_tx_low: Option<crossbeam_channel::Sender<EncoderFrame>>,
+    encoder_tx_high: Option<crossbeam_channel::Sender<EncoderFrame>>,
+    downscale_method: super::DownscaleMethod,
+    // Stats accumulators for old pipeline
+    stats_frame_count: u64,
+    stats_capture_sum_us: u64,
+    stats_convert_sum_us: u64,
+    stats_encode_sum_us: u64,
+    stats_write_sum_us: u64,
+    stats_preview_sum_us: u64,
+    stats_bytes_sum: u64,
+    stats_last_emit: std::time::Instant,
+}
+
+impl GraphicsCaptureApiHandler for WgcHandler {
+    type Flags = WgcFlags;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
+        let flags = ctx.flags;
+        Ok(Self {
+            video_track: flags.video_track,
+            video_track_high: flags.video_track_high,
+            encoder: None,
+            frame_count: 0,
+            frame_duration: flags.frame_duration,
+            bitrate_kbps: flags.bitrate_kbps,
+            bitrate_kbps_high: flags.bitrate_kbps_high,
+            screen_active: flags.screen_active,
+            force_keyframe: flags.force_keyframe,
+            app: flags.app,
+            preview_dir: flags.preview_dir,
+            use_new_pipeline: flags.use_new_pipeline,
+            inline_preview: flags.inline_preview,
+            rt: flags.rt,
+            encoder_tx_low: None,
+            encoder_tx_high: None,
+            downscale_method: flags.downscale_method,
+            stats_frame_count: 0,
+            stats_capture_sum_us: 0,
+            stats_convert_sum_us: 0,
+            stats_encode_sum_us: 0,
+            stats_write_sum_us: 0,
+            stats_preview_sum_us: 0,
+            stats_bytes_sum: 0,
+            stats_last_emit: std::time::Instant::now(),
+        })
+    }
+
+    fn on_frame_arrived(
+        &mut self,
+        frame: &mut Frame,
+        capture_control: InternalCaptureControl,
+    ) -> Result<(), Self::Error> {
+        if !self.screen_active.load(Ordering::Acquire) {
+            capture_control.stop();
+            return Ok(());
+        }
+
+        self.frame_count += 1;
+
+        if self.frame_count == 1 {
+            log::info!("[media] WGC first frame arrived: {}x{}", frame.width(), frame.height());
+        }
+
+        let t_start = std::time::Instant::now();
+
+        let orig_w = frame.width() as u32;
+        let orig_h = frame.height() as u32;
+
+        let mut buf = frame.buffer()?;
+        let raw = buf.as_raw_buffer();
+
+        if self.use_new_pipeline {
+            // Initialize encoder threads on first frame
+            if self.encoder_tx_low.is_none() {
+                let fps_f = 1.0 / self.frame_duration.as_secs_f32();
+
+                let (low_w, low_h) = {
+                    let scale = 1280.0_f64 / orig_w as f64;
+                    if scale < 1.0 {
+                        let w = (1280u32 & !1) as usize;
+                        let h = ((orig_h as f64 * scale) as u32 & !1) as usize;
+                        (w, h)
+                    } else {
+                        ((orig_w & !1) as usize, (orig_h & !1) as usize)
+                    }
+                };
+
+                // Determine whether the high tier will exist — if so, it
+                // gets the preview_dir so the local user sees 1080p preview.
+                let has_high_tier = orig_w > 1280 && self.video_track_high.is_some();
+
+                self.encoder_tx_low = Some(spawn_encoder_thread(
+                    "720p", low_w, low_h, fps_f,
+                    self.bitrate_kbps, self.video_track.clone(),
+                    self.frame_duration, self.rt.clone(),
+                    if has_high_tier { None } else { self.preview_dir.clone() },
+                    self.app.clone(),
+                    if has_high_tier { false } else { self.inline_preview },
+                    self.downscale_method,
+                ));
+
+                // Only start high tier if source is > 720p and high track exists
+                if orig_w > 1280 {
+                    if let Some(ref track_high) = self.video_track_high {
+                        let (high_w, high_h) = {
+                            let scale = 1920.0_f64 / orig_w as f64;
+                            if scale < 1.0 {
+                                let w = (1920u32 & !1) as usize;
+                                let h = ((orig_h as f64 * scale) as u32 & !1) as usize;
+                                (w, h)
+                            } else {
+                                ((orig_w & !1) as usize, (orig_h & !1) as usize)
+                            }
+                        };
+                        self.encoder_tx_high = Some(spawn_encoder_thread(
+                            "1080p", high_w, high_h, fps_f,
+                            self.bitrate_kbps_high.max(6000),
+                            track_high.clone(), self.frame_duration,
+                            self.rt.clone(), self.preview_dir.clone(), self.app.clone(),
+                            self.inline_preview,
+                            self.downscale_method,
+                        ));
+                    }
+                }
+            }
+
+            let do_keyframe = self.force_keyframe.swap(false, Ordering::AcqRel);
+            let raw_vec = raw.to_vec();
+            drop(buf);
+            let capture_us = t_start.elapsed().as_micros() as u64;
+            let captured_at = std::time::Instant::now();
+
+            let frame_low = EncoderFrame {
+                bgra: raw_vec.clone(),
+                src_w: orig_w as usize,
+                src_h: orig_h as usize,
+                frame_number: self.frame_count,
+                force_keyframe: do_keyframe,
+                captured_at,
+                capture_us,
+            };
+
+            // Send to low tier (drop frame if channel full)
+            if let Some(ref tx) = self.encoder_tx_low {
+                let _ = tx.try_send(frame_low);
+            }
+
+            // Send to high tier
+            if let Some(ref tx) = self.encoder_tx_high {
+                let frame_high = EncoderFrame {
+                    bgra: raw_vec,
+                    src_w: orig_w as usize,
+                    src_h: orig_h as usize,
+                    frame_number: self.frame_count,
+                    force_keyframe: do_keyframe,
+                    captured_at,
+                    capture_us,
+                };
+                let _ = tx.try_send(frame_high);
+            }
+        } else {
+            // ── Old pipeline (unchanged) ────────────────────────────────
+            // Downscale + BGRA→RGBA in a single pass. For 3840×2160 → 1280×720
+            // this reads the source once and writes a 3.6 MB output buffer with
+            // channels already swapped, avoiding a 33 MB copy + separate swap.
+            const MAX_W: u32 = 1280;
+            let (w, h, mut rgba, already_swapped) = if orig_w > MAX_W {
+                let scale = MAX_W as f64 / orig_w as f64;
+                let new_h = (orig_h as f64 * scale) as u32;
+                // Ensure even dimensions for H.264
+                let new_w = (MAX_W & !1) as usize;
+                let new_h = (new_h & !1) as usize;
+                let src_stride = orig_w as usize * 4;
+
+                // Fast nearest-neighbor downscale + BGRA→RGBA swap in a single
+                // pass. Avoids two separate iterations over the pixel data.
+                let mut out = vec![0u8; new_w * new_h * 4];
+                let x_ratio = orig_w as f64 / new_w as f64;
+                let y_ratio = orig_h as f64 / new_h as f64;
+                for y in 0..new_h {
+                    let src_y = (y as f64 * y_ratio) as usize;
+                    let src_row = src_y * src_stride;
+                    let dst_row = y * new_w * 4;
+                    for x in 0..new_w {
+                        let src_x = (x as f64 * x_ratio) as usize;
+                        let si = src_row + src_x * 4;
+                        let di = dst_row + x * 4;
+                        // BGRA → RGBA: swap B↔R during copy
+                        out[di] = raw[si + 2];     // R ← B
+                        out[di + 1] = raw[si + 1]; // G ← G
+                        out[di + 2] = raw[si];     // B ← R
+                        out[di + 3] = raw[si + 3]; // A ← A
+                    }
+                }
+                drop(buf);
+                (new_w, new_h, out, true)
+            } else {
+                let data = raw.to_vec();
+                drop(buf);
+                (orig_w as usize, orig_h as usize, data, false)
+            };
+
+            // Swap B↔R only if not already done during downscale
+            if !already_swapped {
+                for pixel in rgba.chunks_exact_mut(4) {
+                    pixel.swap(0, 2);
+                }
+            }
+            let t_after_swap = t_start.elapsed();
+
+            // Init encoder on first frame (when we know the resolution)
+            if self.encoder.is_none() {
+                let fps_f = 1.0 / self.frame_duration.as_secs_f32();
+                let mut enc_cfg = openh264::encoder::EncoderConfig::new()
+                    .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps_f));
+                if self.bitrate_kbps > 0 {
+                    enc_cfg = enc_cfg
+                        .bitrate(openh264::encoder::BitRate::from_bps(
+                            self.bitrate_kbps * 1000,
+                        ))
+                        .rate_control_mode(openh264::encoder::RateControlMode::Bitrate);
+                }
+                self.encoder = Some(openh264::encoder::Encoder::with_api_config(
+                    openh264::OpenH264API::from_source(),
+                    enc_cfg,
+                )?);
+            }
+
+            let enc = self.encoder.as_mut().unwrap();
+
+            // If a new peer connected, force an IDR keyframe so they can start
+            // decoding immediately instead of waiting for the next periodic IDR.
+            if self.force_keyframe.swap(false, Ordering::AcqRel) {
+                enc.force_intra_frame();
+            }
+
+            let src = openh264::formats::RgbaSliceU8::new(&rgba, (w, h));
+            let yuv = openh264::formats::YUVBuffer::from_rgb_source(src);
+            let t_after_yuv = t_start.elapsed();
+
+            match enc.encode(&yuv) {
+                Ok(bitstream) => {
+                    let t_after_encode = t_start.elapsed();
+                    let h264_data = bitstream.to_vec();
+                    let h264_len = h264_data.len();
+                    if !h264_data.is_empty() {
+                        let vt = self.video_track.clone();
+                        let dur = self.frame_duration;
+                        let _ = self.rt.block_on(async {
+                            vt.write_sample(&Sample {
+                                data: Bytes::from(h264_data),
+                                duration: dur,
+                                ..Default::default()
+                            })
+                            .await
+                        });
+                    }
+                    let t_after_send = t_start.elapsed();
+
+                    // Log timing: first frame + every 300th (~10s at 30fps)
+                    if self.frame_count == 1 || self.frame_count % 300 == 0 {
+                        let total = t_start.elapsed();
+                        log::info!(
+                            "[media] capture frame #{}: swap={:.1}ms yuv={:.1}ms enc={:.1}ms send={:.1}ms total={:.1}ms ({}x{})",
+                            self.frame_count,
+                            t_after_swap.as_secs_f64() * 1000.0,
+                            t_after_yuv.as_secs_f64() * 1000.0,
+                            t_after_encode.as_secs_f64() * 1000.0,
+                            t_after_send.as_secs_f64() * 1000.0,
+                            total.as_secs_f64() * 1000.0,
+                            w, h,
+                        );
+                    }
+
+                    // Stats accumulation
+                    // captureMs = downscale + channel swap (t_after_swap)
+                    // convertMs = openh264 RGBA→YUV (t_after_yuv - t_after_swap)
+                    self.stats_frame_count += 1;
+                    self.stats_capture_sum_us += t_after_swap.as_micros() as u64;
+                    self.stats_convert_sum_us += (t_after_yuv - t_after_swap).as_micros() as u64;
+                    self.stats_encode_sum_us += (t_after_encode - t_after_yuv).as_micros() as u64;
+                    self.stats_write_sum_us += (t_after_send - t_after_encode).as_micros() as u64;
+                    self.stats_bytes_sum += h264_len as u64;
+
+                    if self.stats_last_emit.elapsed() >= Duration::from_millis(500) && self.stats_frame_count > 0 {
+                        let n = self.stats_frame_count as f64;
+                        let avg_capture_ms = self.stats_capture_sum_us as f64 / n / 1000.0;
+                        let avg_convert_ms = self.stats_convert_sum_us as f64 / n / 1000.0;
+                        let avg_encode_ms = self.stats_encode_sum_us as f64 / n / 1000.0;
+                        let avg_write_ms = self.stats_write_sum_us as f64 / n / 1000.0;
+                        let avg_preview_ms = self.stats_preview_sum_us as f64 / n / 1000.0;
+                        let elapsed_s = self.stats_last_emit.elapsed().as_secs_f64();
+                        let actual_fps = self.stats_frame_count as f64 / elapsed_s;
+                        let bitrate_kbps_actual = (self.stats_bytes_sum as f64 * 8.0 / elapsed_s / 1000.0) as u64;
+
+                        let _ = self.app.emit("screen_share_stats", serde_json::json!({
+                            "label": "720p",
+                            "fps": (actual_fps * 10.0).round() / 10.0,
+                            "captureMs": (avg_capture_ms * 100.0).round() / 100.0,
+                            "queueMs": 0.0,
+                            "convertMs": (avg_convert_ms * 100.0).round() / 100.0,
+                            "encodeMs": (avg_encode_ms * 100.0).round() / 100.0,
+                            "writeMs": (avg_write_ms * 100.0).round() / 100.0,
+                            "previewMs": (avg_preview_ms * 100.0).round() / 100.0,
+                            "resolution": format!("{}x{}", w, h),
+                            "srcResolution": format!("{}x{}", orig_w, orig_h),
+                            "bitrateKbps": bitrate_kbps_actual,
+                            "dropped": 0u64,
+                            "method": "nearest",
+                        }));
+
+                        self.stats_frame_count = 0;
+                        self.stats_capture_sum_us = 0;
+                        self.stats_convert_sum_us = 0;
+                        self.stats_encode_sum_us = 0;
+                        self.stats_write_sum_us = 0;
+                        self.stats_preview_sum_us = 0;
+                        self.stats_bytes_sum = 0;
+                        self.stats_last_emit = std::time::Instant::now();
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[media] H.264 encode error: {e}");
+                }
+            }
+
+            // Local preview JPEG (every frame)
+            let t_preview_start = std::time::Instant::now();
+            if self.frame_count % 1 == 0 {
+                if let Some(rgba_img) = image::RgbaImage::from_raw(w as u32, h as u32, rgba) {
+                    let preview_w = 640u32.min(w as u32);
+                    let preview_h = preview_w * h as u32 / (w as u32).max(1);
+                    let resized = image::imageops::resize(
+                        &rgba_img,
+                        preview_w,
+                        preview_h,
+                        image::imageops::FilterType::Nearest,
+                    );
+
+                    if self.inline_preview {
+                        // Encode as JPEG and emit as base64 data URL
+                        use std::io::Cursor;
+                        let mut jpeg_buf = Cursor::new(Vec::with_capacity(64 * 1024));
+                        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(
+                            &mut jpeg_buf, 60,
+                        );
+                        if let Ok(()) = image::DynamicImage::ImageRgba8(resized)
+                            .write_with_encoder(enc)
+                            .map_err(|e| e.to_string())
+                        {
+                            use base64::Engine;
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
+                            let data_url = format!("data:image/jpeg;base64,{b64}");
+                            let _ = self.app.emit(
+                                "media_video_frame",
+                                serde_json::json!({
+                                    "userId": "self",
+                                    "frameNumber": self.frame_count,
+                                    "dataUrl": data_url,
+                                }),
+                            );
+                        }
+                    } else if let Some(ref dir) = self.preview_dir {
+                        let preview_path = dir.join("self.jpg");
+                        let _ = crate::media_manager::MediaManager::write_jpeg_frame(
+                            resized.as_raw(),
+                            preview_w,
+                            preview_h,
+                            &preview_path,
+                        );
+                        let _ = self.app.emit(
+                            "media_video_frame",
+                            serde_json::json!({
+                                "userId": "self",
+                                "frameNumber": self.frame_count,
+                                "path": preview_path.to_string_lossy(),
+                            }),
+                        );
+                    }
+                }
+            }
+            self.stats_preview_sum_us += t_preview_start.elapsed().as_micros() as u64;
+        }
+
+        Ok(())
+    }
+
+    fn on_closed(&mut self) -> Result<(), Self::Error> {
+        log::debug!(
+            "[media] WGC capture closed after {} frames",
+            self.frame_count
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openh264::formats::YUVSource;
+
+    /// Generate a BGRA gradient test image: R increases left→right, G increases top→bottom.
+    fn make_gradient_bgra(w: usize, h: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; w * h * 4];
+        for row in 0..h {
+            for col in 0..w {
+                let px = (row * w + col) * 4;
+                let r = (col * 255 / w.max(1)) as u8;
+                let g = (row * 255 / h.max(1)) as u8;
+                let b = 64u8;
+                buf[px] = b;     // B
+                buf[px + 1] = g; // G
+                buf[px + 2] = r; // R
+                buf[px + 3] = 255; // A
+            }
+        }
+        buf
+    }
+
+    #[test]
+    fn test_fused_bgra_to_yuv420_matches_reference() {
+        let w = 64usize;
+        let h = 64usize;
+        let bgra = make_gradient_bgra(w, h);
+
+        // --- New path: fused BT.709 ---
+        let (y_new, u_new, v_new) = bgra_to_yuv420_bt709(&bgra, w, h);
+
+        // --- Reference path: BGRA→RGBA then openh264 YUVBuffer ---
+        let mut rgba = vec![0u8; w * h * 4];
+        for i in 0..(w * h) {
+            rgba[i * 4] = bgra[i * 4 + 2];     // R
+            rgba[i * 4 + 1] = bgra[i * 4 + 1]; // G
+            rgba[i * 4 + 2] = bgra[i * 4];       // B
+            rgba[i * 4 + 3] = bgra[i * 4 + 3]; // A
+        }
+        let yuv_ref = openh264::formats::YUVBuffer::from_rgb_source(
+            openh264::formats::RgbSliceU8::new(&rgba, (w, h)),
+        );
+        let y_ref = yuv_ref.y();
+        let u_ref = yuv_ref.u();
+        let v_ref = yuv_ref.v();
+
+        // Y plane: same length
+        assert_eq!(y_new.len(), y_ref.len(), "Y plane length mismatch");
+        // U/V plane: same length
+        assert_eq!(u_new.len(), u_ref.len(), "U plane length mismatch");
+        assert_eq!(v_new.len(), v_ref.len(), "V plane length mismatch");
+
+        // Y plane max diff ≤ 15 (BT.601 vs BT.709 coefficient difference)
+        let y_max_diff = y_new
+            .iter()
+            .zip(y_ref.iter())
+            .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            y_max_diff <= 15,
+            "Y plane max diff {y_max_diff} exceeds threshold 15"
+        );
+
+        println!("Y max diff: {y_max_diff}");
+        println!("Y plane size: {}", y_new.len());
+        println!("U plane size: {}", u_new.len());
+        println!("V plane size: {}", v_new.len());
+    }
+
+    #[test]
+    fn test_fused_bgra_to_yuv420_downscale_dimensions() {
+        let src_w = 3840usize;
+        let src_h = 2160usize;
+        let dst_w = 1280usize;
+        let dst_h = 720usize;
+
+        // Allocate a minimal BGRA buffer (all zeros is fine for dimension checks)
+        let bgra = vec![0u8; src_w * src_h * 4];
+
+        let (y, u, v) = bgra_to_yuv420_bt709_downscale(&bgra, src_w, src_h, dst_w, dst_h);
+
+        assert_eq!(y.len(), dst_w * dst_h, "Y plane should be 1280×720");
+        assert_eq!(u.len(), (dst_w / 2) * (dst_h / 2), "U plane should be 640×360");
+        assert_eq!(v.len(), (dst_w / 2) * (dst_h / 2), "V plane should be 640×360");
+
+        println!("Y: {} bytes (expected {})", y.len(), dst_w * dst_h);
+        println!("U: {} bytes (expected {})", u.len(), (dst_w / 2) * (dst_h / 2));
+        println!("V: {} bytes (expected {})", v.len(), (dst_w / 2) * (dst_h / 2));
+    }
+
+    #[test]
+    fn test_fused_bgra_yuv_encode_decode_roundtrip() {
+        let w = 320usize;
+        let h = 240usize;
+
+        // Generate BGRA gradient (simulating a screen capture frame)
+        let bgra = make_gradient_bgra(w, h);
+
+        // Convert using fused BT.709 path
+        let (y_plane, u_plane, v_plane) = bgra_to_yuv420_bt709(&bgra, w, h);
+
+        // Encode via YUVSlices (zero-copy, implements YUVSource)
+        let slices = openh264::formats::YUVSlices::new(
+            (&y_plane, &u_plane, &v_plane),
+            (w, h),
+            (w, w / 2, w / 2),
+        );
+
+        let api = openh264::OpenH264API::from_source();
+        let enc_cfg = openh264::encoder::EncoderConfig::new()
+            .max_frame_rate(openh264::encoder::FrameRate::from_hz(30.0));
+        let mut encoder = openh264::encoder::Encoder::with_api_config(api, enc_cfg).unwrap();
+
+        let bitstream = encoder.encode(&slices).unwrap();
+        let h264_data = bitstream.to_vec();
+        assert!(!h264_data.is_empty(), "H.264 bitstream should not be empty");
+
+        // Decode
+        let mut decoder = openh264::decoder::Decoder::new().unwrap();
+        let decoded = decoder.decode(&h264_data).unwrap();
+        assert!(decoded.is_some(), "decoder should produce a frame");
+
+        let decoded = decoded.unwrap();
+        let (dw, dh) = decoded.dimensions();
+        assert_eq!(dw, w);
+        assert_eq!(dh, h);
+
+        // Verify decoded frame has non-zero content
+        let mut rgb = vec![0u8; dw * dh * 3];
+        decoded.write_rgb8(&mut rgb);
+        let nonzero = rgb.iter().filter(|&&b| b != 0).count();
+        assert!(nonzero > rgb.len() / 2, "decoded frame should have content");
+    }
+}

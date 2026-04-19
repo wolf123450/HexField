@@ -21,7 +21,14 @@
               </div>
             </div>
             <div class="server-meta">
-              <div class="server-name">{{ server?.name }}</div>
+              <input
+                v-if="isAdmin"
+                class="server-name server-name-input"
+                :value="server?.name ?? ''"
+                @change="onServerNameChange(($event.target as HTMLInputElement).value)"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+              <div v-else class="server-name">{{ server?.name }}</div>
               <div class="server-id">ID: {{ server?.id }}</div>
               <div class="server-invite" v-if="server?.inviteCode">
                 Invite code: <span class="invite-code">{{ server.inviteCode }}</span>
@@ -338,6 +345,13 @@ async function pickIconBgColor(color: string) {
   const sid = uiStore.settingsServerId
   if (!sid) return
   await serversStore.updateServerIconBgColor(sid, color)
+}
+
+async function onServerNameChange(newName: string) {
+  const trimmed = newName.trim()
+  const sid = uiStore.settingsServerId
+  if (!sid || !trimmed || trimmed === server.value?.name) return
+  await serversStore.renameServer(sid, trimmed)
 }
 
 const isAdmin = useIsAdmin(computed(() => uiStore.settingsServerId))
@@ -779,6 +793,24 @@ function readAsDataUrl(file: File): Promise<string> {
   font-size: 18px;
   font-weight: 700;
   color: var(--text-primary);
+}
+
+.server-name-input {
+  background: var(--bg-tertiary, var(--bg-secondary));
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: inherit;
+  outline: none;
+  width: 100%;
+}
+
+.server-name-input:hover {
+  border-color: var(--border-color, rgba(255, 255, 255, 0.1));
+}
+
+.server-name-input:focus {
+  border-color: var(--accent-color);
 }
 
 .server-id {
