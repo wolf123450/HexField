@@ -86,6 +86,7 @@ jobs:
 
   update-manifest:
     name: Assemble latest.json
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
