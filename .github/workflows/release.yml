@@ -98,7 +98,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const tag = context.ref.replace('refs/tags/', '') || context.payload.inputs?.tag || 'latest';
+            const tag = process.env.GITHUB_REF_NAME || context.payload.inputs?.tag || 'latest';
             const { data: release } = await github.rest.repos.getReleaseByTag({
               owner: context.repo.owner,
               repo: context.repo.repo,
