@@ -202,7 +202,8 @@ This post/thread primitive is intentionally reusable for forum channels later.
 - Eligibility snapshot frozen at vote-open.
 - Time and tier rules validated locally before applying binding effects.
 - Invalid binding outcomes are retained as history but not executed.
-- Idempotent merge behavior on sync.
+- Governance and voting data propagate through the existing negentropy pathway format (server-level reconciliation flow already in use).
+- Idempotent merge behavior on negentropy sync.
 - Deterministic runoff creation to avoid divergent peer state.
 
 ## Risks and Mitigations
@@ -232,4 +233,5 @@ This post/thread primitive is intentionally reusable for forum channels later.
 - Prefer additive schema changes and migration safety for old DBs.
 - Keep wire compatibility by ignoring unknown governance fields on older clients.
 - Maintain server-level mutation log as source of truth.
+- Reuse current negentropy message/mutation reconciliation pathways for governance and voting objects; do not introduce a parallel sync protocol.
 - Build reusable threaded discussion components in a governance namespace first, then generalize for future forum channels.
