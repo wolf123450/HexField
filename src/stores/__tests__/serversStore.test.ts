@@ -194,3 +194,36 @@ describe('serversStore.createServer', () => {
     expect((server.inviteCode ?? '').length).toBeGreaterThan(0)
   })
 })
+
+// ── governance feature flag ────────────────────────────────────────────────────
+
+describe('Server.governanceMotionPipelineEnabled', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('defaults to undefined (falsy) when not set on a new server', async () => {
+    const { useServersStore } = await import('@/stores/serversStore')
+    const { invoke } = await import('@tauri-apps/api/core')
+    const store = useServersStore()
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    const server = await store.createServer('Test')
+
+    expect(store.servers[server.id].governanceMotionPipelineEnabled).toBeFalsy()
+  })
+
+  it('preserves governanceMotionPipelineEnabled=true when loaded from raw_json', async () => {
+    const { useServersStore } = await import('@/stores/serversStore')
+    const { invoke } = await import('@tauri-apps/api/core')
+    const store = useServersStore()
+
+    const srv: Server = { ...makeServer('s-gov'), governanceMotionPipelineEnabled: true }
+    vi.mocked(invoke).mockResolvedValue([{ raw_json: JSON.stringify(srv) }])
+
+    await store.loadServers()
+
+    expect(store.servers['s-gov']?.governanceMotionPipelineEnabled).toBe(true)
+  })
+})
