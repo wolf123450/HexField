@@ -191,6 +191,20 @@ export const useUIStore = defineStore("ui", () => {
     alertVisible.value = false
   }
 
+  // ─── Leave server modal ────────────────────────────────────────────────
+  const leaveServerModalVisible  = ref(false)
+  const leaveServerModalServerId = ref<string | null>(null)
+
+  function showLeaveServerModal(serverId: string) {
+    leaveServerModalServerId.value = serverId
+    leaveServerModalVisible.value  = true
+  }
+
+  function hideLeaveServerModal() {
+    leaveServerModalVisible.value  = false
+    leaveServerModalServerId.value = null
+  }
+
   return {
     // State
     sidebarOpen,
@@ -255,5 +269,10 @@ export const useUIStore = defineStore("ui", () => {
     alertVisible,
     showAlert,
     dismissAlert,
+    // Leave server modal
+    leaveServerModalVisible,
+    leaveServerModalServerId,
+    showLeaveServerModal,
+    hideLeaveServerModal,
   };
 });
