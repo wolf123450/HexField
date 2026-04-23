@@ -79,37 +79,6 @@
       <p class="form-hint">Algorithm used when downscaling to the target resolution. Takes effect on next screen share.</p>
     </div>
 
-    <div class="form-row">
-      <label class="form-label">NAT Type</label>
-      <div class="nat-status">
-        <span class="nat-badge" :class="`nat-${networkStore.natType}`">{{ natLabel }}</span>
-        <span class="nat-hint">{{ natDescription }}</span>
-      </div>
-    </div>
-
-    <div class="form-row">
-      <label class="form-label">Custom TURN Servers</label>
-      <textarea
-        v-model="turnServersText"
-        class="form-textarea"
-        placeholder='[{"urls": "turn:yourserver.com:3478", "username": "user", "credential": "pass"}]'
-        rows="4"
-        @change="saveTURNServers"
-      />
-      <p class="form-hint">JSON array of RTCIceServer objects. Leave blank to use peer-relay only.</p>
-    </div>
-
-    <div class="form-row">
-      <label class="form-label">Rendezvous Server URL</label>
-      <input
-        v-model="rendezvousUrl"
-        type="text"
-        class="form-input"
-        placeholder="wss://your-server.example.com"
-        @change="saveRendezvousUrl"
-      />
-      <p class="form-hint">Optional. App works without a rendezvous server via QR code and LAN discovery.</p>
-    </div>
   </div>
 </template>
 
@@ -118,32 +87,13 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { useNetworkStore } from '@/stores/networkStore'
 
 interface AudioDeviceInfo { id: string; name: string }
 interface AudioDeviceList { inputs: AudioDeviceInfo[]; outputs: AudioDeviceInfo[] }
 
 const settingsStore = useSettingsStore()
-const networkStore  = useNetworkStore()
 const inputDevice   = ref(settingsStore.settings.inputDeviceId)
 const outputDevice  = ref(settingsStore.settings.outputDeviceId)
-const rendezvousUrl = ref(settingsStore.settings.rendezvousServerUrl)
-
-const natLabel = computed(() => ({
-  open:       'Open',
-  restricted: 'Restricted',
-  symmetric:  'Symmetric (relay needed)',
-  unknown:    'Unknown',
-  pending:    'Detecting…',
-}[networkStore.natType] ?? 'Unknown'))
-
-const natDescription = computed(() => ({
-  open:       'Direct peer connections work reliably.',
-  restricted: 'Most peer connections succeed; relay used as fallback.',
-  symmetric:  'Behind strict NAT — relay peers or TURN servers are required.',
-  unknown:    'Could not determine NAT type — STUN probes failed or WebRTC is unavailable.',
-  pending:    'NAT detection is still in progress.',
-}[networkStore.natType] ?? ''))
 const noiseSuppression = ref(settingsStore.settings.noiseSuppression)
 const videoQuality  = ref(settingsStore.settings.videoQuality)
 const videoBitrate  = ref(settingsStore.settings.videoBitrate)
@@ -153,11 +103,6 @@ const audioInputs   = ref<AudioDeviceInfo[]>([])
 const audioOutputs  = ref<AudioDeviceInfo[]>([])
 const inputDeviceMissing  = computed(() => inputDevice.value !== '' && audioInputs.value.length > 0 && !audioInputs.value.some(d => d.id === inputDevice.value))
 const outputDeviceMissing = computed(() => outputDevice.value !== '' && audioOutputs.value.length > 0 && !audioOutputs.value.some(d => d.id === outputDevice.value))
-const turnServersText = ref(
-  settingsStore.settings.customTURNServers.length
-    ? JSON.stringify(settingsStore.settings.customTURNServers, null, 2)
-    : ''
-)
 
 let unlistenDevices: UnlistenFn | null = null
 
@@ -190,18 +135,11 @@ function saveOutputDevice() {
   settingsStore.updateSetting('outputDeviceId', outputDevice.value)
   invoke('media_set_output_device', { deviceName: outputDevice.value || null }).catch(() => {})
 }
-function saveRendezvousUrl() { settingsStore.updateSetting('rendezvousServerUrl', rendezvousUrl.value.trim()) }
 function saveNoiseSuppression() { settingsStore.updateSetting('noiseSuppression', noiseSuppression.value) }
 function saveVideoQuality()  { settingsStore.updateSetting('videoQuality', videoQuality.value) }
 function saveVideoBitrate()  { settingsStore.updateSetting('videoBitrate', videoBitrate.value) }
 function saveVideoFrameRate() { settingsStore.updateSetting('videoFrameRate', videoFrameRate.value) }
 function saveDownscaleMethod() { settingsStore.updateSetting('videoDownscaleMethod', videoDownscaleMethod.value as 'nearest' | 'bilinear' | 'bicubic' | 'lanczos3') }
-function saveTURNServers() {
-  try {
-    const servers = turnServersText.value.trim() ? JSON.parse(turnServersText.value) : []
-    settingsStore.updateSetting('customTURNServers', servers)
-  } catch {}
-}
 </script>
 
 <style scoped>
@@ -210,18 +148,9 @@ function saveTURNServers() {
 .form-label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: var(--spacing-xs); text-transform: uppercase; letter-spacing: 0.04em; }
 .form-select, .form-input { width: 100%; padding: 8px var(--spacing-sm); background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 14px; }
 .form-select:focus, .form-input:focus { outline: none; border-color: var(--accent-color); }
-.form-textarea { width: 100%; padding: 8px var(--spacing-sm); background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 13px; font-family: monospace; resize: vertical; }
-.form-textarea:focus { outline: none; border-color: var(--accent-color); }
 .form-hint { font-size: 11px; color: var(--text-tertiary); margin-top: var(--spacing-xs); }
 .toggle-row { display: flex; align-items: center; gap: var(--spacing-sm); cursor: pointer; font-size: 14px; color: var(--text-primary); }
 .toggle-row input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent-color); }
 
-.nat-status { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; }
-.nat-badge { display: inline-block; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 600; }
-.nat-open       { background: rgba(87, 242, 135, 0.15); color: var(--success-color); }
-.nat-restricted { background: rgba(254, 231, 92,  0.15); color: var(--warning-color); }
-.nat-symmetric  { background: rgba(237, 66,  69,  0.15); color: var(--error-color); }
-.nat-unknown    { background: var(--bg-secondary); color: var(--text-secondary); }
-.nat-hint { font-size: 12px; color: var(--text-secondary); }
 .device-warning { font-size: 11px; color: var(--warning-color); margin-top: var(--spacing-xs); }
 </style>
