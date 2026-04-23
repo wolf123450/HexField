@@ -1319,12 +1319,310 @@ fn chrono_now_iso() -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, hr, min, sec)
 }
 
+// ── Governance: tally helper ──────────────────────────────────────────────────
+
+/// Deterministic governance outcome calculation.
+/// - Quorum: ≥40% of eligible voters participated
+/// - Majority: >50% of non-abstaining votes are approve
+/// - Reject veto: ≥30% of participants cast a reject vote → always fails
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct GovernanceOutcome {
+    pub passed: bool,
+    pub fail_reason: Option<String>,
+}
+
+pub fn compute_governance_outcome(
+    eligible: i64,
+    approve_votes: i64,
+    reject_votes: i64,
+    abstain_votes: i64,
+) -> GovernanceOutcome {
+    let participants = approve_votes + reject_votes + abstain_votes;
+    let quorum_ok = (participants as f64) / (eligible.max(1) as f64) >= 0.40;
+    let non_abstain = (approve_votes + reject_votes).max(1);
+    let majority_ok = (approve_votes as f64) / (non_abstain as f64) > 0.50;
+    let reject_veto = (reject_votes as f64) / (participants.max(1) as f64) >= 0.30;
+
+    let passed = quorum_ok && majority_ok && !reject_veto;
+    let fail_reason = if !quorum_ok {
+        Some("quorum".to_string())
+    } else if reject_veto {
+        Some("reject_veto".to_string())
+    } else if !majority_ok {
+        Some("majority".to_string())
+    } else {
+        None
+    };
+    GovernanceOutcome { passed, fail_reason }
+}
+
+// ── Governance: row mappers ───────────────────────────────────────────────────
+
+fn row_to_governance_motion(row: &rusqlite::Row) -> rusqlite::Result<GovernanceMotionRow> {
+    Ok(GovernanceMotionRow {
+        id:                          row.get(0)?,
+        server_id:                   row.get(1)?,
+        motion_type:                 row.get(2)?,
+        state:                       row.get(3)?,
+        is_binding:                  row.get::<_, i64>(4)? != 0,
+        seat_count:                  row.get(5)?,
+        proposer_user_id:            row.get(6)?,
+        eligibility_snapshot_json:   row.get(7)?,
+        discussion_open_at:          row.get(8)?,
+        vote_open_at:                row.get(9)?,
+        vote_close_at:               row.get(10)?,
+        ruleset_json:                row.get(11)?,
+        created_at:                  row.get(12)?,
+        updated_at:                  row.get(13)?,
+    })
+}
+
+fn row_to_governance_candidate(row: &rusqlite::Row) -> rusqlite::Result<GovernanceCandidateRow> {
+    Ok(GovernanceCandidateRow {
+        motion_id:            row.get(0)?,
+        candidate_user_id:    row.get(1)?,
+        source:               row.get(2)?,
+        nominated_by_user_id: row.get(3)?,
+        seconded_by_user_id:  row.get(4)?,
+        status:               row.get(5)?,
+        created_at:           row.get(6)?,
+        updated_at:           row.get(7)?,
+    })
+}
+
+fn row_to_governance_ballot(row: &rusqlite::Row) -> rusqlite::Result<GovernanceBallotRow> {
+    Ok(GovernanceBallotRow {
+        motion_id:                   row.get(0)?,
+        voter_user_id:               row.get(1)?,
+        approved_candidate_ids_json: row.get(2)?,
+        reject_vote:                 row.get::<_, i64>(3)? != 0,
+        abstain_vote:                row.get::<_, i64>(4)? != 0,
+        revision:                    row.get(5)?,
+        updated_at:                  row.get(6)?,
+    })
+}
+
+fn row_to_governance_post(row: &rusqlite::Row) -> rusqlite::Result<GovernancePostRow> {
+    Ok(GovernancePostRow {
+        id:             row.get(0)?,
+        motion_id:      row.get(1)?,
+        parent_post_id: row.get(2)?,
+        author_user_id: row.get(3)?,
+        content:        row.get(4)?,
+        created_at:     row.get(5)?,
+        edited_at:      row.get(6)?,
+        deleted_at:     row.get(7)?,
+    })
+}
+
+// ── Governance: DB commands ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn db_save_governance_motion(
+    state: State<AppState>,
+    motion: GovernanceMotionRow,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO governance_motions
+         (id, server_id, type, state, is_binding, seat_count, proposer_user_id,
+          eligibility_snapshot_json, discussion_open_at, vote_open_at, vote_close_at,
+          ruleset_json, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        rusqlite::params![
+            motion.id, motion.server_id, motion.motion_type, motion.state,
+            motion.is_binding as i64, motion.seat_count, motion.proposer_user_id,
+            motion.eligibility_snapshot_json, motion.discussion_open_at,
+            motion.vote_open_at, motion.vote_close_at, motion.ruleset_json,
+            motion.created_at, motion.updated_at
+        ],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn db_load_governance_motions(
+    state: State<AppState>,
+    server_id: String,
+    state_filter: Option<String>,
+) -> Result<Vec<GovernanceMotionRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let rows = if let Some(s) = state_filter {
+        let mut stmt = conn.prepare(
+            "SELECT id, server_id, type, state, is_binding, seat_count, proposer_user_id,
+             eligibility_snapshot_json, discussion_open_at, vote_open_at, vote_close_at,
+             ruleset_json, created_at, updated_at
+             FROM governance_motions WHERE server_id = ?1 AND state = ?2
+             ORDER BY updated_at DESC",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![server_id, s], row_to_governance_motion)
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, server_id, type, state, is_binding, seat_count, proposer_user_id,
+             eligibility_snapshot_json, discussion_open_at, vote_open_at, vote_close_at,
+             ruleset_json, created_at, updated_at
+             FROM governance_motions WHERE server_id = ?1
+             ORDER BY updated_at DESC",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![server_id], row_to_governance_motion)
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn db_save_governance_candidate(
+    state: State<AppState>,
+    candidate: GovernanceCandidateRow,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO governance_candidates
+         (motion_id, candidate_user_id, source, nominated_by_user_id, seconded_by_user_id,
+          status, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![
+            candidate.motion_id, candidate.candidate_user_id, candidate.source,
+            candidate.nominated_by_user_id, candidate.seconded_by_user_id,
+            candidate.status, candidate.created_at, candidate.updated_at
+        ],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn db_load_governance_candidates(
+    state: State<AppState>,
+    motion_id: String,
+) -> Result<Vec<GovernanceCandidateRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT motion_id, candidate_user_id, source, nominated_by_user_id, seconded_by_user_id,
+         status, created_at, updated_at
+         FROM governance_candidates WHERE motion_id = ?1 ORDER BY created_at ASC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&motion_id], row_to_governance_candidate)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn db_save_governance_ballot(
+    state: State<AppState>,
+    ballot: GovernanceBallotRow,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO governance_ballots
+         (motion_id, voter_user_id, approved_candidate_ids_json, reject_vote, abstain_vote,
+          revision, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        rusqlite::params![
+            ballot.motion_id, ballot.voter_user_id, ballot.approved_candidate_ids_json,
+            ballot.reject_vote as i64, ballot.abstain_vote as i64,
+            ballot.revision, ballot.updated_at
+        ],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn db_load_governance_ballots(
+    state: State<AppState>,
+    motion_id: String,
+) -> Result<Vec<GovernanceBallotRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT motion_id, voter_user_id, approved_candidate_ids_json, reject_vote, abstain_vote,
+         revision, updated_at
+         FROM governance_ballots WHERE motion_id = ?1 ORDER BY updated_at ASC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&motion_id], row_to_governance_ballot)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn db_save_governance_post(
+    state: State<AppState>,
+    post: GovernancePostRow,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO governance_posts
+         (id, motion_id, parent_post_id, author_user_id, content, created_at, edited_at, deleted_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![
+            post.id, post.motion_id, post.parent_post_id, post.author_user_id,
+            post.content, post.created_at, post.edited_at, post.deleted_at
+        ],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn db_load_governance_posts(
+    state: State<AppState>,
+    motion_id: String,
+) -> Result<Vec<GovernancePostRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, motion_id, parent_post_id, author_user_id, content, created_at, edited_at, deleted_at
+         FROM governance_posts WHERE motion_id = ?1 AND deleted_at IS NULL
+         ORDER BY created_at ASC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&motion_id], row_to_governance_post)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+/// Compute the governance outcome for a closed motion.
+/// Returns `GovernanceOutcome` with pass/fail and reason.
+#[tauri::command]
+pub fn db_tally_governance_motion(
+    state: State<AppState>,
+    motion_id: String,
+    eligible_count: i64,
+) -> Result<GovernanceOutcome, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let approve: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM governance_ballots WHERE motion_id=?1 AND reject_vote=0 AND abstain_vote=0",
+        [&motion_id],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    let reject: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM governance_ballots WHERE motion_id=?1 AND reject_vote=1",
+        [&motion_id],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    let abstain: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM governance_ballots WHERE motion_id=?1 AND abstain_vote=1 AND reject_vote=0",
+        [&motion_id],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    Ok(compute_governance_outcome(eligible_count, approve, reject, abstain))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use crate::db::{migrations, types::*};
     use rusqlite::Connection;
+    use super::compute_governance_outcome;
 
     /// Create an isolated in-memory DB with all migrations applied.
     fn test_conn() -> Connection {
@@ -1573,6 +1871,74 @@ mod tests {
             ballot_fk_count > 0,
             "governance_ballots must include at least one foreign key"
         );
+    }
+
+    // ── Governance tally tests ────────────────────────────────────────────────
+
+    #[test]
+    fn tally_passes_with_quorum_majority_and_no_reject_veto() {
+        // 50 eligible, 16 approve, 8 reject, 6 abstain → 30/50=60% quorum, 16/24=67% majority, 8/30=27% reject
+        let result = compute_governance_outcome(50, 16, 8, 6);
+        assert!(result.passed, "expected pass but got: {:?}", result.fail_reason);
+    }
+
+    #[test]
+    fn tally_fails_when_reject_veto_hits_30_percent_participants() {
+        // 50 eligible, 18 approve, 15 reject, 2 abstain → 35/50=70% quorum, 15/35=43% reject
+        let result = compute_governance_outcome(50, 18, 15, 2);
+        assert!(!result.passed);
+        assert_eq!(result.fail_reason.as_deref(), Some("reject_veto"));
+    }
+
+    #[test]
+    fn tally_fails_when_quorum_not_met() {
+        // 100 eligible, only 10 vote → 10% < 40%
+        let result = compute_governance_outcome(100, 6, 2, 2);
+        assert!(!result.passed);
+        assert_eq!(result.fail_reason.as_deref(), Some("quorum"));
+    }
+
+    #[test]
+    fn tally_fails_when_majority_not_met() {
+        // 10 eligible, 5 approve, 6 reject (quorum ok, reject_veto: 6/11 = 55% >= 30% → reject_veto wins)
+        // so test a case where majority fails but reject is under 30%:
+        // 20 eligible, 10 approve, 5 reject, 5 abstain → 20/20 quorum, 5/15=33% reject → veto
+        // Need: quorum ok, reject < 30%, approve <= 50%
+        // 20 eligible, 5 approve, 5 reject, 5 abstain → 15/20=75% quorum, 5/10=50% reject → veto
+        // 20 eligible, 10 approve, 2 reject, 9 abstain → 21/20>100% quorum, 2/12=17% reject, 10/12=83% approve → PASS
+        // Let's do: 20 eligible, 4 approve, 2 reject, 10 abstain → 16/20=80% quorum, 2/6=33% reject → veto
+        // Need reject < 30% and approve <= non-abstain/2:
+        // 20 eligible, 5 approve, 1 reject, 10 abstain → 16/20=80%, 1/6=17% reject, 5/6=83% approve → PASS
+        // 20 eligible, 3 approve, 1 reject, 12 abstain → 16/20=80%, 1/4=25% reject, 3/4=75% approve → PASS
+        // To fail majority: approve must be <= non_abstain/2
+        // 20 eligible, 3 approve, 4 reject, 9 abstain → 16/20=80%, 4/16=25% reject(ok), 3/7=43% approve < 50%
+        let result = compute_governance_outcome(20, 3, 4, 9);
+        assert!(!result.passed);
+        assert_eq!(result.fail_reason.as_deref(), Some("majority"));
+    }
+
+    #[test]
+    fn tally_round_trip_via_db_save_load_ballot() {
+        let conn = test_conn();
+        // Use the standard seed helper so FK constraints are satisfied
+        seed_server_and_channel(&conn, "srv-1", "ch-1");
+        // Insert a parent governance_motion (FK parent of governance_ballots)
+        conn.execute(
+            "INSERT INTO governance_motions (id, server_id, type, state, is_binding, seat_count, proposer_user_id, ruleset_json, created_at, updated_at)
+             VALUES ('m1','srv-1','non_binding_poll','voting',0,1,'alice','{}','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO governance_ballots (motion_id, voter_user_id, approved_candidate_ids_json, reject_vote, abstain_vote, revision, updated_at)
+             VALUES ('m1','alice','[]',0,0,1,'2026-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM governance_ballots WHERE motion_id='m1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

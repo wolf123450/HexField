@@ -251,6 +251,16 @@ pub fn run() {
             db_search_messages,
             db_load_messages_around,
             db_load_messages_after,
+            // Governance motion pipeline
+            db_save_governance_motion,
+            db_load_governance_motions,
+            db_save_governance_candidate,
+            db_load_governance_candidates,
+            db_save_governance_ballot,
+            db_load_governance_ballots,
+            db_save_governance_post,
+            db_load_governance_posts,
+            db_tally_governance_motion,
             // Signaling
             signal_connect,
             signal_disconnect,
