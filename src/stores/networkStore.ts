@@ -856,6 +856,19 @@ export const useNetworkStore = defineStore('network', () => {
       const { useEmojiStore } = await import('./emojiStore')
       useEmojiStore().applyEmojiRemoveMutation(mutation.targetId)
     }
+    // Governance mutations (channelId === '__server__', type starts with 'governance_')
+    if (mutation.channelId === '__server__' && mutation.type.startsWith('governance_') && mutation.newContent) {
+      const serverId = mutation.targetId
+      if (serverId) {
+        const { useGovernanceStore } = await import('./governanceStore')
+        await useGovernanceStore().applyGovernanceMutation(
+          serverId,
+          mutation.id,
+          mutation.type,
+          JSON.parse(mutation.newContent),
+        )
+      }
+    }
   }
 
   async function handleEmojiImageRequest(fromUserId: string, msg: Record<string, unknown>) {
