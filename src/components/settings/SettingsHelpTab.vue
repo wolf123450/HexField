@@ -39,13 +39,17 @@
         Open developer tools
       </button>
     </div>
-  </div>
+
     <div class="help-section">
       <h3 class="help-section-title">Governance Motions</h3>
-      <p class="setting-hint">Governance motions let a server community vote on elections, polls, and rule changes.</p>
-      <p class="setting-hint">Binding motions require seconding and a minimum 24-hour discussion window before voting can open. Eligible voters are frozen at the moment voting opens.</p>
-      <p class="setting-hint">Non-binding polls can open for voting immediately without a seconding requirement.</p>
+      <p class="setting-hint">Open the full governance guide with motion types, lifecycle, and binding rules.</p>
+      <button class="btn-sm help-btn" @click="showGovernanceHelp = true">
+        Open governance guide
+      </button>
     </div>
+
+    <GovernanceHelpDialog :show="showGovernanceHelp" @close="showGovernanceHelp = false" />
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -55,12 +59,14 @@ import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { version as appVersion } from '../../../package.json'
 import { checkForUpdate, downloadAndInstallUpdate } from '@/utils/updateService'
+import GovernanceHelpDialog from './GovernanceHelpDialog.vue'
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 const uiStore = useUIStore()
 const settingsStore = useSettingsStore()
 
 const updateChecking = ref(false)
+const showGovernanceHelp = ref(false)
 
 async function manualCheckForUpdate() {
   updateChecking.value = true

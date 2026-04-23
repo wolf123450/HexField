@@ -566,7 +566,7 @@ async function doExportArchive() {
   if (!sid) return
   exporting.value = true
   try { await serversStore.exportArchive(sid) }
-  catch (err: unknown) { alert(err instanceof Error ? err.message : 'Export failed.') }
+  catch (err: unknown) { uiStore.showAlert('Export Failed', err instanceof Error ? err.message : 'Export failed.') }
   finally { exporting.value = false }
 }
 
@@ -577,10 +577,10 @@ async function doImportArchive(e: Event) {
   try {
     const text = await file.text()
     const srv = await serversStore.importArchive(text)
-    alert(`Server "${srv.name}" imported successfully.`)
+    uiStore.showAlert('Archive Imported', `Server "${srv.name}" imported successfully.`)
     close()
   } catch (err: unknown) {
-    alert(err instanceof Error ? err.message : 'Import failed.')
+    uiStore.showAlert('Import Failed', err instanceof Error ? err.message : 'Import failed.')
   }
 }
 
@@ -592,7 +592,7 @@ async function doRebaseline() {
     await serversStore.applyRebaseline(sid)
     confirmRebaseline.value = false
   }
-  catch (err: unknown) { alert(err instanceof Error ? err.message : 'Re-baseline failed.') }
+  catch (err: unknown) { uiStore.showAlert('Re-baseline Failed', err instanceof Error ? err.message : 'Re-baseline failed.') }
   finally { rebaselining.value = false }
 }
 
