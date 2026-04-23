@@ -1,6 +1,6 @@
 # Governance Motion Pipeline Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Implement a feature-flagged governance motion pipeline (off by default) with fallback leave/heir flows, network settings split, and negentropy-based propagation using existing mutation sync pathways.
 
@@ -18,7 +18,7 @@
 - Modify: `src-tauri/src/db/types.rs`
 - Test: `src-tauri/src/commands/db_commands.rs` (new `#[cfg(test)]` migration smoke test)
 
-- [ ] **Step 1: Write failing migration smoke test**
+- [x] **Step 1: Write failing migration smoke test**
 
 ```rust
 #[test]
@@ -41,12 +41,12 @@ fn governance_tables_exist_after_migration() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd src-tauri; cargo test governance_tables_exist_after_migration -- --nocapture`
 Expected: FAIL with missing table assertions.
 
-- [ ] **Step 3: Add migration SQL**
+- [x] **Step 3: Add migration SQL**
 
 ```sql
 CREATE TABLE IF NOT EXISTS governance_motions (
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS governance_posts (
 );
 ```
 
-- [ ] **Step 4: Register migration + row structs**
+- [x] **Step 4: Register migration + row structs**
 
 ```rust
 const M013: &str = include_str!("../../migrations/013_governance_motion_pipeline.sql");
@@ -135,12 +135,12 @@ pub struct GovernanceMotionRow {
 }
 ```
 
-- [ ] **Step 5: Re-run migration test**
+- [x] **Step 5: Re-run migration test**
 
 Run: `cd src-tauri; cargo test governance_tables_exist_after_migration -- --nocapture`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src-tauri/migrations/013_governance_motion_pipeline.sql src-tauri/src/db/migrations.rs src-tauri/src/db/types.rs src-tauri/src/commands/db_commands.rs
@@ -154,7 +154,7 @@ git commit -m "feat(db): add governance motion pipeline schema"
 - Modify: `src-tauri/src/lib.rs`
 - Test: `src-tauri/src/commands/db_commands.rs` (`#[cfg(test)]`)
 
-- [ ] **Step 1: Write failing Rust tests for tally rules**
+- [x] **Step 1: Write failing Rust tests for tally rules**
 
 ```rust
 #[test]
@@ -171,12 +171,12 @@ fn tally_fails_when_reject_veto_hits_30_percent_participants() {
 }
 ```
 
-- [ ] **Step 2: Run failing tests**
+- [x] **Step 2: Run failing tests**
 
 Run: `cd src-tauri; cargo test tally_ -- --nocapture`
 Expected: FAIL unresolved function `compute_governance_outcome`.
 
-- [ ] **Step 3: Add helper + DB commands**
+- [x] **Step 3: Add helper + DB commands**
 
 ```rust
 fn compute_governance_outcome(
@@ -242,7 +242,7 @@ pub fn db_save_governance_ballot(state: State<AppState>, ballot: GovernanceBallo
 }
 ```
 
-- [ ] **Step 4: Register new commands**
+- [x] **Step 4: Register new commands**
 
 ```rust
 .invoke_handler(tauri::generate_handler![
@@ -261,12 +261,12 @@ pub fn db_save_governance_ballot(state: State<AppState>, ballot: GovernanceBallo
 ])
 ```
 
-- [ ] **Step 5: Run command/tally tests**
+- [x] **Step 5: Run command/tally tests**
 
 Run: `cd src-tauri; cargo test governance_ -- --nocapture`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src-tauri/src/commands/db_commands.rs src-tauri/src/lib.rs
@@ -281,7 +281,7 @@ git commit -m "feat(rust): add governance db commands and tally rules"
 - Modify: `src/stores/serversStore.ts`
 - Test: `src/stores/__tests__/serversStore.test.ts`
 
-- [ ] **Step 1: Write failing store test for governance flag default off**
+- [x] **Step 1: Write failing store test for governance flag default off**
 
 ```ts
 it('defaults governance feature flag to disabled on new server settings', async () => {
@@ -291,12 +291,12 @@ it('defaults governance feature flag to disabled on new server settings', async 
 })
 ```
 
-- [ ] **Step 2: Run test to verify failure**
+- [x] **Step 2: Run test to verify failure**
 
 Run: `npm run test -- src/stores/__tests__/serversStore.test.ts -t governance`
 Expected: FAIL (missing property / undefined).
 
-- [ ] **Step 3: Add domain types + server flag field**
+- [x] **Step 3: Add domain types + server flag field**
 
 ```ts
 export interface Server {
@@ -326,7 +326,7 @@ export interface GovernanceMotion {
 }
 ```
 
-- [ ] **Step 4: Add server settings defaults + persistence path**
+- [x] **Step 4: Add server settings defaults + persistence path**
 
 ```ts
 if (server.governanceMotionPipelineEnabled === undefined) {
@@ -334,12 +334,12 @@ if (server.governanceMotionPipelineEnabled === undefined) {
 }
 ```
 
-- [ ] **Step 5: Re-run store tests**
+- [x] **Step 5: Re-run store tests**
 
 Run: `npm run test -- src/stores/__tests__/serversStore.test.ts -t governance`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/types/core.ts src/stores/settingsStore.ts src/stores/serversStore.ts src/stores/__tests__/serversStore.test.ts
@@ -354,7 +354,7 @@ git commit -m "feat(frontend): add governance domain types and server feature fl
 - Create: `src/components/modals/LeaveServerModal.vue`
 - Test: `src/stores/__tests__/serversStore.test.ts`
 
-- [ ] **Step 1: Write failing tests for fallback route behavior**
+- [x] **Step 1: Write failing tests for fallback route behavior**
 
 ```ts
 it('owner can abdicate without leaving when governance flag is off', async () => {
@@ -377,12 +377,12 @@ it('last member leave triggers local server cleanup', async () => {
 })
 ```
 
-- [ ] **Step 2: Run tests and capture expected failures**
+- [x] **Step 2: Run tests and capture expected failures**
 
 Run: `npm run test -- src/stores/__tests__/serversStore.test.ts -t leave`
 Expected: FAIL for missing actions.
 
-- [ ] **Step 3: Implement store actions + modal wiring**
+- [x] **Step 3: Implement store actions + modal wiring**
 
 ```ts
 async function leaveServer(serverId: string, opts?: { heirUserId?: string; abdicateOnly?: boolean }) {
@@ -399,12 +399,12 @@ async function leaveServer(serverId: string, opts?: { heirUserId?: string; abdic
 }
 ```
 
-- [ ] **Step 4: Re-run leave/heir tests**
+- [x] **Step 4: Re-run leave/heir tests**
 
 Run: `npm run test -- src/stores/__tests__/serversStore.test.ts -t "leave|abdicate|heir"`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/stores/serversStore.ts src/stores/uiStore.ts src/components/modals/LeaveServerModal.vue src/stores/__tests__/serversStore.test.ts
@@ -419,7 +419,7 @@ git commit -m "feat(servers): add fallback leave and heir flows when governance 
 - Modify: `src/stores/messagesStore.ts`
 - Test: `src/stores/__tests__/governanceStore.test.ts`
 
-- [ ] **Step 1: Write failing governance lifecycle tests**
+- [x] **Step 1: Write failing governance lifecycle tests**
 
 ```ts
 it('binding motion cannot open voting until seconded and min discussion window elapsed', async () => {
@@ -444,12 +444,12 @@ it('freeze eligibility snapshot at vote open', async () => {
 })
 ```
 
-- [ ] **Step 2: Run governance tests to confirm failure**
+- [x] **Step 2: Run governance tests to confirm failure**
 
 Run: `npm run test -- src/stores/__tests__/governanceStore.test.ts`
 Expected: FAIL (store file missing).
 
-- [ ] **Step 3: Implement store state + commands**
+- [x] **Step 3: Implement store state + commands**
 
 ```ts
 export const useGovernanceStore = defineStore('governance', () => {
@@ -473,7 +473,7 @@ export const useGovernanceStore = defineStore('governance', () => {
 })
 ```
 
-- [ ] **Step 4: Hook network mutation handler for governance events**
+- [x] **Step 4: Hook network mutation handler for governance events**
 
 ```ts
 if (msg.type === 'mutation' && msg.mutation.channelId === '__server__') {
@@ -481,12 +481,12 @@ if (msg.type === 'mutation' && msg.mutation.channelId === '__server__') {
 }
 ```
 
-- [ ] **Step 5: Re-run governance store tests**
+- [x] **Step 5: Re-run governance store tests**
 
 Run: `npm run test -- src/stores/__tests__/governanceStore.test.ts`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/stores/governanceStore.ts src/stores/networkStore.ts src/stores/messagesStore.ts src/stores/__tests__/governanceStore.test.ts
@@ -507,7 +507,7 @@ git commit -m "feat(governance): add motion lifecycle store and deterministic ga
 - Create: `src/components/governance/MotionArchive.vue`
 - Test: `src/components/__tests__/SettingsNetworkTab.test.ts`
 
-- [ ] **Step 1: Write failing component tests for tab split**
+- [x] **Step 1: Write failing component tests for tab split**
 
 ```ts
 it('renders Network tab and excludes network controls from Voice tab', async () => {
@@ -518,12 +518,12 @@ it('renders Network tab and excludes network controls from Voice tab', async () 
 })
 ```
 
-- [ ] **Step 2: Run failing UI tests**
+- [x] **Step 2: Run failing UI tests**
 
 Run: `npm run test -- src/components/__tests__/SettingsNetworkTab.test.ts`
 Expected: FAIL missing component/tab.
 
-- [ ] **Step 3: Implement tab split + governance feature gating in UI**
+- [x] **Step 3: Implement tab split + governance feature gating in UI**
 
 ```vue
 <SettingsNetworkTab v-else-if="activeTab === 'network'" />
@@ -538,19 +538,19 @@ Expected: FAIL missing component/tab.
 </section>
 ```
 
-- [ ] **Step 4: Add Help docs content for governance rules**
+- [x] **Step 4: Add Help docs content for governance rules**
 
 ```vue
 <h3>Governance Motions</h3>
 <p>Binding motions require seconding, discussion minimums, and a 24h+ vote window.</p>
 ```
 
-- [ ] **Step 5: Re-run component tests**
+- [x] **Step 5: Re-run component tests**
 
 Run: `npm run test -- src/components/__tests__/SettingsNetworkTab.test.ts`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/components/Settings.vue src/components/settings/SettingsNetworkTab.vue src/components/settings/SettingsVoiceTab.vue src/components/settings/SettingsHelpTab.vue src/components/governance src/components/__tests__/SettingsNetworkTab.test.ts
@@ -565,7 +565,7 @@ git commit -m "feat(ui): split network settings and add governance surfaces"
 - Modify: `src-tauri/src/commands/sync_commands.rs`
 - Test: `src/services/__tests__/syncService.test.ts`
 
-- [ ] **Step 1: Write failing sync test for governance mutations**
+- [x] **Step 1: Write failing sync test for governance mutations**
 
 ```ts
 it('hydrates governance state from __server__ mutation sync_push', async () => {
@@ -583,12 +583,12 @@ it('hydrates governance state from __server__ mutation sync_push', async () => {
 })
 ```
 
-- [ ] **Step 2: Run failing sync test**
+- [x] **Step 2: Run failing sync test**
 
 Run: `npm run test -- src/services/__tests__/syncService.test.ts -t governance`
 Expected: FAIL with missing governance routing.
 
-- [ ] **Step 3: Route governance mutation types in sync handler**
+- [x] **Step 3: Route governance mutation types in sync handler**
 
 ```ts
 if (wire.channelId === '__server__') {
@@ -601,7 +601,7 @@ if (wire.channelId === '__server__') {
 }
 ```
 
-- [ ] **Step 4: Verify no new protocol introduced**
+- [x] **Step 4: Verify no new protocol introduced**
 
 ```rust
 // Keep existing pathway unchanged:
@@ -611,12 +611,12 @@ if (wire.channelId === '__server__') {
 // No new sync table or wire message type is introduced.
 ```
 
-- [ ] **Step 5: Re-run sync tests**
+- [x] **Step 5: Re-run sync tests**
 
 Run: `npm run test -- src/services/__tests__/syncService.test.ts -t governance`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/services/syncService.ts src/stores/governanceStore.ts src-tauri/src/commands/sync_commands.rs src/services/__tests__/syncService.test.ts
@@ -631,7 +631,7 @@ git commit -m "feat(sync): propagate governance via existing negentropy mutation
 - Test: `src/stores/__tests__/governanceStore.test.ts`
 - Test: `src-tauri/src/commands/db_commands.rs` tests
 
-- [ ] **Step 1: Add failing tests for seatCount and runoff creation**
+- [x] **Step 1: Add failing tests for seatCount and runoff creation**
 
 ```ts
 it('elects top N approvals for seatCount and generates runoff on boundary tie', async () => {
@@ -662,7 +662,7 @@ fn creates_runoff_when_boundary_tie_detected() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+- [x] **Step 2: Run tests to verify failure**
 
 Run: `npm run test -- src/stores/__tests__/governanceStore.test.ts -t runoff`
 Expected: FAIL.
@@ -670,7 +670,7 @@ Expected: FAIL.
 Run: `cd src-tauri; cargo test runoff -- --nocapture`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement deterministic runoff generation**
+- [x] **Step 3: Implement deterministic runoff generation**
 
 ```ts
 if (isBoundaryTie(rankings, motion.seatCount)) {
@@ -683,7 +683,7 @@ if (isBoundaryTie(rankings, motion.seatCount)) {
 }
 ```
 
-- [ ] **Step 4: Re-run runoff tests**
+- [x] **Step 4: Re-run runoff tests**
 
 Run: `npm run test -- src/stores/__tests__/governanceStore.test.ts -t runoff`
 Expected: PASS.
@@ -691,7 +691,7 @@ Expected: PASS.
 Run: `cd src-tauri; cargo test runoff -- --nocapture`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/stores/governanceStore.ts src/stores/__tests__/governanceStore.test.ts src-tauri/src/commands/db_commands.rs
@@ -707,7 +707,7 @@ git commit -m "feat(governance): add seat-count elections and deterministic runo
 - Modify: `docs/specs/07-message-sync.md`
 - Test: existing suites
 
-- [ ] **Step 1: Add failing doc consistency checks (manual checklist)**
+- [x] **Step 1: Add failing doc consistency checks (manual checklist)**
 
 ```text
 Checklist:
@@ -717,7 +717,7 @@ Checklist:
 - Network tab split documented
 ```
 
-- [ ] **Step 2: Update docs and TODO checkboxes**
+- [x] **Step 2: Update docs and TODO checkboxes**
 
 ```markdown
 - [x] Governance motion pipeline (feature-flagged, default off)
@@ -725,7 +725,7 @@ Checklist:
 - [x] Governance data synced via existing negentropy pathway
 ```
 
-- [ ] **Step 3: Run full verification commands**
+- [x] **Step 3: Run full verification commands**
 
 Run: `npm run build`
 Expected: PASS (vue-tsc + vite).
@@ -739,14 +739,14 @@ Expected: PASS.
 Run: `cd src-tauri; cargo test`
 Expected: PASS.
 
-- [ ] **Step 4: Commit docs + final verification artifacts**
+- [x] **Step 4: Commit docs + final verification artifacts**
 
 ```bash
 git add docs/TODO.md docs/specs/11-permissions.md docs/specs/04-ui-architecture.md docs/specs/07-message-sync.md
 git commit -m "docs: finalize governance, settings split, and sync behavior specs"
 ```
 
-- [ ] **Step 5: Final branch summary commit (if needed)**
+- [x] **Step 5: Final branch summary commit (if needed)**
 
 ```bash
 git log --oneline --decorate -n 15
