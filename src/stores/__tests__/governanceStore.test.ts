@@ -181,4 +181,35 @@ describe('governanceStore lifecycle', () => {
     expect(outcome.fail_reason).toBe('quorum')
     expect(store.getMotionById(motionId)?.state).toBe('closed_failed')
   })
+
+  it('elects top N approvals for seatCount and generates runoff on boundary tie', async () => {
+    const { useGovernanceStore } = await import('@/stores/governanceStore')
+    const { useServersStore }    = await import('@/stores/serversStore')
+    await makeInvokeMock({ tallyOutcome: { passed: true, fail_reason: null } })
+    const store    = useGovernanceStore()
+    const srvStore = useServersStore()
+    srvStore.servers['s1'] = { id: 's1', name: 'Test', ownerId: 'alice', memberCount: 1, createdAt: '', customEmoji: [] }
+    srvStore.members['s1'] = {}
+
+    const motionId = await store.createDraft({ serverId: 's1', motionType: 'election', isBinding: false, seatCount: 3 })
+    await store.openDiscussion(motionId)
+    await store.openVoting(motionId)
+
+    store.seedFinalTallyForTest(motionId, [
+      { candidateId: 'a', approvals: 15 },
+      { candidateId: 'b', approvals: 14 },
+      { candidateId: 'c', approvals: 13 },
+      { candidateId: 'd', approvals: 13 },
+    ])
+
+    await store.closeMotion(motionId)
+
+    const runoffs = store.listRunoffsForParent(motionId)
+    expect(runoffs).toHaveLength(1)
+    expect(runoffs[0].motion_type).toBe('runoff')
+    expect(runoffs[0].seat_count).toBe(1)
+    const ruleset = JSON.parse(runoffs[0].ruleset_json!) as { parent_motion_id: string; tied_candidates: string[] }
+    expect(ruleset.parent_motion_id).toBe(motionId)
+    expect(ruleset.tied_candidates).toEqual(expect.arrayContaining(['c', 'd']))
+  })
 })

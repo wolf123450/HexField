@@ -1616,13 +1616,48 @@ pub fn db_tally_governance_motion(
     Ok(compute_governance_outcome(eligible_count, approve, reject, abstain))
 }
 
+// ── Governance: runoff detection ───────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
+pub struct RankedCandidate {
+    pub candidate_id: String,
+    pub approvals:    i64,
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct RunoffSpec {
+    pub parent_motion_id: String,
+    pub seat_count:       i64,
+    pub candidate_ids:    Vec<String>,
+}
+
+/// Build a runoff spec when tied candidates straddle the seat-count boundary.
+/// Returns None if the provided list has fewer than 2 candidates.
+#[allow(dead_code)]
+pub fn build_runoff_from_boundary_tie(
+    parent_motion_id: &str,
+    remaining_seats: i64,
+    tied: &[RankedCandidate],
+) -> Option<RunoffSpec> {
+    if tied.len() < 2 {
+        return None;
+    }
+    Some(RunoffSpec {
+        parent_motion_id: parent_motion_id.to_string(),
+        seat_count:       remaining_seats,
+        candidate_ids:    tied.iter().map(|c| c.candidate_id.clone()).collect(),
+    })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use crate::db::{migrations, types::*};
     use rusqlite::Connection;
-    use super::compute_governance_outcome;
+    use super::{compute_governance_outcome, build_runoff_from_boundary_tie, RankedCandidate};
 
     /// Create an isolated in-memory DB with all migrations applied.
     fn test_conn() -> Connection {
@@ -2501,6 +2536,29 @@ mod tests {
             "SELECT COUNT(*) FROM channels WHERE id = ?1", [cid], |r| r.get(0),
         ).unwrap();
         assert_eq!(count, 0);
+    }
+
+    // ── Runoff detection ──────────────────────────────────────────────────────
+
+    #[test]
+    fn creates_runoff_when_boundary_tie_detected() {
+        let tied = vec![
+            RankedCandidate { candidate_id: "c".into(), approvals: 13 },
+            RankedCandidate { candidate_id: "d".into(), approvals: 13 },
+        ];
+        let runoff = build_runoff_from_boundary_tie("motion-1", 1, &tied).unwrap();
+        assert_eq!(runoff.parent_motion_id, "motion-1");
+        assert_eq!(runoff.seat_count, 1);
+        assert_eq!(runoff.candidate_ids, vec!["c", "d"]);
+    }
+
+    #[test]
+    fn no_runoff_when_fewer_than_two_candidates() {
+        let tied = vec![
+            RankedCandidate { candidate_id: "a".into(), approvals: 10 },
+        ];
+        let result = build_runoff_from_boundary_tie("motion-2", 1, &tied);
+        assert!(result.is_none());
     }
 }
 
