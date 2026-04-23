@@ -15,6 +15,11 @@ vi.mock('@/stores/identityStore', () => ({
   }),
 }))
 
+// channelsStore is dynamically imported inside leaveServer
+vi.mock('@/stores/channelsStore', () => ({
+  useChannelsStore: () => ({ channels: {} }),
+}))
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function makeServer(id = 's-1'): Server {
@@ -225,5 +230,69 @@ describe('Server.governanceMotionPipelineEnabled', () => {
     await store.loadServers()
 
     expect(store.servers['s-gov']?.governanceMotionPipelineEnabled).toBe(true)
+  })
+})
+
+// ── leaveServer (non-governance fallback) ──────────────────────────────────────
+
+describe('serversStore.leaveServer', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('removes server from reactive state and joinedServerIds', async () => {
+    const { useServersStore } = await import('@/stores/serversStore')
+    const { invoke } = await import('@tauri-apps/api/core')
+    const store = useServersStore()
+
+    store.servers['s-1'] = makeServer('s-1')
+    store.joinedServerIds.push('s-1')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    await store.leaveServer('s-1')
+
+    expect(store.servers['s-1']).toBeUndefined()
+    expect(store.joinedServerIds).not.toContain('s-1')
+  })
+
+  it('clears activeServerId when leaving the active server', async () => {
+    const { useServersStore } = await import('@/stores/serversStore')
+    const { invoke } = await import('@tauri-apps/api/core')
+    const store = useServersStore()
+
+    store.servers['s-1'] = makeServer('s-1')
+    store.joinedServerIds.push('s-1')
+    store.activeServerId = 's-1'
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    await store.leaveServer('s-1')
+
+    expect(store.activeServerId).toBeNull()
+  })
+
+  it('calls db_delete_server with the correct serverId', async () => {
+    const { useServersStore } = await import('@/stores/serversStore')
+    const { invoke } = await import('@tauri-apps/api/core')
+    const store = useServersStore()
+
+    store.servers['s-1'] = makeServer('s-1')
+    store.joinedServerIds.push('s-1')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    await store.leaveServer('s-1')
+
+    expect(invoke).toHaveBeenCalledWith('db_delete_server', { serverId: 's-1' })
+  })
+
+  it('is a no-op for an unknown serverId', async () => {
+    const { useServersStore } = await import('@/stores/serversStore')
+    const { invoke } = await import('@tauri-apps/api/core')
+    const store = useServersStore()
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    await store.leaveServer('ghost-server')
+
+    expect(invoke).not.toHaveBeenCalled()
   })
 })

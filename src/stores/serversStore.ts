@@ -1314,6 +1314,30 @@ export const useServersStore = defineStore('servers', () => {
     useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
   }
 
+  /**
+   * Leave a server — removes all local state and DB records for that server.
+   * When governance is disabled (default) this is the only path.
+   * When governance is enabled this should instead trigger a governance motion.
+   */
+  async function leaveServer(serverId: string): Promise<void> {
+    const server = servers.value[serverId]
+    if (!server) return
+
+    // Clean up local reactive state
+    delete servers.value[serverId]
+    delete members.value[serverId]
+    joinedServerIds.value = joinedServerIds.value.filter(id => id !== serverId)
+    if (activeServerId.value === serverId) activeServerId.value = null
+
+    // Clean up channels store
+    const { useChannelsStore } = await import('./channelsStore')
+    const channelsStore = useChannelsStore()
+    delete channelsStore.channels[serverId]
+
+    // Delete from DB (best-effort — don't block on failure)
+    await invoke('db_delete_server', { serverId }).catch(() => {})
+  }
+
   return {
     servers,
     members,
@@ -1363,5 +1387,6 @@ export const useServersStore = defineStore('servers', () => {
     serializeMutation,
     createMemberJoinMutation,
     broadcastProfileMutation,
+    leaveServer,
   }
 })
