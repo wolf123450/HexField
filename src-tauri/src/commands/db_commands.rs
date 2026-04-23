@@ -1496,6 +1496,29 @@ mod tests {
     }
 
     #[test]
+    fn governance_tables_exist_after_migration() {
+        let mut conn = Connection::open_in_memory().expect("in-memory DB");
+        migrations::run(&mut conn);
+
+        let names: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'governance_%' ORDER BY name",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+
+        assert!(names.contains(&"governance_motions".to_string()));
+        assert!(names.contains(&"governance_candidates".to_string()));
+        assert!(names.contains(&"governance_ballots".to_string()));
+        assert!(names.contains(&"governance_posts".to_string()));
+    }
+
+    #[test]
     fn test_save_and_load_message_round_trip() {
         let conn = test_conn();
         seed_server_and_channel(&conn, "srv-1", "ch-1");
