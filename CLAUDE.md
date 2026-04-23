@@ -142,7 +142,7 @@ Use this to know which spec to read before touching an area:
 
 Follow this loop for every change:
 
-**Repo workflow preference:** Do **not** use git worktrees for this repository. Work on a normal feature branch in the primary workspace to avoid extra workflow complexity.
+**Repo workflow preference:** Do **not** use git worktrees for this repository. Work on a normal feature branch in the primary workspace. Worktrees add more complexity than they provide via parallelism — this is an explicit project policy.
 
 1. **Check docs** — read `TODO.md` and the relevant spec(s) before writing any code
 2. **Look up library APIs** — use Context7 for any library API you're about to use, especially if it's the first time in this project or you're unsure of the exact signature
