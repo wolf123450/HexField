@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS governance_motions (
   vote_close_at TEXT,
   ruleset_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_governance_motions_server_state
@@ -27,7 +28,8 @@ CREATE TABLE IF NOT EXISTS governance_candidates (
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (motion_id, candidate_user_id)
+  PRIMARY KEY (motion_id, candidate_user_id),
+  FOREIGN KEY (motion_id) REFERENCES governance_motions(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS governance_ballots (
@@ -38,7 +40,8 @@ CREATE TABLE IF NOT EXISTS governance_ballots (
   abstain_vote INTEGER NOT NULL,
   revision INTEGER NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (motion_id, voter_user_id)
+  PRIMARY KEY (motion_id, voter_user_id),
+  FOREIGN KEY (motion_id) REFERENCES governance_motions(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS governance_posts (
@@ -49,5 +52,7 @@ CREATE TABLE IF NOT EXISTS governance_posts (
   content TEXT NOT NULL,
   created_at TEXT NOT NULL,
   edited_at TEXT,
-  deleted_at TEXT
+  deleted_at TEXT,
+  FOREIGN KEY (motion_id) REFERENCES governance_motions(id) ON DELETE CASCADE,
+  FOREIGN KEY (parent_post_id) REFERENCES governance_posts(id) ON DELETE CASCADE
 );

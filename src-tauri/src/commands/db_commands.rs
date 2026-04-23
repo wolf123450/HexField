@@ -1516,6 +1516,63 @@ mod tests {
         assert!(names.contains(&"governance_candidates".to_string()));
         assert!(names.contains(&"governance_ballots".to_string()));
         assert!(names.contains(&"governance_posts".to_string()));
+
+        let motion_columns: Vec<String> = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(governance_motions)")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(
+            motion_columns.contains(&"type".to_string()),
+            "governance_motions must expose wire/schema column named 'type'"
+        );
+
+        let has_motion_state_index: bool = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_governance_motions_server_state' LIMIT 1",
+                )
+                .unwrap();
+            stmt.query_row([], |_r| Ok(())).is_ok()
+        };
+        assert!(
+            has_motion_state_index,
+            "required index idx_governance_motions_server_state is missing"
+        );
+
+        let candidate_fk_count: usize = {
+            let mut stmt = conn
+                .prepare("PRAGMA foreign_key_list(governance_candidates)")
+                .unwrap();
+            stmt.query_map([], |_r| Ok(()))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .len()
+        };
+        assert!(
+            candidate_fk_count > 0,
+            "governance_candidates must include at least one foreign key"
+        );
+
+        let ballot_fk_count: usize = {
+            let mut stmt = conn
+                .prepare("PRAGMA foreign_key_list(governance_ballots)")
+                .unwrap();
+            stmt.query_map([], |_r| Ok(()))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .len()
+        };
+        assert!(
+            ballot_fk_count > 0,
+            "governance_ballots must include at least one foreign key"
+        );
     }
 
     #[test]
