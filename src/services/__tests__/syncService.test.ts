@@ -546,7 +546,7 @@ describe('syncService._onPush â€” member_join persistence', () => {
 
 // -- Governance mutation routing via negentropy ---------------------------------
 
-describe('syncService._onPush — governance mutation routing', () => {
+describe('syncService._onPush ï¿½ governance mutation routing', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })

@@ -16,6 +16,7 @@
     @close="uiStore.showJoinCapsuleModal = false"
   />
   <AlertModal />
+  <ConfirmModal />
   <LeaveServerModal />
   <SourcePickerModal v-if="uiStore.sourcePickerOpen" />
 </template>
@@ -35,6 +36,7 @@ import UserProfileModal from '@/components/modals/UserProfileModal.vue'
 import ServerSettingsModal from '@/components/modals/ServerSettingsModal.vue'
 import JoinCapsuleModal from '@/components/modals/JoinCapsuleModal.vue'
 import AlertModal from '@/components/modals/AlertModal.vue'
+import ConfirmModal from '@/components/modals/ConfirmModal.vue'
 import LeaveServerModal from '@/components/modals/LeaveServerModal.vue'
 import SourcePickerModal from '@/components/modals/SourcePickerModal.vue'
 import { useUIStore } from '@/stores/uiStore'

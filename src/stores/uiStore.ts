@@ -191,6 +191,40 @@ export const useUIStore = defineStore("ui", () => {
     alertVisible.value = false
   }
 
+  // ─── Confirm modal (yes/no) ──────────────────────────────────────────────
+  const confirmTitle       = ref<string>('')
+  const confirmMessage     = ref<string>('')
+  const confirmConfirmText = ref<string>('Confirm')
+  const confirmCancelText  = ref<string>('Cancel')
+  const confirmDanger      = ref<boolean>(false)
+  const confirmVisible     = ref<boolean>(false)
+  let confirmResolve: ((confirmed: boolean) => void) | null = null
+
+  function confirmDialog(options: {
+    title: string
+    message: string
+    confirmText?: string
+    cancelText?: string
+    danger?: boolean
+  }): Promise<boolean> {
+    confirmTitle.value       = options.title
+    confirmMessage.value     = options.message
+    confirmConfirmText.value = options.confirmText ?? 'Confirm'
+    confirmCancelText.value  = options.cancelText ?? 'Cancel'
+    confirmDanger.value      = options.danger ?? false
+    confirmVisible.value     = true
+
+    return new Promise(resolve => {
+      confirmResolve = resolve
+    })
+  }
+
+  function resolveConfirm(confirmed: boolean) {
+    confirmResolve?.(confirmed)
+    confirmResolve = null
+    confirmVisible.value = false
+  }
+
   // ─── Leave server modal ────────────────────────────────────────────────
   const leaveServerModalVisible  = ref(false)
   const leaveServerModalServerId = ref<string | null>(null)
@@ -269,6 +303,15 @@ export const useUIStore = defineStore("ui", () => {
     alertVisible,
     showAlert,
     dismissAlert,
+    // Confirm modal
+    confirmTitle,
+    confirmMessage,
+    confirmConfirmText,
+    confirmCancelText,
+    confirmDanger,
+    confirmVisible,
+    confirmDialog,
+    resolveConfirm,
     // Leave server modal
     leaveServerModalVisible,
     leaveServerModalServerId,
