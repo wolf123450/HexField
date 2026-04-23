@@ -22,6 +22,7 @@
         <div class="settings-body">
           <SettingsProfileTab       v-if="activeTab === 'profile'" />
           <SettingsVoiceTab         v-else-if="activeTab === 'voice'" />
+          <SettingsNetworkTab        v-else-if="activeTab === 'network'" />
           <SettingsPrivacyTab       v-else-if="activeTab === 'privacy'" />
           <SettingsNotificationsTab v-else-if="activeTab === 'notifications'" />
           <SettingsAppearanceTab    v-else-if="activeTab === 'appearance'" />
@@ -49,6 +50,7 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { useFocusTrap } from '@/utils/useFocusTrap'
 import SettingsProfileTab from './settings/SettingsProfileTab.vue'
 import SettingsVoiceTab from './settings/SettingsVoiceTab.vue'
+import SettingsNetworkTab from './settings/SettingsNetworkTab.vue'
 import SettingsPrivacyTab from './settings/SettingsPrivacyTab.vue'
 import SettingsNotificationsTab from './settings/SettingsNotificationsTab.vue'
 import SettingsAppearanceTab from './settings/SettingsAppearanceTab.vue'
@@ -62,11 +64,12 @@ const settingsStore = useSettingsStore()
 const modalEl = ref<HTMLElement | null>(null)
 useFocusTrap(modalEl, computed(() => uiStore.showSettings))
 
-const activeTab = ref<'profile' | 'voice' | 'privacy' | 'notifications' | 'appearance' | 'shortcuts' | 'experimental' | 'help'>('profile')
+const activeTab = ref<'profile' | 'voice' | 'network' | 'privacy' | 'notifications' | 'appearance' | 'shortcuts' | 'experimental' | 'help'>('profile')
 
 const tabs = [
   { key: 'profile',       label: 'Profile' },
   { key: 'voice',         label: 'Voice & Video' },
+  { key: 'network',       label: 'Network' },
   { key: 'privacy',       label: 'Privacy' },
   { key: 'notifications', label: 'Notifications' },
   { key: 'appearance',    label: 'Appearance' },

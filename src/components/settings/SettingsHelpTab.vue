@@ -40,6 +40,12 @@
       </button>
     </div>
   </div>
+    <div class="help-section">
+      <h3 class="help-section-title">Governance Motions</h3>
+      <p class="setting-hint">Governance motions let a server community vote on elections, polls, and rule changes.</p>
+      <p class="setting-hint">Binding motions require seconding and a minimum 24-hour discussion window before voting can open. Eligible voters are frozen at the moment voting opens.</p>
+      <p class="setting-hint">Non-binding polls can open for voting immediately without a seconding requirement.</p>
+    </div>
 </template>
 
 <script setup lang="ts">
