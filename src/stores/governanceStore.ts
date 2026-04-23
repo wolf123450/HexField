@@ -21,6 +21,11 @@ export interface CreateMotionInput {
   rulesetJson?:   string
 }
 
+export interface RankedCandidate {
+  candidateId: string
+  approvals:   number
+}
+
 export const useGovernanceStore = defineStore('governance', () => {
   // keyed by serverId
   const motionsByServer    = ref<Record<string, GovernanceMotion[]>>({})
@@ -28,6 +33,8 @@ export const useGovernanceStore = defineStore('governance', () => {
   const candidatesByMotion = ref<Record<string, GovernanceCandidate[]>>({})
   const ballotsByMotion    = ref<Record<string, GovernanceBallot[]>>({})
   const postsByMotion      = ref<Record<string, GovernancePost[]>>({})
+  // test-only: seeded election rankings for runoff detection
+  const _rankingsForTest   = ref<Record<string, RankedCandidate[]>>({})
 
   // ── Internal helpers ────────────────────────────────────────────────────────
 
@@ -169,6 +176,30 @@ export const useGovernanceStore = defineStore('governance', () => {
     const updated: GovernanceMotion = { ...motion, state: newState as GovernanceMotion['state'], updated_at: new Date().toISOString() }
     await invoke('db_save_governance_motion', { motion: updated })
     upsertMotion(updated)
+
+    // Detect boundary tie for election motions and generate runoff if needed
+    if (motion.motion_type === 'election' && motion.seat_count > 0) {
+      const rankings = _rankingsForTest.value[motionId]
+        ?? _computeRankingsFromBallots(motionId)
+      if (rankings.length > motion.seat_count) {
+        const boundaryApprovals = rankings[motion.seat_count - 1].approvals
+        if (rankings[motion.seat_count].approvals === boundaryApprovals) {
+          // Tie at the boundary: count clear winners (approvals strictly above boundary)
+          const clearWinners = rankings.filter(r => r.approvals > boundaryApprovals).length
+          const tiedCandidates = rankings.filter(r => r.approvals === boundaryApprovals).map(r => r.candidateId)
+          const remainingSeats = motion.seat_count - clearWinners
+          await createDraft({
+            serverId:       motion.server_id,
+            motionType:     'runoff',
+            isBinding:      motion.is_binding,
+            seatCount:      remainingSeats,
+            proposerUserId: motion.proposer_user_id,
+            rulesetJson:    JSON.stringify({ parent_motion_id: motionId, tied_candidates: tiedCandidates }),
+          })
+        }
+      }
+    }
+
     return outcome
   }
 
@@ -178,6 +209,37 @@ export const useGovernanceStore = defineStore('governance', () => {
     const updated: GovernanceMotion = { ...motion, state: 'cancelled', updated_at: new Date().toISOString() }
     await invoke('db_save_governance_motion', { motion: updated })
     upsertMotion(updated)
+  }
+
+  // ── Incoming network mutations ────────────────────────────────────────────────
+  // ── Election ranking helpers ─────────────────────────────────────────────────
+
+  function _computeRankingsFromBallots(motionId: string): RankedCandidate[] {
+    const ballots = ballotsByMotion.value[motionId] ?? []
+    const counts: Record<string, number> = {}
+    for (const ballot of ballots) {
+      if (ballot.reject_vote || ballot.abstain_vote) continue
+      const approved = JSON.parse(ballot.approved_candidate_ids_json) as string[]
+      for (const cid of approved) {
+        counts[cid] = (counts[cid] ?? 0) + 1
+      }
+    }
+    return Object.entries(counts)
+      .map(([candidateId, approvals]) => ({ candidateId, approvals }))
+      .sort((a, b) => b.approvals - a.approvals)
+  }
+
+  function listRunoffsForParent(parentMotionId: string): GovernanceMotion[] {
+    const result: GovernanceMotion[] = []
+    for (const list of Object.values(motionsByServer.value)) {
+      for (const m of list) {
+        if (m.motion_type === 'runoff' && m.ruleset_json) {
+          const ruleset = JSON.parse(m.ruleset_json) as Record<string, unknown>
+          if (ruleset.parent_motion_id === parentMotionId) result.push(m)
+        }
+      }
+    }
+    return result
   }
 
   // ── Incoming network mutations ────────────────────────────────────────────────
@@ -198,6 +260,10 @@ export const useGovernanceStore = defineStore('governance', () => {
     if (!motion?.discussion_open_at) return
     const backDate = new Date(new Date(motion.discussion_open_at).getTime() - hours * 3_600_000).toISOString()
     upsertMotion({ ...motion, discussion_open_at: backDate })
+  }
+
+  function seedFinalTallyForTest(motionId: string, rankings: RankedCandidate[]): void {
+    _rankingsForTest.value[motionId] = rankings
   }
 
   function hasMotion(motionId: string): boolean {
@@ -222,5 +288,7 @@ export const useGovernanceStore = defineStore('governance', () => {
     // Test helpers
     fastForwardDiscussionForTest,
     hasMotion,
+    seedFinalTallyForTest,
+    listRunoffsForParent,
   }
 })
