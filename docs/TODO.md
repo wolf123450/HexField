@@ -363,6 +363,16 @@
   - [x] `sendEditMutation`: optimistic edit reflected in `getMessagesWithMutations` immediately; HLC last-write-wins rejects older edit
   - [x] `sendDeleteMutation`: message becomes `content: null` in reactive state and in DB
   - [x] Permission guard: non-admin cannot delete another user's message (mutation rejected client-side)
+- [x] **Governance motion pipeline (superpowers plan 2026-04-22)**
+  - [x] Task 1: governance schema + Rust row types
+  - [x] Task 2: governance DB commands + deterministic tally helpers
+  - [x] Task 3: TS governance types + feature flag plumbing
+  - [x] Task 4: non-governance leave/heir fallback behavior
+  - [x] Task 5: governance lifecycle store + projection wiring
+  - [x] Task 6: Settings split (Network tab) + governance surfaces
+  - [x] Task 7: negentropy sync pathway for governance mutations
+  - [x] Task 8: multi-seat elections + deterministic runoff generation
+  - [x] Task 9: verification sweep + plan checklist closeout
 
 ---
 
