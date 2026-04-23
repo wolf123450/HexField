@@ -157,6 +157,7 @@ pub struct JoinRequestRow {
 pub struct GovernanceMotionRow {
     pub id: String,
     pub server_id: String,
+    #[serde(rename = "type")]
     pub motion_type: String,
     pub state: String,
     pub is_binding: bool,
