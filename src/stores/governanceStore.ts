@@ -200,6 +200,10 @@ export const useGovernanceStore = defineStore('governance', () => {
     upsertMotion({ ...motion, discussion_open_at: backDate })
   }
 
+  function hasMotion(motionId: string): boolean {
+    return !!getMotionById(motionId)
+  }
+
   return {
     motionsByServer,
     candidatesByMotion,
@@ -217,5 +221,6 @@ export const useGovernanceStore = defineStore('governance', () => {
     applyGovernanceMutation,
     // Test helpers
     fastForwardDiscussionForTest,
+    hasMotion,
   }
 })

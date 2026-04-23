@@ -46,6 +46,15 @@ vi.mock('@/stores/emojiStore', () => ({
   }),
 }))
 
+const mockApplyGovernanceMutation = vi.fn().mockResolvedValue(undefined)
+const mockHasMotion               = vi.fn().mockReturnValue(false)
+vi.mock('@/stores/governanceStore', () => ({
+  useGovernanceStore: () => ({
+    applyGovernanceMutation: mockApplyGovernanceMutation,
+    hasMotion:               mockHasMotion,
+  }),
+}))
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function makeMessageRow(id: string) {
@@ -531,5 +540,77 @@ describe('syncService._onPush — member_join persistence', () => {
         public_dh_key:   'dh-key-charlie',
       }),
     })
+  })
+})
+
+
+// -- Governance mutation routing via negentropy ---------------------------------
+
+describe('syncService._onPush � governance mutation routing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('routes governance_motion_update mutations via applyGovernanceMutation', async () => {
+    mockInvoke.mockResolvedValue(undefined)
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    setSendFn(vi.fn())
+
+    const motionPayload = { id: 'motion-1', server_id: 'srv-1', state: 'discussion' }
+
+    await handleSyncMessage('peer-a', {
+      type:      'sync_push',
+      sessionId: 'sess-gov',
+      table:     'mutations',
+      channelId: '__server__',
+      mutations: [{
+        id:          'mut-gov-1',
+        type:        'governance_motion_update',
+        target_id:   'srv-1',
+        channel_id:  '__server__',
+        author_id:   'user-a',
+        new_content: JSON.stringify(motionPayload),
+        emoji_id:    null,
+        created_at:  '2025-06-01T00:00:00.000Z',
+        logical_ts:  '1750000000000-000001',
+        verified:    true,
+      }],
+    })
+
+    expect(mockApplyGovernanceMutation).toHaveBeenCalledWith(
+      'srv-1',
+      'mut-gov-1',
+      'governance_motion_update',
+      motionPayload,
+    )
+  })
+
+  it('does not call applyGovernanceMutation for non-governance mutations', async () => {
+    mockInvoke.mockResolvedValue(undefined)
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    setSendFn(vi.fn())
+
+    await handleSyncMessage('peer-a', {
+      type:      'sync_push',
+      sessionId: 'sess-nogov',
+      table:     'mutations',
+      channelId: '__server__',
+      mutations: [{
+        id:          'mut-emoji-1',
+        type:        'emoji_add',
+        target_id:   'emoji-1',
+        channel_id:  '__server__',
+        author_id:   'user-a',
+        new_content: JSON.stringify({ shortcode: 'smile' }),
+        emoji_id:    null,
+        created_at:  '2025-06-01T00:00:00.000Z',
+        logical_ts:  '1750000000000-000002',
+        verified:    true,
+      }],
+    })
+
+    expect(mockApplyGovernanceMutation).not.toHaveBeenCalled()
   })
 })
