@@ -26,6 +26,25 @@ export interface RankedCandidate {
   approvals:   number
 }
 
+interface GovernanceMotionWire extends Omit<GovernanceMotion, 'motion_type'> {
+  type: GovernanceMotionType
+}
+
+function fromWireMotion(motion: GovernanceMotionWire | GovernanceMotion): GovernanceMotion {
+  if ('motion_type' in motion) return motion
+  return {
+    ...motion,
+    motion_type: motion.type,
+  }
+}
+
+function toWireMotion(motion: GovernanceMotion): GovernanceMotionWire {
+  return {
+    ...motion,
+    type: motion.motion_type,
+  }
+}
+
 export const useGovernanceStore = defineStore('governance', () => {
   // keyed by serverId
   const motionsByServer    = ref<Record<string, GovernanceMotion[]>>({})
@@ -57,11 +76,11 @@ export const useGovernanceStore = defineStore('governance', () => {
   // ── Load ────────────────────────────────────────────────────────────────────
 
   async function loadMotions(serverId: string, stateFilter?: string) {
-    const rows = await invoke<GovernanceMotion[]>('db_load_governance_motions', {
+    const rows = await invoke<(GovernanceMotionWire | GovernanceMotion)[]>('db_load_governance_motions', {
       serverId,
       stateFilter: stateFilter ?? null,
     })
-    motionsByServer.value[serverId] = rows
+    motionsByServer.value[serverId] = rows.map(fromWireMotion)
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -86,7 +105,7 @@ export const useGovernanceStore = defineStore('governance', () => {
       created_at:                now,
       updated_at:                now,
     }
-    await invoke('db_save_governance_motion', { motion })
+    await invoke('db_save_governance_motion', { motion: toWireMotion(motion) })
     upsertMotion(motion)
     return motion.id
   }
@@ -97,7 +116,7 @@ export const useGovernanceStore = defineStore('governance', () => {
     if (motion.state !== 'draft') throw new Error('Motion must be in draft state to open discussion')
     const now     = new Date().toISOString()
     const updated = { ...motion, state: 'discussion' as const, discussion_open_at: now, updated_at: now }
-    await invoke('db_save_governance_motion', { motion: updated })
+    await invoke('db_save_governance_motion', { motion: toWireMotion(updated) })
     upsertMotion(updated)
   }
 
@@ -107,7 +126,7 @@ export const useGovernanceStore = defineStore('governance', () => {
     const ruleset = JSON.parse(motion.ruleset_json ?? '{}') as Record<string, unknown>
     ruleset.seconded = true
     const updated = { ...motion, ruleset_json: JSON.stringify(ruleset), updated_at: new Date().toISOString() }
-    await invoke('db_save_governance_motion', { motion: updated })
+    await invoke('db_save_governance_motion', { motion: toWireMotion(updated) })
     upsertMotion(updated)
   }
 
@@ -143,7 +162,7 @@ export const useGovernanceStore = defineStore('governance', () => {
       eligibility_snapshot_json: JSON.stringify(snapshot),
       updated_at:                now,
     }
-    await invoke('db_save_governance_motion', { motion: updated })
+    await invoke('db_save_governance_motion', { motion: toWireMotion(updated) })
     upsertMotion(updated)
   }
 
@@ -174,7 +193,7 @@ export const useGovernanceStore = defineStore('governance', () => {
     const outcome = await invoke<GovernanceOutcome>('db_tally_governance_motion', { motionId, eligibleCount })
     const newState = outcome.passed ? 'closed_passed' : 'closed_failed'
     const updated: GovernanceMotion = { ...motion, state: newState as GovernanceMotion['state'], updated_at: new Date().toISOString() }
-    await invoke('db_save_governance_motion', { motion: updated })
+    await invoke('db_save_governance_motion', { motion: toWireMotion(updated) })
     upsertMotion(updated)
 
     // Detect boundary tie for election motions and generate runoff if needed
@@ -207,8 +226,99 @@ export const useGovernanceStore = defineStore('governance', () => {
     const motion = getMotionById(motionId)
     if (!motion) throw new Error(`Motion ${motionId} not found`)
     const updated: GovernanceMotion = { ...motion, state: 'cancelled', updated_at: new Date().toISOString() }
-    await invoke('db_save_governance_motion', { motion: updated })
+    await invoke('db_save_governance_motion', { motion: toWireMotion(updated) })
     upsertMotion(updated)
+  }
+
+  // ── Load sub-collections ──────────────────────────────────────────────────────
+
+  async function loadCandidates(motionId: string): Promise<void> {
+    const rows = await invoke<GovernanceCandidate[]>('db_load_governance_candidates', { motionId })
+    candidatesByMotion.value[motionId] = rows
+  }
+
+  async function loadBallots(motionId: string): Promise<void> {
+    const rows = await invoke<GovernanceBallot[]>('db_load_governance_ballots', { motionId })
+    ballotsByMotion.value[motionId] = rows
+  }
+
+  async function loadPosts(motionId: string): Promise<void> {
+    const rows = await invoke<GovernancePost[]>('db_load_governance_posts', { motionId })
+    postsByMotion.value[motionId] = rows
+  }
+
+  // ── Candidate management ──────────────────────────────────────────────────────
+
+  async function nominateCandidate(motionId: string, candidateUserId: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const myId = useIdentityStore().userId ?? ''
+    const now = new Date().toISOString()
+    const candidate: GovernanceCandidate = {
+      motion_id:            motionId,
+      candidate_user_id:    candidateUserId,
+      source:               'nominated',
+      nominated_by_user_id: myId,
+      seconded_by_user_id:  null,
+      status:               'pending',
+      created_at:           now,
+      updated_at:           now,
+    }
+    await invoke('db_save_governance_candidate', { candidate })
+    const existing = candidatesByMotion.value[motionId] ?? []
+    const rest = existing.filter(c => c.candidate_user_id !== candidateUserId)
+    candidatesByMotion.value[motionId] = [...rest, candidate]
+  }
+
+  async function selfNominate(motionId: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const myId = useIdentityStore().userId ?? ''
+    if (!myId) throw new Error('Not logged in')
+    const now = new Date().toISOString()
+    const candidate: GovernanceCandidate = {
+      motion_id:            motionId,
+      candidate_user_id:    myId,
+      source:               'self_nominated',
+      nominated_by_user_id: null,
+      seconded_by_user_id:  null,
+      status:               'pending',
+      created_at:           now,
+      updated_at:           now,
+    }
+    await invoke('db_save_governance_candidate', { candidate })
+    const existing = candidatesByMotion.value[motionId] ?? []
+    const rest = existing.filter(c => c.candidate_user_id !== myId)
+    candidatesByMotion.value[motionId] = [...rest, candidate]
+  }
+
+  async function withdrawCandidate(motionId: string, candidateUserId: string): Promise<void> {
+    const existing = candidatesByMotion.value[motionId] ?? []
+    const candidate = existing.find(c => c.candidate_user_id === candidateUserId)
+    if (!candidate) return
+    const updated: GovernanceCandidate = { ...candidate, status: 'withdrawn', updated_at: new Date().toISOString() }
+    await invoke('db_save_governance_candidate', { candidate: updated })
+    candidatesByMotion.value[motionId] = existing.map(c =>
+      c.candidate_user_id === candidateUserId ? updated : c
+    )
+  }
+
+  // ── Discussion posts ──────────────────────────────────────────────────────────
+
+  async function addPost(motionId: string, content: string, parentPostId?: string): Promise<void> {
+    const { useIdentityStore } = await import('./identityStore')
+    const myId = useIdentityStore().userId ?? ''
+    const now = new Date().toISOString()
+    const post: GovernancePost = {
+      id:             uuidv7(),
+      motion_id:      motionId,
+      parent_post_id: parentPostId ?? null,
+      author_user_id: myId,
+      content,
+      created_at:     now,
+      edited_at:      null,
+      deleted_at:     null,
+    }
+    await invoke('db_save_governance_post', { post })
+    postsByMotion.value[motionId] = [...(postsByMotion.value[motionId] ?? []), post]
   }
 
   // ── Incoming network mutations ────────────────────────────────────────────────
@@ -244,7 +354,7 @@ export const useGovernanceStore = defineStore('governance', () => {
 
   // ── Incoming network mutations ────────────────────────────────────────────────
 
-  async function applyGovernanceMutation(serverId: string, motionId: string, motionType: string, payload: unknown): Promise<void> {
+  async function applyGovernanceMutation(serverId: string, _motionId: string, motionType: string, payload: unknown): Promise<void> {
     if (motionType === 'governance_motion_update' && payload) {
       const row = payload as GovernanceMotion
       upsertMotion({ ...row, server_id: serverId })
@@ -277,6 +387,9 @@ export const useGovernanceStore = defineStore('governance', () => {
     postsByMotion,
     getMotionById,
     loadMotions,
+    loadCandidates,
+    loadBallots,
+    loadPosts,
     createDraft,
     openDiscussion,
     secondMotion,
@@ -284,6 +397,10 @@ export const useGovernanceStore = defineStore('governance', () => {
     castBallot,
     closeMotion,
     cancelMotion,
+    nominateCandidate,
+    selfNominate,
+    withdrawCandidate,
+    addPost,
     applyGovernanceMutation,
     // Test helpers
     fastForwardDiscussionForTest,
