@@ -1,35 +1,46 @@
 <template>
   <div class="governance-panel">
-    <div class="governance-header">
-      <h3>Governance Motions</h3>
-      <button class="btn-sm btn-primary" @click="showComposer = true">+ New Motion</button>
-    </div>
-
-    <div v-if="motions.length === 0" class="governance-empty">
-      <p>No motions yet. Create one to propose a change, election, or poll.</p>
-    </div>
-
-    <div v-else class="motion-list">
-      <div
-        v-for="motion in motions"
-        :key="motion.id"
-        class="motion-card"
-        :class="`state-${motion.state}`"
-        @click="selectedMotionId = motion.id"
-      >
-        <div class="motion-card-header">
-          <span class="motion-type-badge">{{ motionTypeLabel(motion.motion_type) }}</span>
-          <span class="motion-state-badge">{{ motion.state.replace('_', ' ') }}</span>
-        </div>
-        <div class="motion-card-id">{{ motion.id.slice(0, 8) }}…</div>
-      </div>
-    </div>
-
-    <MotionComposer
-      v-if="showComposer"
+    <!-- Detail view -->
+    <MotionDetail
+      v-if="selectedMotion"
+      :motion="selectedMotion"
       :server-id="serverId"
-      @close="showComposer = false"
+      @close="selectedMotionId = null"
     />
+
+    <!-- List view -->
+    <template v-else>
+      <div class="governance-header">
+        <h3>Governance Motions</h3>
+        <button class="btn-sm btn-primary" @click="showComposer = true">+ New Motion</button>
+      </div>
+
+      <div v-if="motions.length === 0" class="governance-empty">
+        <p>No motions yet. Create one to propose a change, election, or poll.</p>
+      </div>
+
+      <div v-else class="motion-list">
+        <div
+          v-for="motion in motions"
+          :key="motion.id"
+          class="motion-card"
+          :class="`state-${motion.state}`"
+          @click="selectedMotionId = motion.id"
+        >
+          <div class="motion-card-header">
+            <span class="motion-type-badge">{{ motionTypeLabel(motion.motion_type) }}</span>
+            <span class="motion-state-badge">{{ motion.state.replace('_', ' ') }}</span>
+          </div>
+          <div class="motion-card-id">{{ motion.id.slice(0, 8) }}…</div>
+        </div>
+      </div>
+
+      <MotionComposer
+        v-if="showComposer"
+        :server-id="serverId"
+        @close="showComposer = false"
+      />
+    </template>
   </div>
 </template>
 
@@ -38,6 +49,7 @@ import { ref, computed } from 'vue'
 import { useGovernanceStore } from '@/stores/governanceStore'
 import type { GovernanceMotionType } from '@/types/core'
 import MotionComposer from './MotionComposer.vue'
+import MotionDetail from './MotionDetail.vue'
 
 const props = defineProps<{ serverId: string }>()
 const governanceStore = useGovernanceStore()
@@ -45,6 +57,9 @@ const showComposer = ref(false)
 const selectedMotionId = ref<string | null>(null)
 
 const motions = computed(() => governanceStore.motionsByServer[props.serverId] ?? [])
+const selectedMotion = computed(() =>
+  selectedMotionId.value ? governanceStore.getMotionById(selectedMotionId.value) : null
+)
 
 function motionTypeLabel(type: GovernanceMotionType): string {
   return {
