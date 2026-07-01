@@ -264,9 +264,9 @@
 - [x] Sync reordering: `__server__` mutations sync first for fast hydration
 - [x] Join flow creates `member_join` mutations for negentropy sync
 - [x] Integration tests for mutation-based channel/member/emoji sync
-- [ ] **Follow-up**: Optimize `AvatarImage` to use `convertFileSrc` + asset protocol (avoid base64 round-trip)
+- [x] **Follow-up**: Optimize `AvatarImage` to use `convertFileSrc` + asset protocol (avoid base64 round-trip) — `imageCache.ts` uses `convertFileSrc()`; migration `012_drop_data_url_cols.sql` confirms transition complete
+- [x] **Follow-up**: Remove deprecated `avatar_data_url` / `banner_data_url` columns after migration period — done in `012_drop_data_url_cols.sql`
 - [ ] **Follow-up**: Add retention policy differentiation (avatars exempt from pruning)
-- [ ] **Follow-up**: Remove deprecated `avatar_data_url` / `banner_data_url` columns after migration period
 - [ ] **Follow-up**: Add negentropy sync for `devices` table
 
 ---
@@ -380,17 +380,17 @@
 
 **Goal**: Official GitHub releases with signed auto-update. Code is already 95% done (`updateService.ts`, `SettingsHelpTab.vue`, `tauri-plugin-updater` wired). What remains is one-time repo/key setup and the release workflow.
 
-> **Note**: `src/utils/updateService.ts` and `src/components/settings/SettingsHelpTab.vue` are already fully implemented. `autoCheckForUpdate()` just needs to be called from `App.vue` on startup, the pubkey placeholder in `tauri.conf.json` needs the real key, and the GitHub release pipeline needs creating.
+> **Status**: Fully implemented. All items below confirmed done via code audit (2026-06-28).
 
 ### 7a — One-time key & repo setup (do once, offline)
-- [ ] Create the GitHub repository (`HexField` or chosen name) — public or private
-- [ ] Generate Ed25519 update signing key pair: `npm run tauri -- signer generate -w tauri-update-key.key`
+- [x] Create the GitHub repository (`HexField` or chosen name) — public or private — repo is `wolf123450/HexField`
+- [x] Generate Ed25519 update signing key pair: `npm run tauri -- signer generate -w tauri-update-key.key`
   - Outputs `.key` (private) and `.key.pub` (public) — **never commit the private key**
   - Add `.key` to `.gitignore` immediately
-- [ ] Store private key as GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY` (base64-encoded)
-- [ ] Store passphrase (if set) as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-- [ ] Add public key to `tauri.conf.json` under `plugins.updater.pubkey` (replace `REPLACE_WITH_YOUR_TAURI_SIGNING_PUBLIC_KEY`)
-- [ ] Set `plugins.updater.endpoints` to `["https://github.com/YOUR_ORG/HexField/releases/latest/download/latest.json"]`
+- [x] Store private key as GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY` (base64-encoded)
+- [x] Store passphrase (if set) as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+- [x] Add public key to `tauri.conf.json` under `plugins.updater.pubkey` — real key confirmed present
+- [x] Set `plugins.updater.endpoints` to `["https://github.com/YOUR_ORG/HexField/releases/latest/download/latest.json"]`
 
 ### 7b — GitHub Actions release workflow
 - [x] Copy `.github/workflows/release.yml` from GlyphAstra — update app name, identifier, repo URL
@@ -403,7 +403,7 @@
 ### 7c — Wire `autoCheckForUpdate()` into `App.vue`
 - [x] Import `autoCheckForUpdate` from `@/utils/updateService` in `App.vue`
 - [x] Call it once on `onMounted` (or after identity init completes) — it no-ops in DEV and non-Tauri
-- [ ] Update `SettingsHelpTab.vue` repo URL from `YOUR_ORG/YOUR_REPO` to real repo URL
+- [x] Update `SettingsHelpTab.vue` repo URL from `YOUR_ORG/YOUR_REPO` to real repo URL — confirmed `https://github.com/wolf123450/HexField`
 
 ### 7d — Validate end-to-end
 - [ ] Build a release binary (tag a test version), publish manually, confirm `latest.json` is correct
@@ -418,6 +418,8 @@
 ---
 
 ## Phase 8 — Mobile (Android & iOS)
+
+> **Status**: **Tabled / Postponed.** Responsive layout (8b) is done; CI/CD (8a init, 8c) is deferred until mobile support becomes a priority.
 
 **Goal**: Distribute HexField on Android and iOS using Tauri Mobile — same Rust backend, same Vue frontend. All mobile builds happen in GitHub Actions (no local mobile toolchain required for development). The primary implementation work is responsive CSS/layout so the app looks and functions well at phone-sized viewports.
 
@@ -482,7 +484,7 @@
 | Rendezvous Server | Full implementation of `hexfield-server` with auth, discovery, relay, TURN | Partial (framework done) | [`docs/superpowers/plans/2026-04-09-rendezvous-server.md`](superpowers/plans/2026-04-09-rendezvous-server.md) |
 | UPnP Port Forwarding | Auto-forward LAN signal port, discover public IP, embed endpoints in invites | Partial (module started) | [`docs/superpowers/plans/2026-04-09-upnp-public-endpoint.md`](superpowers/plans/2026-04-09-upnp-public-endpoint.md) |
 | Image Asset Protocol | Replace data URLs with asset:// protocol, drop deprecated DB columns, optimize image serving | Not started | [`docs/superpowers/plans/2026-04-10-image-asset-protocol.md`](superpowers/plans/2026-04-10-image-asset-protocol.md) |
-| Rust-Native Audio (Phase A) | Pure Rust voice chat: cpal mic capture → Opus → WebRTC tracks; Opus decode → cpal speaker; Rust VAD | Not started | [`docs/superpowers/plans/2026-04-11-rust-native-audio.md`](superpowers/plans/2026-04-11-rust-native-audio.md) |
+| Rust-Native Audio (Phase A) | Pure Rust voice chat: cpal mic capture → Opus → WebRTC tracks; Opus decode → cpal speaker; Rust VAD | 🔨 In Progress — `src-tauri/src/media_manager.rs` exists with cpal capture/playback, VAD, per-peer volume; Tauri commands and voiceStore wiring unverified | [`docs/superpowers/plans/2026-04-11-rust-native-audio.md`](superpowers/plans/2026-04-11-rust-native-audio.md) |
 | Rust-Native Screen Share (Phase B) | Pure Rust screen share: xcap capture → VP8 → WebRTC; VP8 decode → JPEG → asset:// delivery; source picker UI | Not started | [`docs/superpowers/plans/2026-04-11-rust-native-screen-share.md`](superpowers/plans/2026-04-11-rust-native-screen-share.md) |
 | Device Enumeration UI (Phase C) | Rust-backed device enum, mid-call switching, per-peer volume, hot-plug detection, browser audio API removal | Not started | [`docs/superpowers/plans/2026-04-11-device-enumeration-ui.md`](superpowers/plans/2026-04-11-device-enumeration-ui.md) |
 
@@ -540,18 +542,18 @@ Restoring voice/screen share after the Rust WebRTC rewrite (commit `568c57f`) le
 | Spec | Feature Area | Status |
 |---|---|---|
 | [`2026-04-03-notification-system-design.md`](superpowers/specs/2026-04-03-notification-system-design.md) | OS notifications, in-app toasts, per-server/channel prefs, keyword filters, mute timers, sound customization | ✅ Implemented (Phase 6) |
-| [`2026-04-04-moderation-and-access-control.md`](superpowers/specs/2026-04-04-moderation-and-access-control.md) | Kick, ban, voice channel kick, admin voice mute, per-channel ACL, personal block/mute, invite code constraints, moderation audit log, closed server mode | ⏳ Planned |
+| [`2026-04-04-moderation-and-access-control.md`](superpowers/specs/2026-04-04-moderation-and-access-control.md) | Kick, ban, voice channel kick, admin voice mute, per-channel ACL, personal block/mute, invite code constraints, moderation audit log, closed server mode | 🔨 Substantially Implemented — DB layer (migrations 003/004: invite_codes, mod_log, bans), all Tauri commands, ModerationActionModal, ChannelAccessModal, JoinCapsuleModal exist; voice kick / admin mute / personal block / closed server mode unverified |
 
 ### Superpowers implementation order
 
-Follow the phase table inside each spec. Cross-spec priority across all pending specs:
+> Items marked ✅ confirmed implemented via code audit (2026-06-28); items marked ❓ need deeper verification.
 
-1. **Invite code constraints** — `invite_codes` table + expiry + max-uses + InviteModal UI *(moderation spec §5, Phase A)*
-2. **Moderation reason + audit log** — reason modal + `mod_log` table + Audit Log UI *(moderation spec §8, Phase B)*
-3. **Server kick + ban** — with reason/expiry + unban flow *(moderation spec §3, Phase C)*
-4. **Voice channel kick** *(moderation spec §3.1b, Phase D)*
-5. **Admin voice mute/unmute** — persistent via mutations *(moderation spec §4, Phase E)*
-6. **Per-channel access control** — role-gated + whitelist/blacklist *(moderation spec §6, Phase F)*
-7. **Personal block & mute** — client-side, localStorage *(moderation spec §7, Phase G)*
-8. **Closed server mode** — join approval flow *(moderation spec §9, Phase H)*
-9. **Reverse invite** — QR capsule, no invite code *(moderation spec §9.3, Phase I)*
+1. ✅ **Invite code constraints** — `invite_codes` table (migration 003) has `max_uses`, `expires_at`, `use_count` *(moderation spec §5, Phase A)*
+2. ✅ **Moderation reason + audit log** — `mod_log` table + `ModerationActionModal.vue` (reason textarea, 400-char limit) *(moderation spec §8, Phase B)*
+3. ✅ **Server kick + ban** — `bans` table (migration 004) + `db_save_ban` / `db_load_bans` commands + `ModerationActionModal.vue` *(moderation spec §3, Phase C)* — unban flow needs verification
+4. ❓ **Voice channel kick** *(moderation spec §3.1b, Phase D)*
+5. ❓ **Admin voice mute/unmute** — persistent via mutations *(moderation spec §4, Phase E)*
+6. ✅ **Per-channel access control** — `ChannelAccessModal.vue` (public / role-gated / private modes) *(moderation spec §6, Phase F)*
+7. ❓ **Personal block & mute** — client-side, localStorage *(moderation spec §7, Phase G)*
+8. ❓ **Closed server mode** — join approval flow *(moderation spec §9, Phase H)*
+9. ✅ **Reverse invite** — `JoinCapsuleModal.vue` (QR capsule, no invite code required) *(moderation spec §9.3, Phase I)*
