@@ -25,6 +25,7 @@ export interface Server {
   historyStartsAt?: string       // set when server is re-baselined (Phase 6)
   accessMode?:     'open' | 'closed'   // default 'open'
   inviteMode?:     'code_open' | 'code_approval' | 'reverse_invite_only' // default 'code_open'
+  governanceMotionPipelineEnabled?: boolean  // default false
 }
 
 export interface ServerMember {
@@ -302,3 +303,81 @@ export interface KeywordFilter {
 }
 
 export type SoundEvent = 'message' | 'mention' | 'join_self' | 'join_other' | 'leave'
+
+// ── Governance motion pipeline ─────────────────────────────────────────────────
+// Wire types match Rust GovernanceMotionRow / GovernanceBallotRow etc. in
+// src-tauri/src/db/types.rs.  The `motion_type` field maps to the SQL column
+// named `type` (renamed in the Rust row mapper).
+
+export type GovernanceMotionType =
+  | 'election'
+  | 'runoff'
+  | 'non_binding_poll'
+  | 'rule_change'
+  | 'server_transfer'
+
+export type GovernanceMotionState =
+  | 'draft'
+  | 'discussion'
+  | 'voting'
+  | 'tallying'
+  | 'closed_passed'
+  | 'closed_failed'
+  | 'cancelled'
+
+export interface GovernanceMotion {
+  id:                         string
+  server_id:                  string
+  motion_type:                GovernanceMotionType
+  state:                      GovernanceMotionState
+  is_binding:                 boolean
+  seat_count:                 number
+  proposer_user_id:           string
+  eligibility_snapshot_json:  string | null
+  discussion_open_at:         string | null
+  vote_open_at:               string | null
+  vote_close_at:              string | null
+  ruleset_json:               string | null
+  created_at:                 string
+  updated_at:                 string
+}
+
+export type GovernanceCandidateSource = 'self_nominated' | 'nominated' | 'admin_appointed'
+export type GovernanceCandidateStatus = 'pending' | 'confirmed' | 'withdrawn' | 'disqualified'
+
+export interface GovernanceCandidate {
+  motion_id:            string
+  candidate_user_id:    string
+  source:               GovernanceCandidateSource
+  nominated_by_user_id: string | null
+  seconded_by_user_id:  string | null
+  status:               GovernanceCandidateStatus
+  created_at:           string
+  updated_at:           string
+}
+
+export interface GovernanceBallot {
+  motion_id:                   string
+  voter_user_id:               string
+  approved_candidate_ids_json: string    // JSON array of candidate user IDs
+  reject_vote:                 boolean
+  abstain_vote:                boolean
+  revision:                    number
+  updated_at:                  string
+}
+
+export interface GovernancePost {
+  id:             string
+  motion_id:      string
+  parent_post_id: string | null
+  author_user_id: string
+  content:        string
+  created_at:     string
+  edited_at:      string | null
+  deleted_at:     string | null
+}
+
+export interface GovernanceOutcome {
+  passed:      boolean
+  fail_reason: 'quorum' | 'majority' | 'reject_veto' | null
+}

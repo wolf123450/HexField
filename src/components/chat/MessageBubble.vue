@@ -268,7 +268,13 @@ function cancelEdit() {
 
 async function handleDelete() {
   if (settingsStore.settings.confirmBeforeDelete) {
-    if (!window.confirm('Delete this message?')) return
+    const confirmed = await uiStore.confirmDialog({
+      title: 'Delete Message',
+      message: 'Delete this message?',
+      confirmText: 'Delete',
+      danger: true,
+    })
+    if (!confirmed) return
   }
   await messagesStore.sendDeleteMutation(
     props.message.id,

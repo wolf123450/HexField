@@ -374,6 +374,14 @@ async function _onPush(wire: SyncPush): Promise<void> {
           if (mutation.type === 'emoji_remove') {
             emojiStore.applyEmojiRemoveMutation(mutation.targetId)
           }
+
+          if (mutation.type.startsWith('governance_') && mutation.newContent) {
+            const { useGovernanceStore } = await import('@/stores/governanceStore')
+            const serverId = mutation.targetId
+            if (serverId) {
+              await useGovernanceStore().applyGovernanceMutation(serverId, mutation.id, mutation.type, JSON.parse(mutation.newContent))
+            }
+          }
         }
       }
     }

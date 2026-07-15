@@ -309,25 +309,28 @@ async function doExport() {
     a.click()
     URL.revokeObjectURL(url)
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : 'Export failed.')
+    uiStore.showAlert('Export Failed', e instanceof Error ? e.message : 'Export failed.')
   }
 }
 
 async function doImport(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
   if (!file) return
-  const confirmed = confirm(
-    'Importing an identity will replace your current account on this device.\n\n' +
-    'Proceed? This cannot be undone without another backup.',
-  )
+  const confirmed = await uiStore.confirmDialog({
+    title: 'Import Identity',
+    message:
+      'Importing an identity will replace your current account on this device.\n\nProceed? This cannot be undone without another backup.',
+    confirmText: 'Import',
+    danger: true,
+  })
   if (!confirmed) return
   try {
     const text = await file.text()
     await identityStore.importIdentity(text)
-    alert('Identity imported. The app will now reload.')
+    uiStore.showAlert('Identity Imported', 'Identity imported. The app will now reload.')
     window.location.reload()
   } catch (err: unknown) {
-    alert(err instanceof Error ? err.message : 'Import failed — invalid identity file.')
+    uiStore.showAlert('Import Failed', err instanceof Error ? err.message : 'Import failed — invalid identity file.')
   }
 }
 

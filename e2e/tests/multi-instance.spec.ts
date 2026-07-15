@@ -68,6 +68,13 @@ async function waitForAppReady(page: Page, label: string): Promise<void> {
 
 /** Dismiss any stale modals / context menus left over from previous test runs. */
 async function dismissOverlays(page: Page): Promise<void> {
+  // Governance composer overlay can sit above modal close controls; close it first.
+  const composerCancel = page.locator('.composer-card .composer-actions button', { hasText: 'Cancel' }).first()
+  if (await composerCancel.isVisible({ timeout: 300 }).catch(() => false)) {
+    await composerCancel.click().catch(() => {})
+    await page.waitForTimeout(200)
+  }
+
   for (let i = 0; i < 3; i++) {
     const hasOverlay = await page.locator('.modal-backdrop').first()
       .isVisible({ timeout: 300 }).catch(() => false)
@@ -76,9 +83,11 @@ async function dismissOverlays(page: Page): Promise<void> {
     // Try clicking close/done buttons inside the modal, then fallback to Escape
     const closeBtn = page.locator('.modal-box .close-btn, .modal-box button.btn-primary, .modal-box button.btn-secondary').first()
     if (await closeBtn.isVisible({ timeout: 300 }).catch(() => false)) {
-      await closeBtn.click()
+      await closeBtn.click().catch(async () => {
+        await page.keyboard.press('Escape').catch(() => {})
+      })
     } else {
-      await page.keyboard.press('Escape')
+      await page.keyboard.press('Escape').catch(() => {})
     }
     await page.waitForSelector('.modal-backdrop', { state: 'hidden', timeout: 2_000 }).catch(() => {})
   }
@@ -152,7 +161,9 @@ async function ensureChannelSelected(page: Page, label: string): Promise<void> {
  */
 async function cleanupTestChannels(page: Page, label: string): Promise<void> {
   const removed = await page.evaluate(async () => {
+    // @ts-ignore — browser-context dynamic import, resolved by Vite dev server
     const { useChannelsStore } = await import('./stores/channelsStore')
+    // @ts-ignore
     const { useServersStore } = await import('./stores/serversStore')
     const channelsStore = useChannelsStore()
     const serversStore = useServersStore()
@@ -246,6 +257,51 @@ test('alice can create a server', async () => {
 
   // Verify server name appears in the channel sidebar header
   await expect(alicePage.locator('span.server-name')).toHaveText('IntegTest Server', { timeout: OP_MS })
+})
+
+test('alice can run governance draft workflow', async () => {
+  test.setTimeout(SYNC_MS)
+
+  // Ensure at least one server is selected.
+  const serverIcons = alicePage.locator('button.server-icon:not(.add-server)')
+  const serverCount = await serverIcons.count()
+  if (serverCount === 0) {
+    await alicePage.click('button.server-icon.add-server', { timeout: OP_MS })
+    await alicePage.locator('.context-menu-item', { hasText: 'Create a Server' }).click({ timeout: OP_MS })
+    await alicePage.waitForSelector('.modal-backdrop', { timeout: OP_MS })
+    await alicePage.locator('.modal-box input.text-input').fill('Governance Test Server')
+    await alicePage.locator('.modal-box button.btn-primary', { hasText: 'Create Server' }).click()
+    await dismissOverlays(alicePage)
+  } else {
+    await serverIcons.first().click()
+  }
+
+  await alicePage.click('button[title="Governance"]', { timeout: OP_MS })
+  await alicePage.waitForSelector('#governance-motions-title', { timeout: OP_MS })
+
+  // Create a new election draft.
+  await alicePage.locator('.governance-header button', { hasText: '+ New Motion' }).click({ timeout: OP_MS })
+  await alicePage.locator('.composer-card select.form-select').selectOption('election')
+  await alicePage.locator('.composer-card input[type="checkbox"]').check()
+  await alicePage.locator('.composer-card input.form-input[type="number"]').fill('2')
+  await alicePage.locator('.composer-card button.btn-primary', { hasText: 'Create Draft' }).click({ timeout: OP_MS })
+
+  const composerError = alicePage.locator('.composer-card .error-msg')
+  if (await composerError.isVisible({ timeout: 800 }).catch(() => false)) {
+    const msg = (await composerError.textContent())?.trim() ?? 'unknown error'
+    throw new Error(`Governance draft creation failed in composer: ${msg}`)
+  }
+
+  // Verify a motion card was created in the governance list.
+  await alicePage.locator('.motion-card').first().waitFor({ timeout: SYNC_MS })
+  await expect(alicePage.locator('.motion-type-badge').first()).toContainText('Election')
+  await expect(alicePage.locator('.motion-state-badge').first()).toContainText('draft')
+
+  // Close governance modal.
+  await alicePage.locator('.modal-box .close-btn', { hasText: 'Close' }).click({ timeout: OP_MS })
+  await alicePage.waitForSelector('#governance-motions-title', { state: 'hidden', timeout: OP_MS })
+
+  console.log('[test] Governance draft workflow (open -> compose -> create draft) ✓')
 })
 
 test('alice can create an invite link', async () => {
@@ -1091,6 +1147,7 @@ test('alice can delete a channel', async () => {
     // The confirm dialog was likely auto-dismissed by WebView2 — delete directly
     console.log('[test] Confirm dialog was blocked — deleting via store directly')
     await alicePage.evaluate(async () => {
+      // @ts-ignore — browser-context dynamic import, resolved by Vite dev server
       const { useChannelsStore } = await import('./stores/channelsStore')
       const channelsStore = useChannelsStore()
       const channels = Object.values(channelsStore.channels)

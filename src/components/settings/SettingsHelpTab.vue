@@ -39,6 +39,16 @@
         Open developer tools
       </button>
     </div>
+
+    <div class="help-section">
+      <h3 class="help-section-title">Governance Motions</h3>
+      <p class="setting-hint">Open the full governance guide with motion types, lifecycle, and binding rules.</p>
+      <button class="btn-sm help-btn" @click="showGovernanceHelp = true">
+        Open governance guide
+      </button>
+    </div>
+
+    <GovernanceHelpDialog :show="showGovernanceHelp" @close="showGovernanceHelp = false" />
   </div>
 </template>
 
@@ -49,12 +59,14 @@ import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { version as appVersion } from '../../../package.json'
 import { checkForUpdate, downloadAndInstallUpdate } from '@/utils/updateService'
+import GovernanceHelpDialog from './GovernanceHelpDialog.vue'
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 const uiStore = useUIStore()
 const settingsStore = useSettingsStore()
 
 const updateChecking = ref(false)
+const showGovernanceHelp = ref(false)
 
 async function manualCheckForUpdate() {
   updateChecking.value = true

@@ -13,8 +13,9 @@ const M009: &str = include_str!("../../migrations/009_member_profile_fields.sql"
 const M010: &str = include_str!("../../migrations/010_server_id_index.sql");
 const M011: &str = include_str!("../../migrations/011_image_hashes.sql");
 const M012: &str = include_str!("../../migrations/012_drop_data_url_cols.sql");
+const M013: &str = include_str!("../../migrations/013_governance_motion_pipeline.sql");
 
 pub fn run(conn: &mut Connection) {
-    let migrations = Migrations::new(vec![M::up(M001), M::up(M002), M::up(M003), M::up(M004), M::up(M005), M::up(M006), M::up(M007), M::up(M008), M::up(M009), M::up(M010), M::up(M011), M::up(M012)]);
+    let migrations = Migrations::new(vec![M::up(M001), M::up(M002), M::up(M003), M::up(M004), M::up(M005), M::up(M006), M::up(M007), M::up(M008), M::up(M009), M::up(M010), M::up(M011), M::up(M012), M::up(M013)]);
     migrations.to_latest(conn).expect("DB migration failed");
 }
