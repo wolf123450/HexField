@@ -11,7 +11,24 @@ name = "hexfield_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
+default = ["native-media"]
+native-media = [
+    "dep:webrtc",
+    "dep:rtp",
+    "dep:cpal",
+    "dep:opus",
+    "dep:openh264",
+    "dep:crossbeam-channel",
+    "dep:rayon",
+    "dep:image",
+    "dep:windows-capture",
+]
 e2e-testing = ["tauri-plugin-playwright"]
+
+[[bin]]
+name = "bench_capture"
+path = "src/bin/bench_capture.rs"
+required-features = ["native-media"]
 
 [[bench]]
 name = "pipeline_bench"
@@ -65,10 +82,11 @@ mdns-sd            = "0.19.0"
 igd-next           = { version = "0.17", features = ["aio_tokio"] }
 
 # Audio capture & playback (mic/speaker access)
-cpal               = "0.17"
+# optional: excluded when building without native-media (e.g. cargo test)
+cpal               = { version = "0.17", optional = true }
 
 # Opus audio codec (encode mic → WebRTC, decode WebRTC → speaker)
-opus               = "0.3"
+opus               = { version = "0.3", optional = true }
 
 # Byte buffer ergonomics (already a transitive dep of webrtc, but pin explicitly)
 bytes              = "1"
@@ -77,21 +95,21 @@ bytes              = "1"
 
 # H.264 video codec — encode captured frames, decode received frames
 # Compiles OpenH264 from bundled source (no system deps).
-openh264           = "0.9"
+openh264           = { version = "0.9", optional = true }
 
 # Lock-free bounded channels for encoder thread pipeline
-crossbeam-channel  = "0.5"
+crossbeam-channel  = { version = "0.5", optional = true }
 
 # Data-parallelism (used in BGRA→YUV downscale for screen share)
-rayon              = "1.10"
+rayon              = { version = "1.10", optional = true }
 
 # Image encoding/decoding (JPEG for frame delivery to frontend via asset://)
-image              = "0.25"
+image              = { version = "0.25", optional = true }
 
 # WebRTC (Rust-native data channels; replaces browser RTCPeerConnection on Linux)
-webrtc             = "0.17.1"
+webrtc             = { version = "0.17.1", optional = true }
 # RTP H.264 depacketizer (transitive dep of webrtc, pinned for direct import)
-rtp                = "0.17.1"
+rtp                = { version = "0.17.1", optional = true }
 
 # Both `webrtc`/`dtls` and `reqwest`/`hyper-rustls` pull in rustls with different
 # crypto provider features (ring vs aws-lc-rs), making auto-selection panic.
@@ -104,7 +122,8 @@ keyring            = "3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows            = { version = "0.62.2", features = ["Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Registry"] }
-windows-capture    = "2.0.0"
+# optional: excluded when building without native-media (e.g. cargo test)
+windows-capture    = { version = "2.0.0", optional = true }
 
 # tauri-pilot: AI-agent / developer testing CLI (Linux + debug builds only).
 # Not available on Windows/macOS (uses Unix sockets; cross-platform support planned upstream).

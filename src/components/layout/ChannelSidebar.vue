@@ -17,6 +17,14 @@
         <button
           v-if="activeServer"
           class="icon-btn"
+          title="Governance"
+          @click="showGovernanceModal = true"
+        >
+          <AppIcon :path="mdiGavel" :size="16" />
+        </button>
+        <button
+          v-if="activeServer"
+          class="icon-btn"
           title="Server Settings"
           @click="openServerSettingsDirect"
         >
@@ -169,6 +177,19 @@
       @close="channelAccessState.show = false"
     />
 
+    <ChannelCreateModal
+      :show="channelCreateModal.show"
+      :channel-type="channelCreateModal.type"
+      @cancel="channelCreateModal.show = false"
+      @confirm="confirmAddChannel"
+    />
+
+    <GovernanceMotionsModal
+      :show="showGovernanceModal"
+      :server-id="serversStore.activeServerId"
+      @close="showGovernanceModal = false"
+    />
+
     <!-- Hidden file input for server icon upload -->
     <!-- NOTE: Icon upload is now handled inside ServerSettingsModal. -->
 
@@ -211,7 +232,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watchEffect, onMounted, onUnmounted, nextTick } from 'vue'
-import { mdiCog, mdiMicrophone, mdiMicrophoneOff, mdiAccountPlus, mdiChevronLeft, mdiPin } from '@mdi/js'
+import { mdiCog, mdiMicrophone, mdiMicrophoneOff, mdiAccountPlus, mdiChevronLeft, mdiPin, mdiGavel } from '@mdi/js'
 import { useServersStore } from '@/stores/serversStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useMessagesStore } from '@/stores/messagesStore'
@@ -226,6 +247,8 @@ import VoiceBar from '@/components/chat/VoiceBar.vue'
 import ChannelNotifPopover from '@/components/layout/ChannelNotifPopover.vue'
 import ModerationActionModal from '@/components/modals/ModerationActionModal.vue'
 import ChannelAccessModal from '@/components/modals/ChannelAccessModal.vue'
+import ChannelCreateModal from '@/components/modals/ChannelCreateModal.vue'
+import GovernanceMotionsModal from '@/components/modals/GovernanceMotionsModal.vue'
 import type { ChannelType } from '@/types/core'
 import type { MenuItem } from '@/stores/uiStore'
 
@@ -295,6 +318,8 @@ const voiceChannels = computed(() =>
 )
 
 const isAdmin = useIsAdmin(computed(() => serversStore.activeServerId))
+const showGovernanceModal = ref(false)
+const channelCreateModal = ref<{ show: boolean; type: ChannelType }>({ show: false, type: 'text' })
 
 // ── Voice-kick modal state ────────────────────────────────────────────────────
 
@@ -424,9 +449,15 @@ async function promptAddChannel(type: ChannelType) {
   const serverId = serversStore.activeServerId
   if (!serverId) return
   if (!isAdmin.value) return  // guard: only admins/owners can create channels
-  const rawName = window.prompt(type === 'voice' ? 'Voice channel name:' : 'Channel name:')
-  if (!rawName?.trim()) return
-  const channel = await channelsStore.createChannel(serverId, rawName.trim(), type)
+  channelCreateModal.value = { show: true, type }
+}
+
+async function confirmAddChannel(name: string) {
+  const serverId = serversStore.activeServerId
+  if (!serverId) return
+  const type = channelCreateModal.value.type
+  channelCreateModal.value.show = false
+  const channel = await channelsStore.createChannel(serverId, name.trim(), type)
   if (type === 'text') {
     channelsStore.setActiveChannel(channel.id)
     await messagesStore.loadMessages(channel.id)
@@ -500,7 +531,13 @@ function cancelRename() {
 }
 
 async function deleteChannel(channelId: string) {
-  if (!window.confirm('Delete this channel and all its messages?')) return
+  const confirmed = await uiStore.confirmDialog({
+    title: 'Delete Channel',
+    message: 'Delete this channel and all its messages?',
+    confirmText: 'Delete',
+    danger: true,
+  })
+  if (!confirmed) return
   await channelsStore.deleteChannel(channelId)
 }
 

@@ -8,21 +8,26 @@ use tauri::image::Image;
 
 mod db;
 mod commands;
+#[cfg(feature = "native-media")]
 mod capture;
 #[cfg(not(mobile))]
 mod lan;
 #[cfg(not(mobile))]
 mod upnp;
+#[cfg(feature = "native-media")]
 mod media_manager;
+#[cfg(feature = "native-media")]
 mod webrtc_manager;
 
 use commands::archive_commands::*;
 use commands::attachment_commands::*;
 use commands::db_commands::*;
 use commands::keychain_commands::*;
+#[cfg(feature = "native-media")]
 use commands::media_commands::*;
 use commands::signal_commands::*;
 use commands::sync_commands::*;
+#[cfg(feature = "native-media")]
 use commands::webrtc_commands::*;
 
 pub struct AppState {
@@ -39,8 +44,10 @@ pub struct AppState {
     #[cfg(not(mobile))]
     pub local_user_id: Arc<Mutex<String>>,
     /// Rust-native WebRTC peer connections (data channels; Phase 1).
+    #[cfg(feature = "native-media")]
     pub webrtc_manager: Arc<webrtc_manager::WebRTCManager>,
     /// Rust-native audio capture, playback, and media tracks.
+    #[cfg(feature = "native-media")]
     pub media_manager: Arc<media_manager::MediaManager>,
     /// External port from UPnP mapping (0 = no mapping). Desktop only.
     #[cfg(not(mobile))]
@@ -116,7 +123,9 @@ pub fn run() {
                 lan_signal_port: Arc::new(AtomicU16::new(0)),
                 #[cfg(not(mobile))]
                 local_user_id: Arc::new(Mutex::new(String::new())),
+                #[cfg(feature = "native-media")]
                 webrtc_manager: Arc::new(webrtc_manager::WebRTCManager::new()),
+                #[cfg(feature = "native-media")]
                 media_manager: Arc::new(media_manager::MediaManager::new()),
                 #[cfg(not(mobile))]
                 upnp_external_port: Arc::new(AtomicU16::new(0)),
@@ -149,8 +158,11 @@ pub fn run() {
             let _ = window.set_icon(ICON);
 
             // Start polling for audio device changes (hot-plug detection)
-            let state: tauri::State<AppState> = app.state();
-            state.media_manager.start_device_watcher(app.handle().clone());
+            #[cfg(feature = "native-media")]
+            {
+                let state: tauri::State<AppState> = app.state();
+                state.media_manager.start_device_watcher(app.handle().clone());
+            }
 
             Ok(())
         })
@@ -239,6 +251,16 @@ pub fn run() {
             db_search_messages,
             db_load_messages_around,
             db_load_messages_after,
+            // Governance motion pipeline
+            db_save_governance_motion,
+            db_load_governance_motions,
+            db_save_governance_candidate,
+            db_load_governance_candidates,
+            db_save_governance_ballot,
+            db_load_governance_ballots,
+            db_save_governance_post,
+            db_load_governance_posts,
+            db_tally_governance_motion,
             // Signaling
             signal_connect,
             signal_disconnect,
@@ -270,33 +292,58 @@ pub fn run() {
             sync_save_messages,
             sync_save_mutations,
             sync_list_channels,
-            // Media (Rust-native audio)
+            // Media (Rust-native audio) — excluded when native-media feature is off
+            #[cfg(feature = "native-media")]
             media_reset_all,
+            #[cfg(feature = "native-media")]
             media_enumerate_devices,
+            #[cfg(feature = "native-media")]
             media_start_mic,
+            #[cfg(feature = "native-media")]
             media_stop_mic,
+            #[cfg(feature = "native-media")]
             media_set_muted,
+            #[cfg(feature = "native-media")]
             media_set_deafened,
+            #[cfg(feature = "native-media")]
             media_set_peer_volume,
+            #[cfg(feature = "native-media")]
             media_set_loopback,
+            #[cfg(feature = "native-media")]
             media_set_input_device,
+            #[cfg(feature = "native-media")]
             media_set_output_device,
             // Media (screen share)
+            #[cfg(feature = "native-media")]
             media_enumerate_screens,
+            #[cfg(feature = "native-media")]
             media_screen_share_supported,
+            #[cfg(feature = "native-media")]
             media_start_screen_share,
+            #[cfg(feature = "native-media")]
             media_stop_screen_share,
+            #[cfg(feature = "native-media")]
             webrtc_set_peer_quality,
             // WebRTC (Rust-native data channels)
+            #[cfg(feature = "native-media")]
             webrtc_init,
+            #[cfg(feature = "native-media")]
             webrtc_create_offer,
+            #[cfg(feature = "native-media")]
             webrtc_handle_offer,
+            #[cfg(feature = "native-media")]
             webrtc_handle_answer,
+            #[cfg(feature = "native-media")]
             webrtc_add_ice,
+            #[cfg(feature = "native-media")]
             webrtc_send,
+            #[cfg(feature = "native-media")]
             webrtc_ensure_tracks,
+            #[cfg(feature = "native-media")]
             webrtc_close_peer,
+            #[cfg(feature = "native-media")]
             webrtc_destroy_all,
+            #[cfg(feature = "native-media")]
             webrtc_get_connected_peers,
         ])
         .run(tauri::generate_context!())

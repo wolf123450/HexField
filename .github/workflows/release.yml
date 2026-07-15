@@ -74,6 +74,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         with:
           tagName: ${{ github.ref_name }}
           releaseName: HexField ${{ github.ref_name }}
@@ -85,6 +86,7 @@ jobs:
 
   update-manifest:
     name: Assemble latest.json
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -97,7 +99,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const tag = context.ref.replace('refs/tags/', '') || context.payload.inputs?.tag || 'latest';
+            const tag = process.env.GITHUB_REF_NAME || context.payload.inputs?.tag || 'latest';
             const { data: release } = await github.rest.repos.getReleaseByTag({
               owner: context.repo.owner,
               repo: context.repo.repo,
