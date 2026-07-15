@@ -150,6 +150,13 @@ Follow this loop for every change:
    ```bash
    git checkout -b feat/your-feature-name
    ```
+   **Immediately bump the patch version** as the first commit on the new branch — every feature/fix branch increments `package.json` and `src-tauri/Cargo.toml` by one patch version (`npm run build`/`cargo check` afterward will refresh `package-lock.json`/`Cargo.lock`). This keeps `main` always ahead of the last published release tag, so a merge is never silently un-versioned. Match the existing convention (see e.g. commit `2bcf4f6`):
+   ```bash
+   npm version patch --no-git-tag-version   # bumps package.json + package-lock.json
+   # then manually bump the `version = "..."` line in src-tauri/Cargo.toml to match
+   git add package.json package-lock.json src-tauri/Cargo.toml
+   git commit -m "chore: bump version to X.Y.Z"
+   ```
 4. **Verify baseline** — confirm the app builds cleanly before making changes:
    ```bash
    npm run build          # Frontend: vue-tsc --noEmit && vite build
