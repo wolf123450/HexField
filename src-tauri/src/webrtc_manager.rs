@@ -157,10 +157,14 @@ pub struct WebRTCManager {
     relay_only: AtomicBool,
 }
 
-/// Default ICE configuration: Google's public STUN server.
+/// Default ICE configuration: two of Google's public STUN servers, so one
+/// being unreachable doesn't cost us server-reflexive candidates.
 pub fn default_ice_servers() -> Vec<RTCIceServer> {
     vec![RTCIceServer {
-        urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+        urls: vec![
+            "stun:stun.l.google.com:19302".to_owned(),
+            "stun:stun1.l.google.com:19302".to_owned(),
+        ],
         ..Default::default()
     }]
 }

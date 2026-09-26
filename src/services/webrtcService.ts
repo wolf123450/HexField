@@ -144,11 +144,18 @@ export class WebRTCService {
   }
 
   /**
-   * No-op stub — ICE servers are now configured in the Rust WebRTCManager.
-   * Kept for API compatibility with existing networkStore call sites.
+   * Set the STUN/TURN servers the Rust WebRTCManager uses for new connections.
+   * Rust drops entries webrtc-rs cannot use (`turns:`, TCP TURN, TURN without
+   * credentials) and falls back to public STUN when nothing usable remains.
    */
-  setICEConfigBuilder(_fn: (userId: string) => RTCIceServer[]): void {
-    // ICE configuration is handled in Rust (webrtc_manager.rs).
+  async setIceServers(servers: RTCIceServer[]): Promise<void> {
+    await invoke('webrtc_set_ice_servers', {
+      servers: servers.map(s => ({
+        urls:       Array.isArray(s.urls) ? s.urls : [s.urls],
+        username:   s.username ?? '',
+        credential: s.credential ?? '',
+      })),
+    })
   }
 
   // ── Media control (Rust-native audio pipeline) ─────────────────────────────
