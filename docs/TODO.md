@@ -297,6 +297,12 @@
 - [x] WAN `"direct"` endpoint embedded in invite links when UPnP + STUN succeed
 - [x] UPnP mapping cleanup on app disconnect
 - [ ] Test: symmetric NAT simulation (two clients behind carrier-grade NAT), verify relay fallback — requires real NAT environment; cannot be unit-tested; defer to QA/integration testing phase
+  - [x] NAT lab: `scripts/netlab/netlab.sh` (netns + iptables NAT + tc netem + coturn) and `.github/workflows/netlab.yml` matrix
+  - [x] Headless probe `hexfield-netprobe` (`--features netprobe`) driving the real `lan` + `webrtc_manager` code via `EventSink`
+  - [x] `WebRTCManager::set_ice_servers()` — ICE servers configurable in Rust (app default unchanged: Google STUN)
+  - [ ] Wire `buildICEConfig()` (TURN / relay peers) through to `WebRTCManager::set_ice_servers()` — the Rust PC currently ignores it, so symmetric NAT fails (lab rows `sym*-stun`)
+  - [ ] Invite fallback when no endpoint is reachable (rendezvous signaling) — joins without a port forward fail today (lab row `cone-nofwd-stun`)
+  - [ ] ICE restart / reconnect after network change (Wi-Fi ↔ hotspot, NAT rebinding) + a lab case for it
 - [x] **Tests**
   - [x] `detectNATType()` returns expected type for full-cone, port-restricted, and symmetric setups (mock STUN)
   - [x] `buildICEConfig` includes relay candidates when NAT type is symmetric
