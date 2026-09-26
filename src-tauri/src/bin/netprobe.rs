@@ -41,7 +41,8 @@ Usage: hexfield-netprobe --id <userId> [options]
   --pings <n>            Data-channel echo round trips after connecting (default 10)
   --timeout-secs <n>     Joiner: give up connecting after n s (default 30).
                          Host: exit after n s (default 0 = run until killed)
-  --verbose              Debug logging to stderr";
+  --verbose              Debug logging to stderr
+  --debug-deps           Also debug-log dependency crates (webrtc-rs ICE/TURN)";
 
 struct Args {
     id: String,
@@ -54,6 +55,7 @@ struct Args {
     pings: u32,
     timeout_secs: Option<u64>,
     verbose: bool,
+    debug_deps: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -68,6 +70,7 @@ fn parse_args() -> Result<Args, String> {
         pings: 10,
         timeout_secs: None,
         verbose: false,
+        debug_deps: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -92,6 +95,10 @@ fn parse_args() -> Result<Args, String> {
                 args.timeout_secs = Some(value("--timeout-secs")?.parse().map_err(|e| format!("--timeout-secs: {e}"))?)
             }
             "--verbose" => args.verbose = true,
+            "--debug-deps" => {
+                args.verbose = true;
+                args.debug_deps = true;
+            }
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -129,10 +136,17 @@ fn ice_servers(args: &Args) -> Vec<RTCIceServer> {
 struct StderrLogger;
 static LOGGER: StderrLogger = StderrLogger;
 static VERBOSE: AtomicBool = AtomicBool::new(false);
+static DEBUG_DEPS: AtomicBool = AtomicBool::new(false);
 
 impl log::Log for StderrLogger {
     fn enabled(&self, m: &log::Metadata) -> bool {
-        let dep_level = if VERBOSE.load(Ordering::Relaxed) { log::Level::Warn } else { log::Level::Error };
+        let dep_level = if DEBUG_DEPS.load(Ordering::Relaxed) {
+            log::Level::Debug
+        } else if VERBOSE.load(Ordering::Relaxed) {
+            log::Level::Warn
+        } else {
+            log::Level::Error
+        };
         m.target().starts_with("hexfield") || m.level() <= dep_level
     }
     fn log(&self, r: &log::Record) {
@@ -163,6 +177,7 @@ struct Probe {
 
 impl Probe {
     async fn send_lan(&self, to: &str, msg: Value) {
+        log::debug!("[netprobe] → {to}: {} {}", msg["type"], msg["candidate"]["candidate"]);
         let peers = self.lan_peers.lock().await;
         match peers.get(to) {
             Some((_, tx)) => {
@@ -199,6 +214,7 @@ impl Probe {
             }
             "signal_message" => {
                 let from = s("from");
+                log::debug!("[netprobe] ← {from}: {}", p["type"]);
                 let result = match p.get("type").and_then(Value::as_str) {
                     Some("signal_offer") => {
                         self.mgr.handle_offer(&from, s("sdp"), &self.media, &self.sink).await
@@ -388,6 +404,7 @@ async fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     VERBOSE.store(args.verbose, Ordering::Relaxed);
+    DEBUG_DEPS.store(args.debug_deps, Ordering::Relaxed);
     let _ = log::set_logger(&LOGGER);
     log::set_max_level(if args.verbose { log::LevelFilter::Debug } else { log::LevelFilter::Info });
 

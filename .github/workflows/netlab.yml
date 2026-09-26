@@ -1,0 +1,78 @@
+name: NAT lab
+
+# Connectivity matrix across simulated NATs, packet loss and latency
+# (scripts/netlab/netlab.sh). Runs the headless hexfield-netprobe, so it
+# exercises the app's real LAN-signaling and WebRTC code without a WebView.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  push:
+    paths:
+      - "src-tauri/src/lan.rs"
+      - "src-tauri/src/webrtc_manager.rs"
+      - "src-tauri/src/event_sink.rs"
+      - "src-tauri/src/bin/netprobe.rs"
+      - "src-tauri/Cargo.toml"
+      - "scripts/netlab/**"
+      - ".github/workflows/netlab.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src-tauri/src/lan.rs"
+      - "src-tauri/src/webrtc_manager.rs"
+      - "src-tauri/src/event_sink.rs"
+      - "src-tauri/src/bin/netprobe.rs"
+      - "src-tauri/Cargo.toml"
+      - "scripts/netlab/**"
+      - ".github/workflows/netlab.yml"
+
+jobs:
+  netlab:
+    name: NAT matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps (tauri build deps + lab tools)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libssl-dev \
+            pkg-config \
+            coturn iproute2 iptables jq
+          sudo systemctl stop coturn || true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: netprobe
+
+      - name: Build hexfield-netprobe
+        working-directory: src-tauri
+        run: cargo build --features netprobe --bin hexfield-netprobe
+
+      - name: Run NAT matrix
+        run: |
+          sudo -E env "PATH=$PATH" \
+            PROBE="$GITHUB_WORKSPACE/src-tauri/target/debug/hexfield-netprobe" \
+            OUT="$RUNNER_TEMP/netlab" \
+            bash scripts/netlab/netlab.sh matrix
+
+      - name: Upload lab logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: netlab-logs
+          path: ${{ runner.temp }}/netlab
+          if-no-files-found: ignore
