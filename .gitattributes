@@ -1,0 +1,2 @@
+# Shell scripts run on Linux runners and in network namespaces — keep LF.
+*.sh text eol=lf
