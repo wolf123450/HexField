@@ -44,7 +44,8 @@ Set `OUT=` to change the directory.
 
 Each row has an expected outcome that matches what the code does **today**. The
 job passes when every result matches its expectation, which makes it a
-regression test. When a fix lands (for example TURN wired into the app, or a
+regression test. Rows with expectation `any` are known to be flaky: they are
+recorded (⚠️ in the summary) but never fail the run. When a fix lands (for example TURN wired into the app, or a
 rendezvous fallback for invites), flip the matching row from `fail` to `pass`.
 
 | NAT type | Rule | Real-world equivalent |
@@ -64,6 +65,11 @@ the host's LAN address, just like an invite created behind an unmapped NAT.
 
 - Direct signaling plus srflx hole punching works across cone NATs, including
   with 3% loss (connects in about 9s) and on a 250ms, 512 kbit link (about 12.6s).
+- **Data channels stall under packet loss.** At 2–3% loss, webrtc-rs's SCTP layer
+  intermittently fails to open the data channel (stage `sctp`, with
+  `unable to be popped from inflight queue TSN` warnings) or delays messages by
+  more than 5s (stage `echo`). In local runs, direct at 3% loss passed 3 of 8,
+  and relay at 2% loss 14 of 20. These rows use `expect=any` until this is fixed.
 - Joins with no port forward fail at the signaling stage, before WebRTC starts.
 - Symmetric NAT on either side fails with STUN only, as expected.
 - TURN works (the `relay` rows), but webrtc-rs 0.17 still fails ICE across

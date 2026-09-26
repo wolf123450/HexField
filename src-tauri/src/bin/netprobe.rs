@@ -340,7 +340,16 @@ async fn run_joiner(mut probe: Probe, addr: String, port: u16, peer: String, pin
             }
             Some(_) => {}
             None => {
-                result["stage"] = json!("ice");
+                // A selected candidate pair means ICE succeeded and the
+                // DTLS/SCTP layers above it never opened the data channel.
+                match probe.mgr.selected_candidate_types(&peer).await {
+                    Some((local, remote)) => {
+                        result["stage"] = json!("sctp");
+                        result["local_candidate"] = json!(local);
+                        result["remote_candidate"] = json!(remote);
+                    }
+                    None => result["stage"] = json!("ice"),
+                }
                 result["error"] = json!("timed out waiting for data channel");
                 println!("{result}");
                 return 1;

@@ -21,6 +21,7 @@ optional, and the app always tries the direct path first.
 | Symmetric NAT (CGNAT) on either side, STUN only | ❌ | Needs a relay |
 | TURN, relay-only, symmetric ↔ symmetric | ✅ ~2.1 s | Proves the relay path works |
 | TURN, all candidate types, symmetric NAT | ❌ | webrtc-rs 0.17 fails ICE with mixed candidate sets |
+| Cone ↔ cone at 3% loss / relay at 2% loss | ⚠️ flaky (3/8, 14/20) | webrtc-rs SCTP stalls: data channel fails to open (`sctp`) or messages delayed >5 s (`echo`) |
 | UDP blocked (corporate / guest Wi-Fi) | ❌ (not in lab yet) | webrtc-rs 0.17 TURN client is UDP-only; TCP/TLS are TODOs in `webrtc-ice/src/agent/agent_gather.rs` |
 
 ## Connection ladder after this plan
@@ -40,7 +41,7 @@ Rungs 1–3 need no server. Rungs 4–6 need a rendezvous server and a TURN serv
 
 ## Steps
 
-Recommended execution order: **2 → 3a → 1b → 1 → 4 → 5 → 6 → 7 → 8**. Steps 2
+Recommended execution order: **2 → 3a → 1b → 1 → 6a → 4 → 5 → 6b → 7 → 8**. Steps 2
 and 3a are small and make TURN usable. Step 1b needs no server. Step 1 is the
 biggest win but depends on the hosting decision.
 
@@ -164,8 +165,23 @@ laptop sleep, the host restarting.
 - Lab: row `udp-blocked` (iptables drops UDP except DNS on `hf-natB`). Expect
   `fail` until the relay exists, then `pass` with `transport: ws-relay`.
 
-### 6. Media under impairment
+### 6. Behaviour under impairment
 
+**6a. Data-channel reliability under loss (high priority).** Chat, sync and
+signaling all ride on the data channel, and it stalls at 2–3% loss today.
+- Reproduce with the probe at `--debug-deps` and characterise it: loss rate
+  against failure rate, and which SCTP errors appear.
+- Check newer webrtc-rs / `webrtc-sctp` releases and upstream issues for the
+  `inflight queue TSN` and `Invalid SystemTime` errors.
+- Mitigations if there's no upstream fix:
+  - App-level: retry connecting when the data channel doesn't open within N s
+    after ICE connects; resend on application-level ack timeout, since messages
+    already have IDs and sync repairs gaps.
+  - Tune SCTP retransmission settings where webrtc-rs exposes them.
+- Done when the `*-lossy` / `*-loss` rows pass 20 of 20 and are switched from
+  `any` back to `pass`.
+
+**6b. Media.**
 - Probe: send a synthetic Opus audio track (and optionally video) and report
   loss, jitter and round-trip time from RTCP stats.
 - Lab rows for voice at 2% loss / 150 ms, and at 512 kbit. Set quality
