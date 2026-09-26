@@ -34,6 +34,7 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
+use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::signaling_state::RTCSignalingState;
@@ -152,6 +153,8 @@ pub struct WebRTCManager {
     local_video_track_high: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
     /// ICE servers used for every new PeerConnection.
     ice_servers: std::sync::Mutex<Vec<RTCIceServer>>,
+    /// Restrict ICE to TURN relay candidates (diagnostics / netprobe).
+    relay_only: AtomicBool,
 }
 
 /// Default ICE configuration: Google's public STUN server.
@@ -172,12 +175,18 @@ impl WebRTCManager {
             local_video_track_low: Arc::new(Mutex::new(None)),
             local_video_track_high: Arc::new(Mutex::new(None)),
             ice_servers: std::sync::Mutex::new(default_ice_servers()),
+            relay_only: AtomicBool::new(false),
         }
     }
 
     /// Replace the ICE servers used for PeerConnections created from now on.
     pub fn set_ice_servers(&self, servers: Vec<RTCIceServer>) {
         *self.ice_servers.lock().unwrap() = servers;
+    }
+
+    /// Only use TURN relay candidates for PeerConnections created from now on.
+    pub fn set_relay_only(&self, relay_only: bool) {
+        self.relay_only.store(relay_only, Ordering::Relaxed);
     }
 
     pub fn set_local_user_id(&self, id: String) {
@@ -205,6 +214,11 @@ impl WebRTCManager {
         let config = RTCConfiguration {
             ice_servers,
             bundle_policy: RTCBundlePolicy::MaxBundle,
+            ice_transport_policy: if self.relay_only.load(Ordering::Relaxed) {
+                RTCIceTransportPolicy::Relay
+            } else {
+                RTCIceTransportPolicy::default()
+            },
             ..Default::default()
         };
 

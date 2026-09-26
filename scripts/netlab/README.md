@@ -4,6 +4,15 @@ Tests HexField peer connectivity across simulated NATs, packet loss, latency and
 bandwidth limits. It runs in CI (`.github/workflows/netlab.yml`) and on any Linux
 machine with root, including WSL2.
 
+## Lab gotchas
+
+- The routers drop unsolicited WAN input. Without this rule, an early
+  hole-punch packet leaves a conntrack entry that forces a port rewrite, so a
+  "cone" NAT behaves like a symmetric one.
+- The "internet" is a single bridged subnet. coturn binds each relay socket to
+  its relay IP's interface, so a routed internet with several interfaces cannot
+  relay between the two sides.
+
 ## Parts
 
 - **`hexfield-netprobe`** (`src-tauri/src/bin/netprobe.rs`, built with
@@ -43,9 +52,25 @@ rendezvous fallback for invites), flip the matching row from `fail` to `pass`.
 | `cone` | `MASQUERADE` | Home router (port-preserving, stateful filtering) |
 | `symmetric` | `MASQUERADE --random-fully` | Carrier-grade NAT (CGNAT), many corporate firewalls |
 
+The `ice` column selects the ICE servers: `stun` means STUN only; `turn`
+means STUN plus TURN with all candidate types, as the app would use them; `relay`
+means STUN plus TURN restricted to relay candidates (`--relay-only`).
+
 `forward=yes` forwards natA's TCP signal port to the host. This stands in for a
 successful UPnP mapping or a manual port forward. Without it, the joiner has only
 the host's LAN address, just like an invite created behind an unmapped NAT.
+
+## Findings so far
+
+- Direct signaling plus srflx hole punching works across cone NATs, including
+  with 3% loss (connects in about 9s) and on a 250ms, 512 kbit link (about 12.6s).
+- Joins with no port forward fail at the signaling stage, before WebRTC starts.
+- Symmetric NAT on either side fails with STUN only, as expected.
+- TURN works (the `relay` rows), but webrtc-rs 0.17 still fails ICE across
+  symmetric NATs when host and srflx candidates are also present (the `turn`
+  rows). Wiring TURN into the app is therefore not enough on its own. Also
+  needed: a relay-only retry, or a fix in webrtc-rs's handling of mixed
+  candidate sets.
 
 ## Scope
 
