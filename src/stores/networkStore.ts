@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { signalingService } from '@/services/signalingService'
@@ -52,6 +52,8 @@ export const useNetworkStore = defineStore('network', () => {
   let _rendezvousToken: string | null = null
   /** TURN credentials obtained from rendezvous server. */
   let _turnCredentials: { urls: string[]; username: string; credential: string } | null = null
+  /** Re-fetches TURN credentials before they expire. */
+  let turnRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
   // ── Rate limiter ───────────────────────────────────────────────────────────
   // Limit inbound data-channel messages per peer to prevent flooding.
@@ -332,15 +334,17 @@ export const useNetworkStore = defineStore('network', () => {
       logger.debug('network', `NAT type: ${type}`)
     }).catch(e => logger.warn('network', 'NAT detection error:', e))
 
-    // Inject a per-peer ICE config builder so relay peers and custom TURN
-    // servers are automatically used for new connections.
-    // Sync the custom TURN cache from settings immediately so buildICEConfig
-    // has the right values on first connection attempt.
+    // Push the ICE servers to Rust now and whenever custom TURN settings change,
+    // so the first connection attempt already uses them.
     import('@/stores/settingsStore').then(({ useSettingsStore }) => {
-      _cachedCustomTURN = useSettingsStore().settings.customTURNServers ?? []
+      const settingsStore = useSettingsStore()
+      _cachedCustomTURN = settingsStore.settings.customTURNServers ?? []
+      pushIceServers()
+      watch(() => settingsStore.settings.customTURNServers, (servers) => {
+        _cachedCustomTURN = servers ?? []
+        pushIceServers()
+      }, { deep: true })
     }).catch(() => { /* ignore in tests */ })
-
-    webrtcService.setICEConfigBuilder(buildICEConfig)
 
     // Auto-connect to rendezvous server if configured
     connectToRendezvous(localUserId).catch(e =>
@@ -402,6 +406,17 @@ export const useNetworkStore = defineStore('network', () => {
     logger.info('network', 'Connected to rendezvous WS')
 
     // 5. Fetch TURN credentials (non-fatal)
+    await fetchTurnCredentials(rendezvousUrl, localUserId)
+  }
+
+  /**
+   * Fetch TURN credentials from the rendezvous server, push them to Rust, and
+   * schedule a refresh at 80% of their TTL. Non-fatal: failures are logged and
+   * retried after a minute.
+   */
+  async function fetchTurnCredentials(rendezvousUrl: string, localUserId: string) {
+    if (turnRefreshTimer) { clearTimeout(turnRefreshTimer); turnRefreshTimer = null }
+    let retryInSecs = 60
     try {
       const turnResp = await fetch(`${rendezvousUrl}/turn/credentials`, {
         method: 'POST',
@@ -409,37 +424,32 @@ export const useNetworkStore = defineStore('network', () => {
         body: JSON.stringify({ user_id: localUserId }),
       })
       if (turnResp.ok) {
-        _turnCredentials = await turnResp.json()
+        const { urls, username, credential, ttl } = await turnResp.json()
+        _turnCredentials = { urls, username, credential }
+        pushIceServers()
         logger.info('network', 'TURN credentials obtained')
+        if (typeof ttl === 'number' && ttl > 0) retryInSecs = Math.max(60, Math.floor(ttl * 0.8))
+      } else if (turnResp.status === 503) {
+        return // server has no TURN configured — nothing to refresh
       }
     } catch (e) { logger.warn('network', 'TURN fetch failed:', e) }
+    turnRefreshTimer = setTimeout(() => {
+      fetchTurnCredentials(rendezvousUrl, localUserId).catch(() => {})
+    }, retryInSecs * 1000)
   }
 
   /**
-   * Build a per-peer RTCIceServer list.
-   * Priority: public STUN → relay-capable peers (if we need relay) → custom TURN → rendezvous TURN.
-   * NOTE: This is called synchronously from RTCPeerConnection constructor, so we
-   * read settingsStore state via a cached reference set in init().
+   * ICE servers for every new peer connection, pushed to the Rust WebRTCManager.
+   * Order: public STUN → custom TURN → rendezvous TURN.
+   *
+   * Relay-capable peers (`relayCapablePeers`) are not included: no peer runs a
+   * TURN listener yet (deferred in Phase 5c), so those entries would only make
+   * webrtc-rs send allocations to addresses with nothing behind them.
    */
-  function buildICEConfig(_targetUserId: string): RTCIceServer[] {
+  function buildICEServers(): RTCIceServer[] {
     const base: RTCIceServer[] = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
     ]
-
-    // Only add TURN candidates when we're behind symmetric NAT (or unknown) —
-    // for open/restricted NAT, plain STUN is sufficient.
-    const needRelay = natType.value === 'symmetric' || natType.value === 'unknown' || natType.value === 'pending'
-
-    if (needRelay) {
-      for (const [peerId, relayAddr] of Object.entries(relayCapablePeers.value)) {
-        base.push({
-          urls:       `turn:${relayAddr}`,
-          username:   _targetUserId,
-          credential: peerId,
-        })
-      }
-    }
 
     // User-configured custom TURN servers are always appended (regardless of NAT type).
     if (_cachedCustomTURN.length > 0) {
@@ -456,6 +466,11 @@ export const useNetworkStore = defineStore('network', () => {
     }
 
     return base
+  }
+
+  function pushIceServers() {
+    webrtcService.setIceServers(buildICEServers())
+      .catch(e => logger.warn('network', 'set ICE servers failed:', e))
   }
 
   /**
@@ -477,6 +492,10 @@ export const useNetworkStore = defineStore('network', () => {
       reconnectTimer = null
     }
     stopHeartbeat()
+    if (turnRefreshTimer) {
+      clearTimeout(turnRefreshTimer)
+      turnRefreshTimer = null
+    }
     reconnectAttempt.value = 0
     webrtcService.destroyAll()
     connectedPeers.value = []
@@ -958,7 +977,7 @@ export const useNetworkStore = defineStore('network', () => {
     // Treat any incoming presence as a heartbeat from that peer.
     if (status !== 'offline') lastHeartbeatFrom.set(fromUserId, Date.now())
 
-    // Track relay capability — used by buildICEConfig for future peer connections.
+    // Track relay capability — for a future peer-hosted TURN relay (deferred, Phase 5c).
     if (msg.relayCapable === true && typeof msg.relayAddr === 'string') {
       relayCapablePeers.value = { ...relayCapablePeers.value, [fromUserId]: msg.relayAddr }
     } else if (status === 'offline') {
