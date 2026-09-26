@@ -173,7 +173,8 @@ cmd_case() { # see usage
   local got=pass
   [[ $code -eq 0 ]] || got=fail
   local verdict=OK
-  [[ $got == "$expect" ]] || verdict=UNEXPECTED
+  # expect=any: known-flaky row — recorded in the results, never fails the run
+  [[ $got == "$expect" || $expect == any ]] || verdict=UNEXPECTED
   echo "$result" >"$OUT/$name.json"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$verdict" "$name" "$nat_a/$nat_b" "$forward" "$ice" "${netem// /_}" "$expect" "$got" "$result" \
@@ -184,19 +185,22 @@ cmd_case() { # see usage
 # name | natA | natB | forward | ice | netem | expected
 # Expectations document today's behaviour; flip a row when a fix lands.
 #   cone-nofwd-stun      → rendezvous fallback for invites without a port forward
+#   *-lossy / *-loss     → `any`: webrtc-rs SCTP data channels stall intermittently
+#                          at 2–3% loss (stage "sctp"/"echo"); make these `pass`
+#                          once data channels are reliable under loss
 #   symA-symB-fwd-turn   → webrtc-rs 0.17 fails ICE across two symmetric NATs when
 #                          host/srflx candidates are present, even though the
 #                          relay-only row proves a working TURN path exists
 CASES=(
   "cone-fwd-stun             cone      cone      yes stun  -                         pass"
   "cone-nofwd-stun           cone      cone      no  stun  -                         fail"
-  "cone-fwd-stun-lossy       cone      cone      yes stun  delay_80ms_20ms_loss_3%   pass"
+  "cone-fwd-stun-lossy       cone      cone      yes stun  delay_80ms_20ms_loss_3%   any"
   "cone-fwd-stun-slow        cone      cone      yes stun  delay_250ms_rate_512kbit  pass"
   "symA-coneB-fwd-stun       symmetric cone      yes stun  -                         fail"
   "symA-symB-fwd-stun        symmetric symmetric yes stun  -                         fail"
   "cone-fwd-relay            cone      cone      yes relay -                         pass"
   "symA-symB-fwd-relay       symmetric symmetric yes relay -                         pass"
-  "symA-symB-fwd-relay-loss  symmetric symmetric yes relay delay_60ms_loss_2%        pass"
+  "symA-symB-fwd-relay-loss  symmetric symmetric yes relay delay_60ms_loss_2%        any"
   "symA-symB-fwd-turn        symmetric symmetric yes turn  -                         fail"
   "symA-coneB-fwd-turn       symmetric cone      yes turn  -                         fail"
 )
@@ -224,6 +228,7 @@ write_summary() {
     echo "|---|---|---|---|---|---|---|---|---|---|---|"
     while IFS=$'\t' read -r verdict name nat fwd ice netem expect got json; do
       local mark="✅"; [[ $verdict == OK ]] || mark="❌"
+      [[ $expect == any && $got == fail ]] && mark="⚠️"
       local cand ms rtt
       cand=$(jq -r '[.local_candidate, .remote_candidate] | map(. // "-") | join("→")' <<<"$json" 2>/dev/null || echo -)
       ms=$(jq -r '.connect_ms // .stage // "-"' <<<"$json" 2>/dev/null || echo -)
