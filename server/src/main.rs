@@ -16,6 +16,9 @@ use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 
 #[tokio::main]
 async fn main() {
+    // reqwest is built without a bundled crypto provider; use ring.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
