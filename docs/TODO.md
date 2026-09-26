@@ -300,10 +300,19 @@
   - [x] NAT lab: `scripts/netlab/netlab.sh` (netns + iptables NAT + tc netem + coturn) and `.github/workflows/netlab.yml` matrix
   - [x] Headless probe `hexfield-netprobe` (`--features netprobe`) driving the real `lan` + `webrtc_manager` code via `EventSink`
   - [x] `WebRTCManager::set_ice_servers()` — ICE servers configurable in Rust (app default unchanged: Google STUN)
-  - [ ] Wire `buildICEConfig()` (TURN / relay peers) through to `WebRTCManager::set_ice_servers()` — the Rust PC currently ignores it, so symmetric NAT fails (lab rows `sym*-stun`)
-  - [ ] webrtc-rs 0.17 fails ICE across symmetric NAT with mixed host/srflx/relay candidates even though relay-only connects (lab rows `sym*-turn` vs `sym*-relay`) — investigate, or retry with `set_relay_only(true)` on ICE failure
-  - [ ] Invite fallback when no endpoint is reachable (rendezvous signaling) — joins without a port forward fail today (lab row `cone-nofwd-stun`)
-  - [ ] ICE restart / reconnect after network change (Wi-Fi ↔ hotspot, NAT rebinding) + a lab case for it
+  - [x] `WebRTCManager::set_relay_only()` + netprobe `--relay-only`
+- [ ] **Network compatibility** — see [`network-compatibility-plan.md`](network-compatibility-plan.md); order 2 → 3a → 1b → 1 → 4 → 5 → 6 → 7 → 8; each step flips lab rows
+  - [ ] Decisions: default rendezvous/TURN instance? TURN bandwidth policy? manual-exchange UX placement?
+  - [ ] 1 — Rendezvous signaling fallback for joins (invite `rendezvous` field, WS actor → `EventSink` module, probe `--rendezvous`, server in lab) — rows `cone-nofwd-rdv`
+  - [ ] 1b — Manual offer/answer code exchange (non-trickle SDP, signed compact codes, Invite/Join modal UI, probe file exchange) — row `cone-nofwd-manual`
+  - [ ] 2 — `webrtc_set_ice_servers` command fed by `buildICEConfig()` (TURN creds refresh, custom TURN, 2nd STUN); remove `setICEConfigBuilder()` stub
+  - [ ] 3a — Per-peer relay-only retry on initial ICE failure (`relayOnly` flag in `signal_offer`) — flips `sym*-turn` rows
+  - [ ] 3b — Root-cause webrtc-rs mixed-candidate ICE failure across symmetric NAT (time-box ~1 day)
+  - [ ] 4 — ICE restart + heartbeat-timeout reconnect with backoff; probe `--duration`; rows `flap`, `rebind`, `host-restart`
+  - [ ] 5 — UDP-blocked fallback: WS relay over wss:443 via rendezvous (webrtc-rs 0.17 TURN is UDP-only) — row `udp-blocked`
+  - [ ] 6 — Media under impairment (synthetic Opus track, RTCP loss/jitter thresholds)
+  - [ ] 7 — IPv6 endpoints in invites, double-NAT lab row, UPnP IPv6/PCP evaluation
+  - [ ] 8 — Real-world validation on GCP free tier (server + coturn) across home / hotspot / guest Wi-Fi
 - [x] **Tests**
   - [x] `detectNATType()` returns expected type for full-cone, port-restricted, and symmetric setups (mock STUN)
   - [x] `buildICEConfig` includes relay candidates when NAT type is symmetric
