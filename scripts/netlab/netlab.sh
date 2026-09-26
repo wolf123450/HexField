@@ -145,10 +145,17 @@ cmd_case() { # see usage
   [[ $netem != - ]] && up_args+=(--netem "$netem")
   cmd_up "${up_args[@]}"
 
+  # ice: stun = STUN only; turn = STUN + TURN (all candidate types, like the app);
+  #      relay = STUN + TURN with ICE restricted to relay candidates
   local ice_args=(--ice "stun:198.51.100.1:3478")
-  if [[ $ice == turn ]]; then
-    ice_args+=(--ice "turn:198.51.100.1:3478?transport=udp" --turn-user "$TURN_USER" --turn-pass "$TURN_PASS")
-  fi
+  case $ice in
+    stun) ;;
+    turn | relay)
+      ice_args+=(--ice "turn:198.51.100.1:3478?transport=udp" --turn-user "$TURN_USER" --turn-pass "$TURN_PASS")
+      [[ $ice == relay ]] && ice_args+=(--relay-only)
+      ;;
+    *) log "unknown ice mode: $ice"; exit 2 ;;
+  esac
 
   # The invite gives the host's WAN address only when a port forward exists;
   # otherwise the joiner is left with the host's LAN address (what JoinView tries).
@@ -175,17 +182,23 @@ cmd_case() { # see usage
 }
 
 # name | natA | natB | forward | ice | netem | expected
-# Expectations document today's behaviour; flip a row when a fix lands
-# (e.g. rendezvous fallback for no-forward joins).
+# Expectations document today's behaviour; flip a row when a fix lands.
+#   cone-nofwd-stun      → rendezvous fallback for invites without a port forward
+#   symA-symB-fwd-turn   → webrtc-rs 0.17 fails ICE across two symmetric NATs when
+#                          host/srflx candidates are present, even though the
+#                          relay-only row proves a working TURN path exists
 CASES=(
-  "cone-fwd-stun            cone      cone      yes stun -                               pass"
-  "cone-nofwd-stun          cone      cone      no  stun -                               fail"
-  "cone-fwd-stun-lossy      cone      cone      yes stun delay_80ms_20ms_loss_3%         pass"
-  "cone-fwd-stun-slow       cone      cone      yes stun delay_250ms_rate_512kbit        pass"
-  "symA-coneB-fwd-stun      symmetric cone      yes stun -                               fail"
-  "symA-symB-fwd-stun       symmetric symmetric yes stun -                               fail"
-  "symA-symB-fwd-turn       symmetric symmetric yes turn -                               pass"
-  "symA-coneB-fwd-turn-loss symmetric cone      yes turn delay_60ms_loss_2%              pass"
+  "cone-fwd-stun             cone      cone      yes stun  -                         pass"
+  "cone-nofwd-stun           cone      cone      no  stun  -                         fail"
+  "cone-fwd-stun-lossy       cone      cone      yes stun  delay_80ms_20ms_loss_3%   pass"
+  "cone-fwd-stun-slow        cone      cone      yes stun  delay_250ms_rate_512kbit  pass"
+  "symA-coneB-fwd-stun       symmetric cone      yes stun  -                         fail"
+  "symA-symB-fwd-stun        symmetric symmetric yes stun  -                         fail"
+  "cone-fwd-relay            cone      cone      yes relay -                         pass"
+  "symA-symB-fwd-relay       symmetric symmetric yes relay -                         pass"
+  "symA-symB-fwd-relay-loss  symmetric symmetric yes relay delay_60ms_loss_2%        pass"
+  "symA-symB-fwd-turn        symmetric symmetric yes turn  -                         fail"
+  "symA-coneB-fwd-turn       symmetric cone      yes turn  -                         fail"
 )
 
 cmd_matrix() {

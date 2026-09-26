@@ -38,6 +38,7 @@ Usage: hexfield-netprobe --id <userId> [options]
   --ice <url>            ICE server URL, repeatable (stun:… / turn:…). Default: Google STUN
   --turn-user <user>     Username for turn: URLs
   --turn-pass <pass>     Credential for turn: URLs
+  --relay-only           Only use TURN relay candidates (needs a turn: --ice URL)
   --pings <n>            Data-channel echo round trips after connecting (default 10)
   --timeout-secs <n>     Joiner: give up connecting after n s (default 30).
                          Host: exit after n s (default 0 = run until killed)
@@ -54,6 +55,7 @@ struct Args {
     turn_pass: String,
     pings: u32,
     timeout_secs: Option<u64>,
+    relay_only: bool,
     verbose: bool,
     debug_deps: bool,
 }
@@ -69,6 +71,7 @@ fn parse_args() -> Result<Args, String> {
         turn_pass: String::new(),
         pings: 10,
         timeout_secs: None,
+        relay_only: false,
         verbose: false,
         debug_deps: false,
     };
@@ -94,6 +97,7 @@ fn parse_args() -> Result<Args, String> {
             "--timeout-secs" => {
                 args.timeout_secs = Some(value("--timeout-secs")?.parse().map_err(|e| format!("--timeout-secs: {e}"))?)
             }
+            "--relay-only" => args.relay_only = true,
             "--verbose" => args.verbose = true,
             "--debug-deps" => {
                 args.verbose = true;
@@ -415,6 +419,7 @@ async fn main() {
     if !args.ice.is_empty() {
         mgr.set_ice_servers(ice_servers(&args));
     }
+    mgr.set_relay_only(args.relay_only);
     let lan_peers: Arc<LanPeers> = Arc::new(Default::default());
 
     if let Some(port) = args.listen_port {

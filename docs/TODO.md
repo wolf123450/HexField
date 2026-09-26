@@ -301,6 +301,7 @@
   - [x] Headless probe `hexfield-netprobe` (`--features netprobe`) driving the real `lan` + `webrtc_manager` code via `EventSink`
   - [x] `WebRTCManager::set_ice_servers()` — ICE servers configurable in Rust (app default unchanged: Google STUN)
   - [ ] Wire `buildICEConfig()` (TURN / relay peers) through to `WebRTCManager::set_ice_servers()` — the Rust PC currently ignores it, so symmetric NAT fails (lab rows `sym*-stun`)
+  - [ ] webrtc-rs 0.17 fails ICE across symmetric NAT with mixed host/srflx/relay candidates even though relay-only connects (lab rows `sym*-turn` vs `sym*-relay`) — investigate, or retry with `set_relay_only(true)` on ICE failure
   - [ ] Invite fallback when no endpoint is reachable (rendezvous signaling) — joins without a port forward fail today (lab row `cone-nofwd-stun`)
   - [ ] ICE restart / reconnect after network change (Wi-Fi ↔ hotspot, NAT rebinding) + a lab case for it
 - [x] **Tests**

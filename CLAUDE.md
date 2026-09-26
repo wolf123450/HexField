@@ -48,6 +48,8 @@ src-tauri/                    # Rust backend
   src/
     lib.rs                     # AppState, plugin init, invoke_handler registration
     main.rs                    # Entry point
+    event_sink.rs              # EventSink: webrtc_manager/lan emit via AppHandle or a headless channel
+    bin/netprobe.rs            # hexfield-netprobe (--features netprobe): headless LAN/WebRTC probe
     db/
       mod.rs                   # open() — creates/opens SQLite file
       migrations.rs            # rusqlite_migration runner, includes 001_initial.sql
@@ -60,6 +62,8 @@ src-tauri/                    # Rust backend
   Cargo.toml                   # Rust dependencies
   tauri.conf.json              # Tauri config, CSP, window settings, plugins
   Info.plist                   # macOS privacy descriptions (camera, mic, screen)
+
+scripts/netlab/               # NAT lab (netns + iptables NAT + netem + coturn); CI: .github/workflows/netlab.yml
 
 docs/                         # Planning (source of truth for scope and progress)
   architecture-plan.md         # Vision, stack, key decisions log
