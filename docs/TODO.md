@@ -305,10 +305,10 @@
   - [x] Decision: default infra = GCP e2-micro rendezvous + Cloudflare TURN (user-configurable)
   - [x] Decision: relay policy — text/presence/sync/image previews only over our relays; no voice/video; full-res images over direct connections
   - [ ] Decision: manual-exchange UX placement (first-class vs fallback)
-  - [ ] 1.0 — **Blocker for public deploy:** real session tokens verified by `/ws` (today `token` = userId, unverified); remove server presence/typing broadcasts; WS keepalive ping; `peer_unavailable` reply to sender
+  - [ ] 1.0 — **Blocker for public deploy:** real session tokens verified by `/ws` (today `token` = userId, unverified) **and required by `/turn/credentials`** (unauthenticated today — with Cloudflare configured, anyone could mint credentials on our bill); remove server presence/typing broadcasts; WS keepalive ping; `peer_unavailable` reply to sender
   - [ ] 1 — Rendezvous signaling fallback for joins (invite `rendezvous` field, WS actor → `EventSink` module, probe `--rendezvous`, server in lab) — rows `cone-nofwd-rdv`
   - [ ] 1b — Manual offer/answer code exchange (non-trickle SDP, signed compact codes, Invite/Join modal UI, probe file exchange) — row `cone-nofwd-manual`
-  - [ ] 2 — `webrtc_set_ice_servers` command fed by `buildICEConfig()` (TURN creds refresh, custom TURN, 2nd STUN); remove `setICEConfigBuilder()` stub; Cloudflare TURN credential backend in `server/src/routes/turn.rs`
+  - [x] 2 — `webrtc_set_ice_servers` command fed by `buildICEServers()` (TURN creds refresh at 80% TTL, custom-TURN settings watch, 2nd STUN); `setICEConfigBuilder()` stub removed; Cloudflare TURN credential backend in `server/src/routes/turn.rs` (coturn kept); server now compiles again (hmac 0.13) and is built/tested in CI
   - [ ] 3a — Per-peer relay-only retry on initial ICE failure (`relayOnly` flag in `signal_offer`) — flips `sym*-turn` rows
   - [ ] 3c — Enforce relay policy: per-peer `connectionType`, gate media for relayed peers with UI reason, image preview (≤150 KB) + hash with full-res fetch over direct links, refuse chunk requests over relay, slower heartbeat/keepalive for relayed peers
   - [ ] 3b — Root-cause webrtc-rs mixed-candidate ICE failure across symmetric NAT (time-box ~1 day)
