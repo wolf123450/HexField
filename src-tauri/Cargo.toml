@@ -1,6 +1,6 @@
 [package]
 name = "hexfield"
-version = "0.2.7"
+version = "0.2.8"
 description = "HexField — privacy-first P2P chat"
 authors = []
 edition = "2021"
@@ -24,11 +24,18 @@ native-media = [
     "dep:windows-capture",
 ]
 e2e-testing = ["tauri-plugin-playwright"]
+# Headless networking probe used by the NAT lab (scripts/netlab/)
+netprobe = ["native-media"]
 
 [[bin]]
 name = "bench_capture"
 path = "src/bin/bench_capture.rs"
 required-features = ["native-media"]
+
+[[bin]]
+name = "hexfield-netprobe"
+path = "src/bin/netprobe.rs"
+required-features = ["netprobe"]
 
 [[bench]]
 name = "pipeline_bench"

@@ -14,11 +14,11 @@ pub async fn media_reset_all(
     // Stop mic if active (ignore errors — may not be running)
     let _ = state.media_manager.stop_mic(&app).await;
     state.media_manager.stop_all_remote_playback().await;
-    let _ = state.webrtc_manager.remove_audio_tracks_from_all(&app).await;
+    let _ = state.webrtc_manager.remove_audio_tracks_from_all(&crate::event_sink::from_app(&app)).await;
 
     // Stop screen share if active
     let _ = state.media_manager.stop_screen_share(&app).await;
-    let _ = state.webrtc_manager.remove_video_tracks_from_all(&app).await;
+    let _ = state.webrtc_manager.remove_video_tracks_from_all(&crate::event_sink::from_app(&app)).await;
 
     log::info!("[media] reset_all: cleared stale media state");
     Ok(())
@@ -47,7 +47,7 @@ pub async fn media_start_mic(
     // Add audio track to all peers (triggers SDP renegotiation)
     let audio_track = state
         .webrtc_manager
-        .add_audio_track_to_all(&app)
+        .add_audio_track_to_all(&crate::event_sink::from_app(&app))
         .await?;
 
     // Start capturing
@@ -64,7 +64,7 @@ pub async fn media_stop_mic(
     state.media_manager.stop_all_remote_playback().await;
     state
         .webrtc_manager
-        .remove_audio_tracks_from_all(&app)
+        .remove_audio_tracks_from_all(&crate::event_sink::from_app(&app))
         .await
 }
 
@@ -171,13 +171,13 @@ pub async fn media_start_screen_share(
     let (video_track, video_track_high) = if dual {
         let (low, high) = state
             .webrtc_manager
-            .add_video_tracks_dual(&app)
+            .add_video_tracks_dual(&crate::event_sink::from_app(&app))
             .await?;
         (low, Some(high))
     } else {
         let track = state
             .webrtc_manager
-            .add_video_track_to_all(&app)
+            .add_video_track_to_all(&crate::event_sink::from_app(&app))
             .await?;
         (track, None)
     };
@@ -207,7 +207,7 @@ pub async fn media_stop_screen_share(
     state.media_manager.stop_screen_share(&app).await?;
     state
         .webrtc_manager
-        .remove_video_tracks_from_all(&app)
+        .remove_video_tracks_from_all(&crate::event_sink::from_app(&app))
         .await
 }
 
@@ -225,6 +225,6 @@ pub async fn webrtc_set_peer_quality(
     };
     state
         .webrtc_manager
-        .set_peer_video_quality(&peer_id, quality_tier, &app)
+        .set_peer_video_quality(&peer_id, quality_tier, &crate::event_sink::from_app(&app))
         .await
 }

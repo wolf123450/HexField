@@ -193,9 +193,11 @@ pub async fn lan_start(
         return Ok(existing);
     }
 
+    let sink = crate::event_sink::from_app(&app_handle);
     let port = lan::start_lan_server(
-        app_handle.clone(),
+        sink.clone(),
         Arc::clone(&state.lan_peers),
+        0,
     ).await?;
 
     state.lan_signal_port.store(port, Ordering::Relaxed);
@@ -205,7 +207,7 @@ pub async fn lan_start(
         *uid = user_id.clone();
     }
 
-    lan::start_mdns(user_id, port, app_handle)?;
+    lan::start_mdns(user_id, port, sink)?;
 
     Ok(port)
 }
@@ -238,7 +240,7 @@ pub async fn lan_connect_peer(
         port,
         local_user_id,
         Arc::clone(&state.lan_peers),
-        app_handle,
+        crate::event_sink::from_app(&app_handle),
     ).await
 }
 

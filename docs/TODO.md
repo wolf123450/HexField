@@ -297,6 +297,23 @@
 - [x] WAN `"direct"` endpoint embedded in invite links when UPnP + STUN succeed
 - [x] UPnP mapping cleanup on app disconnect
 - [ ] Test: symmetric NAT simulation (two clients behind carrier-grade NAT), verify relay fallback — requires real NAT environment; cannot be unit-tested; defer to QA/integration testing phase
+  - [x] NAT lab: `scripts/netlab/netlab.sh` (netns + iptables NAT + tc netem + coturn) and `.github/workflows/netlab.yml` matrix
+  - [x] Headless probe `hexfield-netprobe` (`--features netprobe`) driving the real `lan` + `webrtc_manager` code via `EventSink`
+  - [x] `WebRTCManager::set_ice_servers()` — ICE servers configurable in Rust (app default unchanged: Google STUN)
+  - [x] `WebRTCManager::set_relay_only()` + netprobe `--relay-only`
+- [ ] **Network compatibility** — see [`network-compatibility-plan.md`](network-compatibility-plan.md); order 2 → 3a → 1b → 1 → 6a → 4 → 5 → 6b → 7 → 8; each step flips lab rows
+  - [ ] Decisions: default rendezvous/TURN instance? TURN bandwidth policy? manual-exchange UX placement?
+  - [ ] 1 — Rendezvous signaling fallback for joins (invite `rendezvous` field, WS actor → `EventSink` module, probe `--rendezvous`, server in lab) — rows `cone-nofwd-rdv`
+  - [ ] 1b — Manual offer/answer code exchange (non-trickle SDP, signed compact codes, Invite/Join modal UI, probe file exchange) — row `cone-nofwd-manual`
+  - [ ] 2 — `webrtc_set_ice_servers` command fed by `buildICEConfig()` (TURN creds refresh, custom TURN, 2nd STUN); remove `setICEConfigBuilder()` stub
+  - [ ] 3a — Per-peer relay-only retry on initial ICE failure (`relayOnly` flag in `signal_offer`) — flips `sym*-turn` rows
+  - [ ] 3b — Root-cause webrtc-rs mixed-candidate ICE failure across symmetric NAT (time-box ~1 day)
+  - [ ] 4 — ICE restart + heartbeat-timeout reconnect with backoff; probe `--duration`; rows `flap`, `rebind`, `host-restart`
+  - [ ] 5 — UDP-blocked fallback: WS relay over wss:443 via rendezvous (webrtc-rs 0.17 TURN is UDP-only) — row `udp-blocked`
+  - [ ] 6a — Data channels stall at 2–3% loss (webrtc-sctp `inflight queue TSN` / `Invalid SystemTime`; lab rows `*-lossy`, `*-loss` are `any`) — upstream check, app-level retry/ack, flip rows to `pass` at 20/20
+  - [ ] 6b — Media under impairment (synthetic Opus track, RTCP loss/jitter thresholds)
+  - [ ] 7 — IPv6 endpoints in invites, double-NAT lab row, UPnP IPv6/PCP evaluation
+  - [ ] 8 — Real-world validation on GCP free tier (server + coturn) across home / hotspot / guest Wi-Fi
 - [x] **Tests**
   - [x] `detectNATType()` returns expected type for full-cone, port-restricted, and symmetric setups (mock STUN)
   - [x] `buildICEConfig` includes relay candidates when NAT type is symmetric

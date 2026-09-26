@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use crate::event_sink::SharedSink;
 use tokio::sync::Mutex;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
@@ -34,6 +34,7 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
+use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::signaling_state::RTCSignalingState;
@@ -150,6 +151,18 @@ pub struct WebRTCManager {
     local_video_track_low: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
     /// The local video track (high quality tier) for peers that request it.
     local_video_track_high: Arc<Mutex<Option<Arc<TrackLocalStaticSample>>>>,
+    /// ICE servers used for every new PeerConnection.
+    ice_servers: std::sync::Mutex<Vec<RTCIceServer>>,
+    /// Restrict ICE to TURN relay candidates (diagnostics / netprobe).
+    relay_only: AtomicBool,
+}
+
+/// Default ICE configuration: Google's public STUN server.
+pub fn default_ice_servers() -> Vec<RTCIceServer> {
+    vec![RTCIceServer {
+        urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+        ..Default::default()
+    }]
 }
 
 impl WebRTCManager {
@@ -161,7 +174,19 @@ impl WebRTCManager {
             local_audio_track: Arc::new(Mutex::new(None)),
             local_video_track_low: Arc::new(Mutex::new(None)),
             local_video_track_high: Arc::new(Mutex::new(None)),
+            ice_servers: std::sync::Mutex::new(default_ice_servers()),
+            relay_only: AtomicBool::new(false),
         }
+    }
+
+    /// Replace the ICE servers used for PeerConnections created from now on.
+    pub fn set_ice_servers(&self, servers: Vec<RTCIceServer>) {
+        *self.ice_servers.lock().unwrap() = servers;
+    }
+
+    /// Only use TURN relay candidates for PeerConnections created from now on.
+    pub fn set_relay_only(&self, relay_only: bool) {
+        self.relay_only.store(relay_only, Ordering::Relaxed);
     }
 
     pub fn set_local_user_id(&self, id: String) {
@@ -170,7 +195,8 @@ impl WebRTCManager {
 
     // ── Internal: build a new RTCPeerConnection ─────────────────────────────
 
-    async fn build_pc() -> Result<Arc<RTCPeerConnection>, String> {
+    async fn build_pc(&self) -> Result<Arc<RTCPeerConnection>, String> {
+        let ice_servers = self.ice_servers.lock().unwrap().clone();
         let mut media_engine = MediaEngine::default();
         media_engine
             .register_default_codecs()
@@ -186,11 +212,13 @@ impl WebRTCManager {
             .build();
 
         let config = RTCConfiguration {
-            ice_servers: vec![RTCIceServer {
-                urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-                ..Default::default()
-            }],
+            ice_servers,
             bundle_policy: RTCBundlePolicy::MaxBundle,
+            ice_transport_policy: if self.relay_only.load(Ordering::Relaxed) {
+                RTCIceTransportPolicy::Relay
+            } else {
+                RTCIceTransportPolicy::default()
+            },
             ..Default::default()
         };
 
@@ -208,7 +236,7 @@ impl WebRTCManager {
         &self,
         pc: &Arc<RTCPeerConnection>,
         peer_id: &str,
-        app: &AppHandle,
+        app: &SharedSink,
     ) -> Result<bool, String> {
         if pc.signaling_state() != RTCSignalingState::Stable {
             return Ok(false);
@@ -239,7 +267,7 @@ impl WebRTCManager {
         dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
         being_replaced: Arc<AtomicBool>,
         media_manager: Arc<MediaManager>,
-        app: AppHandle,
+        app: SharedSink,
     ) {
         // ICE candidate → relay through frontend to remote peer
         let app_ice = app.clone();
@@ -335,7 +363,11 @@ impl WebRTCManager {
                 );
 
                 if kind == "audio" {
-                    let app3 = app2.clone();
+                    // Audio playback needs the Tauri handle; headless sinks ignore remote audio.
+                    let Some(app3) = app2.app_handle() else {
+                        log::debug!("[webrtc] no app handle — ignoring remote audio from {pid2}");
+                        return Box::pin(async {});
+                    };
                     let pid3 = pid2.clone();
                     let track2 = track.clone();
                     tokio::spawn(async move {
@@ -435,7 +467,7 @@ impl WebRTCManager {
         dc: Arc<RTCDataChannel>,
         peer_id: String,
         slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
-        app: AppHandle,
+        app: SharedSink,
     ) {
         let slot_open = slot.clone();
         let dc_open = dc.clone();
@@ -490,10 +522,10 @@ impl WebRTCManager {
         &self,
         peer_id: &str,
         media_manager: &Arc<MediaManager>,
-        app: &AppHandle,
+        app: &SharedSink,
     ) -> Result<(), String> {
         log::debug!("[webrtc] create_offer → {peer_id}");
-        let pc = Self::build_pc().await?;
+        let pc = self.build_pc().await?;
         let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
         let remote_desc_ready = Arc::new(AtomicBool::new(false));
         let being_replaced = Arc::new(AtomicBool::new(false));
@@ -562,7 +594,7 @@ impl WebRTCManager {
         from: &str,
         sdp: String,
         media_manager: &Arc<MediaManager>,
-        app: &AppHandle,
+        app: &SharedSink,
     ) -> Result<(), String> {
         log::debug!("[webrtc] handle_offer from {from}");
 
@@ -640,7 +672,7 @@ impl WebRTCManager {
         }
 
         // Initial offer (or replacing a dead PC) — create a new PeerConnection
-        let pc = Self::build_pc().await?;
+        let pc = self.build_pc().await?;
         let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
         let remote_desc_ready = Arc::new(AtomicBool::new(false));
         let being_replaced = Arc::new(AtomicBool::new(false));
@@ -801,6 +833,19 @@ impl WebRTCManager {
         }
     }
 
+    /// The ICE candidate pair the connection to `peer_id` settled on, as
+    /// `(local_type, remote_type)` — e.g. `("srflx", "relay")`.
+    pub async fn selected_candidate_types(&self, peer_id: &str) -> Option<(String, String)> {
+        let pc = self.peers.lock().await.get(peer_id)?.pc.clone();
+        let pair = pc
+            .sctp()
+            .transport()
+            .ice_transport()
+            .get_selected_candidate_pair()
+            .await?;
+        Some((pair.local.typ.to_string(), pair.remote.typ.to_string()))
+    }
+
     /// Returns user IDs of peers whose data channel is open.
     pub async fn get_connected_peers(&self) -> Vec<String> {
         let peers = self.peers.lock().await;
@@ -817,7 +862,7 @@ impl WebRTCManager {
     /// Returns the shared TrackLocalStaticSample for the mic encoder to write into.
     pub async fn add_audio_track_to_all(
         &self,
-        app: &AppHandle,
+        app: &SharedSink,
     ) -> Result<Arc<TrackLocalStaticSample>, String> {
         // Use a unique track ID each session so add_track() creates a fresh
         // transceiver instead of trying to reuse a stopped sender from a
@@ -861,7 +906,7 @@ impl WebRTCManager {
     }
 
     /// Remove audio tracks from all peers and trigger SDP renegotiation.
-    pub async fn remove_audio_tracks_from_all(&self, app: &AppHandle) -> Result<(), String> {
+    pub async fn remove_audio_tracks_from_all(&self, app: &SharedSink) -> Result<(), String> {
         // Clear manager-level track first
         *self.local_audio_track.lock().await = None;
 
@@ -899,7 +944,7 @@ impl WebRTCManager {
     pub async fn ensure_tracks_for_peer(
         &self,
         peer_id: &str,
-        app: &AppHandle,
+        app: &SharedSink,
         media_manager: &Arc<MediaManager>,
     ) -> Result<(), String> {
         // Use the manager-level local tracks (set by add_audio/video_track_to_all)
@@ -957,7 +1002,7 @@ impl WebRTCManager {
     /// Returns the shared TrackLocalStaticSample for the capture pipeline to write into.
     pub async fn add_video_track_to_all(
         &self,
-        app: &AppHandle,
+        app: &SharedSink,
     ) -> Result<Arc<TrackLocalStaticSample>, String> {
         let track = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability {
@@ -996,7 +1041,7 @@ impl WebRTCManager {
     /// Returns (track_low, track_high) for the capture pipeline.
     pub async fn add_video_tracks_dual(
         &self,
-        app: &AppHandle,
+        app: &SharedSink,
     ) -> Result<(Arc<TrackLocalStaticSample>, Arc<TrackLocalStaticSample>), String> {
         let make_track = || {
             Arc::new(TrackLocalStaticSample::new(
@@ -1039,7 +1084,7 @@ impl WebRTCManager {
         &self,
         peer_id: &str,
         tier: VideoQualityTier,
-        app: &AppHandle,
+        app: &SharedSink,
     ) -> Result<(), String> {
         let peers = self.peers.lock().await;
         let entry = peers.get(peer_id)
@@ -1092,7 +1137,7 @@ impl WebRTCManager {
     }
 
     /// Remove video tracks from all peers and trigger SDP renegotiation.
-    pub async fn remove_video_tracks_from_all(&self, app: &AppHandle) -> Result<(), String> {
+    pub async fn remove_video_tracks_from_all(&self, app: &SharedSink) -> Result<(), String> {
         // Clear manager-level tracks first
         *self.local_video_track_low.lock().await = None;
         *self.local_video_track_high.lock().await = None;

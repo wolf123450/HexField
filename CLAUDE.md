@@ -48,6 +48,8 @@ src-tauri/                    # Rust backend
   src/
     lib.rs                     # AppState, plugin init, invoke_handler registration
     main.rs                    # Entry point
+    event_sink.rs              # EventSink: webrtc_manager/lan emit via AppHandle or a headless channel
+    bin/netprobe.rs            # hexfield-netprobe (--features netprobe): headless LAN/WebRTC probe
     db/
       mod.rs                   # open() — creates/opens SQLite file
       migrations.rs            # rusqlite_migration runner, includes 001_initial.sql
@@ -60,6 +62,8 @@ src-tauri/                    # Rust backend
   Cargo.toml                   # Rust dependencies
   tauri.conf.json              # Tauri config, CSP, window settings, plugins
   Info.plist                   # macOS privacy descriptions (camera, mic, screen)
+
+scripts/netlab/               # NAT lab (netns + iptables NAT + netem + coturn); CI: .github/workflows/netlab.yml
 
 docs/                         # Planning (source of truth for scope and progress)
   architecture-plan.md         # Vision, stack, key decisions log
@@ -78,6 +82,7 @@ All planning lives in [`docs/`](docs/):
 | [`docs/architecture-plan.md`](docs/architecture-plan.md) | Vision, stack, key decisions log, spec index |
 | [`docs/TODO.md`](docs/TODO.md) | Phase-by-phase task checklist — **the source of truth for progress** |
 | [`docs/specs/01-13`](docs/specs/) | Deep specifications per feature area (see mapping below) |
+| [`docs/network-compatibility-plan.md`](docs/network-compatibility-plan.md) | Roadmap to connectivity across NAT types / restrictive networks; steps tied to NAT lab rows |
 
 ### Spec-to-code mapping
 
@@ -425,6 +430,8 @@ Issues that have already been encountered and fixed. **Do not re-introduce these
 | `rustls` panics at startup: "Could not automatically determine the process-level CryptoProvider" | `webrtc`/`dtls` pulls in `ring` and `reqwest`/`hyper-rustls` pulls in `aws-lc-rs` — both land on the same `rustls` instance. Fix: add `rustls = { version = "0.23", default-features = false, features = ["ring","std"] }` as a direct dep and call `rustls::crypto::ring::default_provider().install_default()` at the very top of `run()` in `lib.rs`. |
 | Rate limit of 15 msg/s blocked legitimate sync traffic during initial negentropy + push burst | `RATE_LIMIT` raised to 100 in `networkStore.ts`. |
 | `handle_offer` in `webrtc_manager.rs` always created a new `RTCPeerConnection`, even for SDP renegotiation (e.g. adding audio/video tracks) | This destroyed the existing data channel when a peer joined a voice channel — `add_audio_track_to_all` triggers renegotiation, the remote side's `handle_offer` replaced the PC, breaking the connection. Fix: check `pc.connection_state() == Connected` — if the existing PC is connected, apply the offer to it (set_remote_description + create_answer) instead of building a new one. Only create a new PC for initial offers or when the old PC is in a non-connected state. |
+| webrtc-rs 0.17 TURN client is **UDP-only** — `turn:…?transport=tcp` and `turns:` URLs are skipped with a `warn!("Unable to handle URL in gather_candidates_relay")` | TCP/TLS branches are commented-out TODOs in `webrtc-ice/src/agent/agent_gather.rs`. UDP-blocked networks need a non-TURN fallback (see `docs/network-compatibility-plan.md` step 5) |
+| NAT lab: `cone` NAT behaved like symmetric; coturn failed to relay between sides | Routers must drop unsolicited WAN INPUT (else conntrack clash forces port rewrite); lab "internet" must be one bridged subnet (coturn binds relay sockets to the relay IP's interface). See `scripts/netlab/README.md` |
 | `handleMutationMessage` in networkStore.ts did not handle `channel_create/update/delete` mutations | Real-time channel mutations (e.g. creating a voice channel) only synced via negentropy, not the real-time broadcast path. Fix: added channel mutation routing in `handleMutationMessage` to call `channelsStore.applyChannelMutation(mutation)`. |
 
 ---
