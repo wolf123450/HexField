@@ -56,6 +56,10 @@ jobs:
         working-directory: src-tauri
         run: cargo check
 
+      - name: cargo check (netprobe)
+        working-directory: src-tauri
+        run: cargo check --features netprobe --bin hexfield-netprobe
+
       - name: cargo test
         working-directory: src-tauri
         run: cargo test

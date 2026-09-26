@@ -8,16 +8,17 @@ use tauri::image::Image;
 
 mod db;
 mod commands;
+pub mod event_sink;
 #[cfg(feature = "native-media")]
 mod capture;
 #[cfg(not(mobile))]
-mod lan;
+pub mod lan;
 #[cfg(not(mobile))]
 mod upnp;
 #[cfg(feature = "native-media")]
-mod media_manager;
+pub mod media_manager;
 #[cfg(feature = "native-media")]
-mod webrtc_manager;
+pub mod webrtc_manager;
 
 use commands::archive_commands::*;
 use commands::attachment_commands::*;

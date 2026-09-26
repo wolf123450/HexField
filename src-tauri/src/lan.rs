@@ -29,7 +29,7 @@ use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use crate::event_sink::SharedSink;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Mutex;
@@ -46,12 +46,14 @@ pub type LanPeers = Mutex<HashMap<String, (u64, UnboundedSender<Value>)>>;
 
 // ── Local WS signal server ─────────────────────────────────────────────────
 
-/// Bind a TCP listener, spawn the accept loop, return the bound port.
+/// Bind a TCP listener on `port` (0 = OS-assigned), spawn the accept loop,
+/// return the bound port.
 pub async fn start_lan_server(
-    app_handle: AppHandle,
+    app_handle: SharedSink,
     lan_peers: Arc<LanPeers>,
+    port: u16,
 ) -> Result<u16, String> {
-    let listener = TcpListener::bind("0.0.0.0:0")
+    let listener = TcpListener::bind(("0.0.0.0", port))
         .await
         .map_err(|e| format!("LAN listener bind failed: {}", e))?;
 
@@ -87,7 +89,7 @@ pub async fn start_lan_server(
 async fn handle_incoming_lan_connection(
     stream: tokio::net::TcpStream,
     lan_peers: Arc<LanPeers>,
-    app: AppHandle,
+    app: SharedSink,
 ) {
     let ws = match accept_async(stream).await {
         Ok(ws) => ws,
@@ -143,7 +145,7 @@ pub async fn connect_to_lan_peer(
     port: u16,
     local_user_id: String,
     lan_peers: Arc<LanPeers>,
-    app: AppHandle,
+    app: SharedSink,
 ) -> Result<(), String> {
     // Skip if already connected to this peer.
     {
@@ -189,7 +191,7 @@ pub async fn connect_to_lan_peer(
 async fn register_peer(
     user_id: String,
     lan_peers: Arc<LanPeers>,
-    app: AppHandle,
+    app: SharedSink,
     sink: &mut (impl SinkExt<WsMessage, Error = tokio_tungstenite::tungstenite::Error>
               + Unpin
               + Send),
@@ -270,7 +272,7 @@ async fn register_peer(
 pub fn start_mdns(
     user_id: String,
     port: u16,
-    app: AppHandle,
+    app: SharedSink,
 ) -> Result<(), String> {
     let daemon = ServiceDaemon::new().map_err(|e| format!("[mDNS] daemon: {}", e))?;
 
