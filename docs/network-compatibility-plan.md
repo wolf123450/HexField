@@ -20,7 +20,7 @@ optional, and the app always tries the direct path first.
 | Any NAT, **no** port forward | ❌ at signaling | The invite has only direct endpoints; no fallback route for the offer and answer |
 | Symmetric NAT (CGNAT) on either side, STUN only | ❌ | Needs a relay |
 | TURN, relay-only, symmetric ↔ symmetric | ✅ ~2.1 s | Proves the relay path works |
-| TURN, all candidate types, symmetric NAT | ✅ ~17 s (after 3a) | webrtc-rs 0.17 fails ICE with mixed candidate sets; the offerer retries relay-only after 15 s |
+| TURN, all candidate types, symmetric NAT | ✅ ~2.1 s (after 3b) | Was a lab artifact (3b). If the TURN server stops relaying, the offerer retries relay-only after 15 s (3a, ~17 s) |
 | Cone ↔ cone at 3% loss / relay at 2% loss | ⚠️ flaky (3/8, 14/20) | webrtc-rs SCTP stalls: data channel fails to open (`sctp`) or messages delayed >5 s (`echo`) |
 | UDP blocked (corporate / guest Wi-Fi) | ❌ (not in lab yet) | webrtc-rs 0.17 TURN client is UDP-only; TCP/TLS are TODOs in `webrtc-ice/src/agent/agent_gather.rs` |
 
@@ -213,7 +213,7 @@ connection uses one hardcoded STUN server.
 
 *Fixes:* lab rows `symA-symB-fwd-turn` and `symA-coneB-fwd-turn`.
 
-- **3a: relay-only retry.** ✅ Done. The retry lives in `WebRTCManager` (`schedule_relay_retry`), so the probe and lab exercise the app's own logic. Lab: `sym*-turn` pass at ~17 s, and the `cone-fwd-turn` guard stays direct (no retry).
+- **3a: relay-only retry.** ✅ Done. The retry lives in `WebRTCManager` (`schedule_relay_retry`), so the probe and lab exercise the app's own logic. Lab: `symA-symB-fwd-turn-noroute` passes at ~17 s through the retry, and the `cone-fwd-turn` guard stays direct (no retry). Since 3b, the other `sym*-turn` rows connect without the retry.
   - If a peer's first connection attempt ends in `Failed` (or isn't connected
     after about 15 s) and TURN is configured, re-offer that peer with
     `relay_only`.
@@ -223,12 +223,54 @@ connection uses one hardcoded STUN server.
     fields are ignored by older peers, which then just use all candidates.
   - Flip the `sym*-turn` rows to `pass` and record the connect time, which is
     expected to be about 15 s plus 2 s on first contact.
-- **3b: root cause, time-boxed to about 1 day.** Leads:
-  - coturn logs `wrote to peer 0 bytes` for relayed checks.
-  - webrtc-rs uses a separate socket per candidate type, where browsers share
-    one; try `SettingEngine` UDP mux.
-  - Check whether newer webrtc-rs releases fix it.
-  - If found, fix locally or upstream, and drop the retry delay.
+- **3b: root cause.** ✅ Done. It was **not** a webrtc-rs bug. It was a fault
+  in the lab's TURN server.
+  - **Cause:** the lab's "internet" namespace (`hf-pub`, which runs coturn) had
+    no default route. The peers signal their host candidates (10.0.x.x) next to
+    their relay candidates. Each peer's relay candidate therefore checks the
+    other peer's host address too. coturn's first send to 10.0.x.x failed at
+    once with `udp send: Network is unreachable`. After that, coturn did not
+    forward anything more for that allocation. This killed the relay candidate
+    for every pair, including relay↔relay. Relay-only ICE never signals host
+    candidates, so it never hit the fault.
+  - **Evidence** (probe `--no-relay-retry --trace-deps`, `PCAP=1`, coturn
+    `--verbose`; symmetric ↔ symmetric, `turn`):
+
+    | Run | coturn `udp send` errors | Result |
+    |---|---|---|
+    | Mixed candidates, no route (old lab) | 2 (one per allocation) | ❌ all 16 pairs fail, incl. relay↔relay |
+    | Relay-only, no route | 0 | ✅ 2.1 s |
+    | Mixed candidates, default route | 0 | ✅ 2.2 s, no retry |
+    | Mixed candidates, no route, coturn `--denied-peer-ip=10.0.0.0-10.255.255.255` | 0 (403 on CreatePermission) | ✅ 2.2 s, no retry |
+    | Mixed candidates, default route + the same deny rule | 0 (403) | ✅ 2.2 s, no retry |
+
+    The packet capture shows valid ChannelData on bound channels
+    (`0x4000`–`0x4003`, correct length) from both TURN clients. coturn answered
+    every CreatePermission and ChannelBind, but forwarded no ChannelData
+    (`peer usage … sp=4`: only the first Send indication to each peer).
+    The webrtc-rs client behaved correctly.
+  - **Fix:** `netlab.sh` now gives `hf-pub` a default route into a dummy
+    interface, as a real server has. `symA-symB-fwd-turn` and
+    `symA-coneB-fwd-turn` connect in ~2.1 s with `relay_retry: false`. The
+    selected pair is usually one peer's host or srflx candidate to the other
+    peer's relay.
+  - **The 3a retry stays,** as a deliberate choice. A self-hosted coturn with no
+    route to private ranges has the same fault, and the retry costs nothing
+    when it does not fire. The new row `symA-symB-fwd-turn-noroute` (optional
+    9th column `noroute`) keeps the old server so that the retry is still tested
+    (~17 s, `relay_retry: true`).
+  - **Advice for TURN operators:** deny private peer addresses, for example
+    coturn `denied-peer-ip=10.0.0.0-10.255.255.255` (and the other RFC 1918,
+    loopback and link-local ranges). This also stops the TURN server from being
+    used to reach internal networks. The lab shows that ICE then connects
+    directly without the retry, with or without a route.
+  - **Upstream:** no webrtc-rs issue is needed. The coturn behaviour (one
+    failed send stops relaying for the whole allocation) could be reported to
+    coturn. The lab ran Coturn-4.6.1.
+  - **New probe and lab tools:** `hexfield-netprobe --no-relay-retry` shows the
+    raw ICE outcome, and `--trace-deps` logs every ICE check. `netlab.sh` takes
+    `PROBE_ARGS=`, `PCAP=1` (capture on the "internet" bridge) and keeps
+    `<case>.coturn.log` per case.
 - **3c: enforce the relay policy and keep relays cheap.** ✅ Done, except image
   previews, which moved to 3d. Media gating lives in `WebRTCManager`
   (`ConnectionType`, `media_allowed`). Attachment gating is in

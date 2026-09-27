@@ -12,6 +12,12 @@ machine with root, including WSL2.
 - The "internet" is a single bridged subnet. coturn binds each relay socket to
   its relay IP's interface, so a routed internet with several interfaces cannot
   relay between the two sides.
+- The "internet" namespace has a default route (into a dummy interface), like a
+  real server. Without it, coturn's first send to a peer's private host
+  candidate fails with `udp send: Network is unreachable`, and coturn then
+  stops forwarding for that whole allocation. ICE with mixed candidate types
+  then fails even for relay↔relay pairs (plan step 3b). The case column
+  `noroute` recreates this server on purpose.
 
 ## Parts
 
@@ -33,12 +39,16 @@ machine with root, including WSL2.
 sudo apt-get install -y coturn iproute2 iptables jq
 (cd src-tauri && cargo build --features netprobe --bin hexfield-netprobe)
 sudo PROBE=$PWD/src-tauri/target/debug/hexfield-netprobe bash scripts/netlab/netlab.sh matrix
-# One case (name natA natB forward ice netem expect):
+# One case (name natA natB forward ice netem expect [type] [route|noroute]):
 sudo PROBE=… bash scripts/netlab/netlab.sh case mycase symmetric cone yes turn "delay 100ms loss 5%" pass
+# Debug one case: raw ICE outcome, every ICE check, packet capture, coturn detail
+sudo PROBE=… PCAP=1 COTURN_ARGS=--verbose PROBE_ARGS="--no-relay-retry --trace-deps" \
+  bash scripts/netlab/netlab.sh case dbg symmetric symmetric yes turn - pass relay
 ```
 
-Results are written to `/tmp/netlab/results.tsv`, with per-case logs next to it.
-Set `OUT=` to change the directory.
+Results are written to `/tmp/netlab/results.tsv`, with per-case logs next to it
+(`<case>.host.err`, `<case>.joiner.err`, `<case>.coturn.log`, and `<case>.pcap`
+with `PCAP=1`). Set `OUT=` to change the directory.
 
 ## Reading the matrix
 
@@ -77,11 +87,15 @@ the host's LAN address, just like an invite created behind an unmapped NAT.
   and relay at 2% loss 14 of 20. These rows use `expect=any` until this is fixed.
 - Joins with no port forward fail at the signaling stage, before WebRTC starts.
 - Symmetric NAT on either side fails with STUN only, as expected.
-- TURN works (the `relay` rows), but webrtc-rs 0.17 fails ICE across symmetric
-  NATs when host and srflx candidates are also present. The offerer therefore
-  retries with relay-only ICE after 15 s (`RELAY_RETRY_AFTER` in
-  `webrtc_manager.rs`), and the `turn` rows connect at about 17 s
-  (`relay_retry: true`). The root cause is tracked as plan step 3b.
+- TURN works with all candidate types across symmetric NATs: the `turn` rows
+  connect in about 2.1 s without the relay-only retry. An earlier failure here
+  was a lab fault, not a webrtc-rs bug (see the default-route gotcha above and
+  plan step 3b).
+- If the TURN server stops relaying after a failed send (row
+  `symA-symB-fwd-turn-noroute`), the offerer retries with relay-only ICE after
+  15 s (`RELAY_RETRY_AFTER` in `webrtc_manager.rs`) and connects at about 17 s
+  (`relay_retry: true`). A TURN server that denies private peer addresses
+  (coturn `denied-peer-ip`) avoids the fault.
 
 ## Scope
 
