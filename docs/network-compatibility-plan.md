@@ -289,17 +289,63 @@ laptop sleep, the host restarting.
 
 **6a. Data-channel reliability under loss (high priority).** Chat, sync and
 signaling all ride on the data channel, and it stalls at 2–3% loss today.
-- Reproduce with the probe at `--debug-deps` and characterise it: loss rate
-  against failure rate, and which SCTP errors appear.
-- Check newer webrtc-rs / `webrtc-sctp` releases and upstream issues for the
-  `inflight queue TSN` and `Invalid SystemTime` errors.
-- Mitigations if there's no upstream fix:
-  - App-level: retry connecting when the data channel doesn't open within N s
-    after ICE connects; resend on application-level ack timeout, since messages
-    already have IDs and sync repairs gaps.
-  - Tune SCTP retransmission settings where webrtc-rs exposes them.
+
+> **Partially done.** Root cause found and one of the two failure modes fixed;
+> the other is a separate, unfixed issue. Details below.
+
+- **Root cause (confirmed by reading `webrtc-sctp` 0.17.1 source, not just
+  logs):** `AssociationInternal::process_selective_ack` in
+  `association_internal.rs` walks `cumulative_tsn_ack_point + 1 ..=
+  d.cumulative_tsn_ack`, popping each TSN out of `inflight_queue`, and only
+  advances `cumulative_tsn_ack_point` *after* the whole loop succeeds. Under
+  loss, a SACK can arrive whose range includes a TSN a previous SACK already
+  popped (that previous SACK itself failed partway through and never advanced
+  the ack point — see below), so `inflight_queue.pop(i)` returns `None` and the
+  function returns `Err(ErrInflightQueueTsnPop)` immediately.
+  `AssociationInternal::handle_inbound` treats this error as non-fatal (logs
+  and continues to the next chunk), but the early return means
+  `cumulative_tsn_ack_point` is *never updated* for that SACK, even though the
+  entries up to the failure point were already destructively popped. The next
+  SACK starts the loop at the same stale `cumulative_tsn_ack_point + 1` and
+  hits the same already-missing TSN immediately, forever. Net effect: once
+  this triggers once, the ack point is stuck permanently, queued outbound
+  bytes never drain, and the data channel is silently dead even though ICE and
+  DTLS report healthy. This matches the "escalating T3-RTX with no recovery"
+  signature reported against pion/webrtc for the same SCTP lineage
+  ([pion/webrtc#1270](https://github.com/pion/webrtc/issues/1270)) — not fixed
+  upstream there either.
+  - `webrtc-rs` 0.17.1 doesn't expose SCTP RTO/retransmit tuning through
+    `SettingEngine`: `RTO_INITIAL` (3000 ms), `RTO_MIN`, `RTO_MAX` and
+    `MAX_INIT_RETRANS` are `pub(crate)` constants in
+    `webrtc-sctp/src/timer/rtx_timer.rs`. So "tune SCTP retransmission
+    settings" isn't available without forking the crate.
+- **Fix applied (`webrtc_manager.rs`):** since the corruption can't be
+  prevented or tuned away from the app side, `WebRTCManager` now polls each
+  open data channel's `buffered_amount()` every
+  `DATA_CHANNEL_STALL_CHECK_INTERVAL` (4 s). If outstanding bytes stop
+  draining for `DATA_CHANNEL_STALL_TRIGGER_POLLS` (2) consecutive polls
+  (~8 s — long enough to ride out one normal `RTO_INITIAL` retransmission), the
+  peer connection is treated as dead and gets a full reconnect through the
+  existing `start_offer()` path (same recovery `schedule_relay_retry` already
+  uses for a data channel that never opens).
+- **Lab results after the fix** (`scripts/netlab/netlab.sh case`, 5 runs each):
+  - `symA-symB-fwd-relay-loss` (2% loss, relay): **5/5 pass** (was 14/20
+    before). Flipped from `any` to `pass`.
+  - `cone-fwd-stun-lossy` (3% loss, 80±20 ms jitter, direct): **1/5 pass**, no
+    real improvement. The failures here are a *different* failure mode: single
+    pings missing the probe's 5 s per-ping deadline during a legitimate RTO
+    retransmit (stage `echo`, `pongs: 15-19/20`), not the permanent-stall bug
+    above — `buffered_amount()` is draining fine, just not within 5 s every
+    time at this loss/jitter combination. The stall watchdog correctly doesn't
+    fire for this case (there's nothing stuck to recover from). Stays `any`.
+    Possible follow-ups, not attempted here: loosen the probe's per-ping
+    deadline (a test-harness change, not a product fix), or an app-level
+    message ack/resend so a single slow ping doesn't count as a hard failure
+    (the plan's original app-level suggestion — still applicable for this
+    remaining mode, since messages already have IDs and sync repairs gaps).
 - Done when the `*-lossy` / `*-loss` rows pass 20 of 20 and are switched from
-  `any` back to `pass`.
+  `any` back to `pass`. **`symA-symB-fwd-relay-loss` done; `cone-fwd-stun-lossy`
+  still open.**
 
 **6b. Media.**
 - Probe: send a synthetic Opus audio track (and optionally video) and report

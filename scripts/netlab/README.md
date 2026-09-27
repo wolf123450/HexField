@@ -70,11 +70,38 @@ the host's LAN address, just like an invite created behind an unmapped NAT.
 
 - Direct signaling plus srflx hole punching works across cone NATs, including
   with 3% loss (connects in about 9s) and on a 250ms, 512 kbit link (about 12.6s).
-- **Data channels stall under packet loss.** At 2–3% loss, webrtc-rs's SCTP layer
-  intermittently fails to open the data channel (stage `sctp`, with
-  `unable to be popped from inflight queue TSN` warnings) or delays messages by
-  more than 5s (stage `echo`). In local runs, direct at 3% loss passed 3 of 8,
-  and relay at 2% loss 14 of 20. These rows use `expect=any` until this is fixed.
+- **Data channels stall under packet loss (plan step 6a).** At 2–3% loss,
+  webrtc-rs's SCTP layer intermittently fails to open the data channel (stage
+  `sctp`, with `unable to be popped from inflight queue TSN` warnings) or
+  delays messages by more than 5s (stage `echo`).
+  - **Root cause of the `inflight queue TSN` failure:** a bug in
+    `process_selective_ack` (`webrtc-sctp-0.17.1/src/association/association_internal.rs`):
+    it pops chunks off `inflight_queue` in a loop before the SACK is fully
+    validated, and only advances `cumulative_tsn_ack_point` if the whole loop
+    succeeds. Under loss, a SACK can reference a TSN a previous (also-failed)
+    SACK already popped; the loop then returns `Err(ErrInflightQueueTsnPop)`,
+    which the caller logs and swallows as non-fatal — but the ack point is
+    never advanced, so every later SACK hits the same already-missing TSN
+    forever. The data channel is then permanently dead (outbound bytes never
+    drain) even though ICE and DTLS stay healthy. Same signature as
+    [pion/webrtc#1270](https://github.com/pion/webrtc/issues/1270) (unfixed
+    upstream there too). webrtc-rs 0.17.1 doesn't expose SCTP RTO/retransmit
+    tuning via `SettingEngine` (`RTO_INITIAL`/`RTO_MIN`/`RTO_MAX`/`MAX_INIT_RETRANS`
+    are `pub(crate)` in `webrtc-sctp`), so this can't be tuned from the app.
+  - **Fix:** `webrtc_manager.rs` now polls each open data channel's
+    `buffered_amount()` every 4s and forces a full reconnect
+    (`start_offer()`, same path `schedule_relay_retry` uses) if outstanding
+    bytes stop draining for two consecutive polls (~8s).
+  - **Results after the fix** (5 runs each via `netlab.sh case`):
+    `symA-symB-fwd-relay-loss` (2% loss, relay) went from 14/20 to **5/5** —
+    flipped to `expect=pass`. `cone-fwd-stun-lossy` (3% loss, 80±20ms jitter,
+    direct) stayed at roughly its old rate (1/5 in this run; was 3/8) — its
+    failures are a *different* mode (single pings missing the probe's 5s
+    deadline during a legitimate RTO retransmit, stage `echo`,
+    `pongs: 15-19/20`), not the permanent-stall bug the fix targets. This row
+    stays `expect=any`; see `docs/network-compatibility-plan.md` step 6a for
+    follow-up ideas (app-level message ack/resend, or loosening the probe's
+    per-ping deadline).
 - Joins with no port forward fail at the signaling stage, before WebRTC starts.
 - Symmetric NAT on either side fails with STUN only, as expected.
 - TURN works (the `relay` rows), but webrtc-rs 0.17 fails ICE across symmetric
