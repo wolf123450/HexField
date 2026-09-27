@@ -140,6 +140,12 @@ tauri-plugin-pilot = { git = "https://github.com/mpiton/tauri-pilot" }
 [dev-dependencies]
 tempfile = "3"
 
+# Vendored webrtc-sctp 0.17.1 with a fix for SACK processing that stalls data
+# channels under packet loss (plan step 6a). See patches/webrtc-sctp/PATCHES.md.
+# The version must match what Cargo.lock resolves, or cargo ignores the patch.
+[patch.crates-io]
+webrtc-sctp = { path = "patches/webrtc-sctp" }
+
 # Dev profile: use opt-level 1 globally to keep pixel-loop performance
 # (4K frame swap: ~1.9s at opt-0 → ~20ms at opt-1) while avoiding
 # LLVM anonymous-symbol mismatches between hexfield and serde_core
