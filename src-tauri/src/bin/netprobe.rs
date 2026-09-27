@@ -43,8 +43,11 @@ Usage: hexfield-netprobe --id <userId> [options]
   --pings <n>            Data-channel echo round trips after connecting (default 10)
   --timeout-secs <n>     Joiner: give up connecting after n s (default 30).
                          Host: exit after n s (default 0 = run until killed)
+  --no-relay-retry       Do not re-offer relay-only when the first attempt stalls
+                         (shows the raw outcome of mixed candidate sets)
   --verbose              Debug logging to stderr
-  --debug-deps           Also debug-log dependency crates (webrtc-rs ICE/TURN)";
+  --debug-deps           Also debug-log dependency crates (webrtc-rs ICE/TURN)
+  --trace-deps           Also trace-log dependency crates (every ICE check)";
 
 struct Args {
     id: String,
@@ -58,8 +61,10 @@ struct Args {
     timeout_secs: Option<u64>,
     relay_only: bool,
     expect_type: Option<String>,
+    no_relay_retry: bool,
     verbose: bool,
     debug_deps: bool,
+    trace_deps: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -75,8 +80,10 @@ fn parse_args() -> Result<Args, String> {
         timeout_secs: None,
         relay_only: false,
         expect_type: None,
+        no_relay_retry: false,
         verbose: false,
         debug_deps: false,
+        trace_deps: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -108,10 +115,16 @@ fn parse_args() -> Result<Args, String> {
                 }
                 args.expect_type = Some(t);
             }
+            "--no-relay-retry" => args.no_relay_retry = true,
             "--verbose" => args.verbose = true,
             "--debug-deps" => {
                 args.verbose = true;
                 args.debug_deps = true;
+            }
+            "--trace-deps" => {
+                args.verbose = true;
+                args.debug_deps = true;
+                args.trace_deps = true;
             }
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument: {other}")),
@@ -151,10 +164,13 @@ struct StderrLogger;
 static LOGGER: StderrLogger = StderrLogger;
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 static DEBUG_DEPS: AtomicBool = AtomicBool::new(false);
+static TRACE_DEPS: AtomicBool = AtomicBool::new(false);
 
 impl log::Log for StderrLogger {
     fn enabled(&self, m: &log::Metadata) -> bool {
-        let dep_level = if DEBUG_DEPS.load(Ordering::Relaxed) {
+        let dep_level = if TRACE_DEPS.load(Ordering::Relaxed) {
+            log::Level::Trace
+        } else if DEBUG_DEPS.load(Ordering::Relaxed) {
             log::Level::Debug
         } else if VERBOSE.load(Ordering::Relaxed) {
             log::Level::Warn
@@ -454,8 +470,15 @@ async fn main() {
 
     VERBOSE.store(args.verbose, Ordering::Relaxed);
     DEBUG_DEPS.store(args.debug_deps, Ordering::Relaxed);
+    TRACE_DEPS.store(args.trace_deps, Ordering::Relaxed);
     let _ = log::set_logger(&LOGGER);
-    log::set_max_level(if args.verbose { log::LevelFilter::Debug } else { log::LevelFilter::Info });
+    log::set_max_level(if args.trace_deps {
+        log::LevelFilter::Trace
+    } else if args.verbose {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    });
 
     let (tx, rx) = unbounded_channel::<(String, Value)>();
     let sink: SharedSink = Arc::new(tx);
@@ -465,6 +488,7 @@ async fn main() {
         mgr.set_ice_servers(ice_servers(&args));
     }
     mgr.set_relay_only(args.relay_only);
+    mgr.set_relay_retry(!args.no_relay_retry);
     let lan_peers: Arc<LanPeers> = Arc::new(Default::default());
 
     if let Some(port) = args.listen_port {

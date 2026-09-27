@@ -218,12 +218,18 @@ pub struct WebRTCManager {
     ice_servers: std::sync::Mutex<Vec<RTCIceServer>>,
     /// Restrict ICE to TURN relay candidates (diagnostics / netprobe).
     relay_only: AtomicBool,
+    /// Re-offer relay-only when a first attempt stalls (on by default; the
+    /// probe can turn it off to observe the raw outcome).
+    relay_retry: AtomicBool,
 }
 
 /// How long the offerer waits for the data channel before re-offering with
-/// relay-only ICE. webrtc-rs 0.17 fails ICE across symmetric NAT when host and
-/// srflx candidates are present, even though a relay-only attempt connects in
-/// ~2 s (NAT lab rows `sym*-turn` vs `sym*-relay`).
+/// relay-only ICE. A safety net for TURN servers that stop relaying for an
+/// allocation after one failed send: coturn does this when it has no route to a
+/// peer's private host candidate ("udp send: Network is unreachable"), which
+/// kills the relay candidate for every pair. Relay-only ICE never sends to host
+/// addresses, so the retry connects (NAT lab row `symA-symB-fwd-turn-noroute`;
+/// plan step 3b).
 const RELAY_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Default ICE configuration: two of Google's public STUN servers, so one
@@ -249,6 +255,7 @@ impl WebRTCManager {
             local_video_track_high: Arc::new(Mutex::new(None)),
             ice_servers: std::sync::Mutex::new(default_ice_servers()),
             relay_only: AtomicBool::new(false),
+            relay_retry: AtomicBool::new(true),
         }
     }
 
@@ -262,6 +269,11 @@ impl WebRTCManager {
         self.relay_only.store(relay_only, Ordering::Relaxed);
     }
 
+    /// Enable or disable the relay-only retry for offers made from now on.
+    pub fn set_relay_retry(&self, enabled: bool) {
+        self.relay_retry.store(enabled, Ordering::Relaxed);
+    }
+
     /// True when a (UDP) TURN server is configured, i.e. a relay path may exist.
     fn has_turn(&self) -> bool {
         self.ice_servers
@@ -269,6 +281,13 @@ impl WebRTCManager {
             .unwrap()
             .iter()
             .any(|s| s.urls.iter().any(|u| u.starts_with("turn:")))
+    }
+
+    /// True when an offer made with this ICE policy should schedule the
+    /// relay-only retry: it is not relay-only already, the retry is enabled,
+    /// and a TURN server could provide relay candidates.
+    fn wants_relay_retry(&self, relay_only: bool) -> bool {
+        !relay_only && self.relay_retry.load(Ordering::Relaxed) && self.has_turn()
     }
 
     pub fn set_local_user_id(&self, id: String) {
@@ -684,7 +703,7 @@ impl WebRTCManager {
             .await
             .map_err(|e| e.to_string())?;
 
-        if !relay_only && self.has_turn() {
+        if self.wants_relay_retry(relay_only) {
             self.schedule_relay_retry(peer_id, dc_slot.clone(), media_manager, app);
         }
 
@@ -1359,7 +1378,37 @@ impl WebRTCManager {
 
 #[cfg(test)]
 mod tests {
-    use super::ConnectionType;
+    use super::{ConnectionType, WebRTCManager};
+    use webrtc::ice_transport::ice_server::RTCIceServer;
+
+    fn turn_server() -> RTCIceServer {
+        RTCIceServer {
+            urls: vec!["turn:198.51.100.1:3478?transport=udp".to_owned()],
+            username: "u".to_owned(),
+            credential: "p".to_owned(),
+        }
+    }
+
+    #[test]
+    fn relay_retry_needs_turn_and_is_skipped_for_relay_only_offers() {
+        let mgr = WebRTCManager::new();
+        // Default ICE servers are STUN only: no relay path, no retry.
+        assert!(!mgr.wants_relay_retry(false));
+
+        mgr.set_ice_servers(vec![turn_server()]);
+        assert!(mgr.wants_relay_retry(false));
+        assert!(!mgr.wants_relay_retry(true), "a relay-only offer is already the retry");
+    }
+
+    #[test]
+    fn relay_retry_can_be_disabled() {
+        let mgr = WebRTCManager::new();
+        mgr.set_ice_servers(vec![turn_server()]);
+        mgr.set_relay_retry(false);
+        assert!(!mgr.wants_relay_retry(false));
+        mgr.set_relay_retry(true);
+        assert!(mgr.wants_relay_retry(false));
+    }
 
     #[test]
     fn classifies_selected_pairs() {
