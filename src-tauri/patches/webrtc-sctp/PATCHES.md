@@ -24,9 +24,11 @@ can happen after chunks were already popped:
 are gone but the ack point is stale, so every later SACK starts at a TSN that
 is no longer in the queue and fails with `ErrInflightQueueTsnPop`. The
 association never acknowledges data again: outbound bytes never drain and the
-data channel is dead while ICE and DTLS stay up. In the HexField NAT lab this
-shows up at 2–3% packet loss as `unable to be popped from inflight queue TSN`
-and `Invalid SystemTime` warnings.
+data channel is dead while ICE and DTLS stay up. The logs show one
+`Invalid SystemTime` (or other error) and then `unable to be popped from
+inflight queue TSN` on every SACK. The NAT lab reproduces it by stepping one
+peer's wall clock back with libfaketime (`scripts/netlab/README.md`): the
+unpatched crate stalls in 10/10 runs, this copy passes 10/10 (plan step 6a).
 
 ## The fix
 
