@@ -253,7 +253,7 @@ pub fn sync_get_mutations(
         .join(",");
     let sql = format!(
         "SELECT id, type, target_id, channel_id, author_id, new_content,
-         emoji_id, logical_ts, created_at, verified
+         emoji_id, logical_ts, created_at, verified, sig
          FROM mutations WHERE id IN ({placeholders})"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -270,6 +270,7 @@ pub fn sync_get_mutations(
                 logical_ts:     row.get(7)?,
                 created_at:     row.get(8)?,
                 verified:       row.get::<_, i64>(9)? != 0,
+                sig:            row.get(10)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -323,11 +324,12 @@ pub fn sync_save_mutations(
         conn.execute(
             "INSERT OR IGNORE INTO mutations
              (id, type, target_id, channel_id, author_id, new_content,
-              emoji_id, logical_ts, created_at, verified)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+              emoji_id, logical_ts, created_at, verified, sig)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             rusqlite::params![
                 m.id, m.mutation_type, m.target_id, m.channel_id, m.author_id,
-                m.new_content, m.emoji_id, m.logical_ts, m.created_at, m.verified as i64
+                m.new_content, m.emoji_id, m.logical_ts, m.created_at, m.verified as i64,
+                m.sig
             ],
         )
         .map_err(|e| e.to_string())?;

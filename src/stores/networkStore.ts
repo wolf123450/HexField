@@ -796,7 +796,9 @@ export const useNetworkStore = defineStore('network', () => {
         break
       case 'mutation':
         if (!isValidMutation(msg)) { logger.warn('network', 'invalid mutation from', userId); return }
-        handleMutationMessage(msg)
+        handleMutationMessage(userId, msg).catch(e =>
+          logger.warn('network', 'mutation error:', e)
+        )
         break
       case 'emoji_image_request':
         handleEmojiImageRequest(userId, msg)
@@ -898,23 +900,23 @@ export const useNetworkStore = defineStore('network', () => {
     messagesStore.receiveEncryptedMessage(msg)
   }
 
-  async function handleMutationMessage(msg: Record<string, unknown>) {
+  async function handleMutationMessage(fromUserId: string, msg: Record<string, unknown>) {
     const raw = msg.mutation as Record<string, unknown>
     if (!raw || typeof raw !== 'object') return
+    // Signature + authorship checks (spec 08 §5). Only an authorized mutation is
+    // applied, and only then is it marked verified.
+    const { authorizeMutation, wireToUnverifiedMutation } = await import('@/services/mutationAuth')
+    const auth = await authorizeMutation(wireToUnverifiedMutation(raw), {
+      senderId: fromUserId,
+      serverId: typeof msg.serverId === 'string' ? msg.serverId : undefined,
+    })
+    if (!auth.ok) {
+      logger.warn('network', 'mutation from', fromUserId, 'rejected:', auth.reason)
+      return
+    }
+    const mutation = auth.mutation
     const { useMessagesStore } = await import('./messagesStore')
     const messagesStore = useMessagesStore()
-    const mutation = {
-      id:         raw.id as string,
-      type:       raw.type as any,
-      targetId:   raw.targetId as string,
-      channelId:  raw.channelId as string,
-      authorId:   raw.authorId as string,
-      emojiId:    raw.emojiId as string | undefined,
-      newContent: raw.newContent as string | undefined,
-      logicalTs:  raw.logicalTs as string,
-      createdAt:  raw.createdAt as string,
-      verified:   true,
-    }
     await messagesStore.applyMutation(mutation)
 
     // Channel-level mutations: hydrate in-memory channel list
