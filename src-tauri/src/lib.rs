@@ -328,6 +328,7 @@ pub fn run() {
             // WebRTC (Rust-native data channels)
             #[cfg(feature = "native-media")]
             webrtc_init,
+            webrtc_set_ice_servers,
             #[cfg(feature = "native-media")]
             webrtc_create_offer,
             #[cfg(feature = "native-media")]

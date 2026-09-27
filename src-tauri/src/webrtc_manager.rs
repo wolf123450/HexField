@@ -56,9 +56,12 @@ use crate::media_manager::MediaManager;
 // ── Event payload types ─────────────────────────────────────────────────────
 
 #[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct OfferEvent {
     to: String,
     sdp: String,
+    /// The answerer should also restrict ICE to relay candidates.
+    relay_only: bool,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -157,10 +160,20 @@ pub struct WebRTCManager {
     relay_only: AtomicBool,
 }
 
-/// Default ICE configuration: Google's public STUN server.
+/// How long the offerer waits for the data channel before re-offering with
+/// relay-only ICE. webrtc-rs 0.17 fails ICE across symmetric NAT when host and
+/// srflx candidates are present, even though a relay-only attempt connects in
+/// ~2 s (NAT lab rows `sym*-turn` vs `sym*-relay`).
+const RELAY_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Default ICE configuration: two of Google's public STUN servers, so one
+/// being unreachable doesn't cost us server-reflexive candidates.
 pub fn default_ice_servers() -> Vec<RTCIceServer> {
     vec![RTCIceServer {
-        urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+        urls: vec![
+            "stun:stun.l.google.com:19302".to_owned(),
+            "stun:stun1.l.google.com:19302".to_owned(),
+        ],
         ..Default::default()
     }]
 }
@@ -189,13 +202,22 @@ impl WebRTCManager {
         self.relay_only.store(relay_only, Ordering::Relaxed);
     }
 
+    /// True when a (UDP) TURN server is configured, i.e. a relay path may exist.
+    fn has_turn(&self) -> bool {
+        self.ice_servers
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.urls.iter().any(|u| u.starts_with("turn:")))
+    }
+
     pub fn set_local_user_id(&self, id: String) {
         *self.local_user_id.lock().unwrap() = id;
     }
 
     // ── Internal: build a new RTCPeerConnection ─────────────────────────────
 
-    async fn build_pc(&self) -> Result<Arc<RTCPeerConnection>, String> {
+    async fn build_pc(&self, relay_only: bool) -> Result<Arc<RTCPeerConnection>, String> {
         let ice_servers = self.ice_servers.lock().unwrap().clone();
         let mut media_engine = MediaEngine::default();
         media_engine
@@ -214,7 +236,7 @@ impl WebRTCManager {
         let config = RTCConfiguration {
             ice_servers,
             bundle_policy: RTCBundlePolicy::MaxBundle,
-            ice_transport_policy: if self.relay_only.load(Ordering::Relaxed) {
+            ice_transport_policy: if relay_only || self.relay_only.load(Ordering::Relaxed) {
                 RTCIceTransportPolicy::Relay
             } else {
                 RTCIceTransportPolicy::default()
@@ -254,6 +276,7 @@ impl WebRTCManager {
             OfferEvent {
                 to: peer_id.to_string(),
                 sdp: offer.sdp,
+                relay_only: false,
             },
         );
         Ok(true)
@@ -518,14 +541,28 @@ impl WebRTCManager {
     }
 
     /// Caller side: create offer and emit `webrtc_offer` event.
+    ///
+    /// If TURN is configured and the data channel hasn't opened after
+    /// `RELAY_RETRY_AFTER`, the offer is repeated once with relay-only ICE
+    /// (emitting `webrtc_relay_retry`).
     pub async fn create_offer(
-        &self,
+        self: &Arc<Self>,
         peer_id: &str,
         media_manager: &Arc<MediaManager>,
         app: &SharedSink,
     ) -> Result<(), String> {
-        log::debug!("[webrtc] create_offer → {peer_id}");
-        let pc = self.build_pc().await?;
+        self.start_offer(peer_id, media_manager, app, false).await
+    }
+
+    async fn start_offer(
+        self: &Arc<Self>,
+        peer_id: &str,
+        media_manager: &Arc<MediaManager>,
+        app: &SharedSink,
+        relay_only: bool,
+    ) -> Result<(), String> {
+        log::debug!("[webrtc] create_offer → {peer_id} (relay_only={relay_only})");
+        let pc = self.build_pc(relay_only).await?;
         let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
         let remote_desc_ready = Arc::new(AtomicBool::new(false));
         let being_replaced = Arc::new(AtomicBool::new(false));
@@ -564,6 +601,10 @@ impl WebRTCManager {
             .await
             .map_err(|e| e.to_string())?;
 
+        if !relay_only && self.has_turn() {
+            self.schedule_relay_retry(peer_id, dc_slot.clone(), media_manager, app);
+        }
+
         // remote_desc_ready stays false until handle_answer sets the remote description.
         self.peers.lock().await.insert(
             peer_id.to_string(),
@@ -583,16 +624,53 @@ impl WebRTCManager {
             OfferEvent {
                 to: peer_id.to_string(),
                 sdp: offer.sdp,
+                relay_only,
             },
         )
         .map_err(|e| e.to_string())
     }
 
+    /// After `RELAY_RETRY_AFTER`, re-offer with relay-only ICE if this attempt
+    /// (identified by its data-channel slot) is still current and not open.
+    fn schedule_relay_retry(
+        self: &Arc<Self>,
+        peer_id: &str,
+        dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+        media_manager: &Arc<MediaManager>,
+        app: &SharedSink,
+    ) {
+        let weak = Arc::downgrade(self);
+        let peer = peer_id.to_string();
+        let media = media_manager.clone();
+        let app = app.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(RELAY_RETRY_AFTER).await;
+            let Some(mgr) = weak.upgrade() else { return };
+            let still_waiting = {
+                let peers = mgr.peers.lock().await;
+                match peers.get(&peer) {
+                    Some(entry) if Arc::ptr_eq(&entry.dc, &dc_slot) => entry.dc.lock().await.is_none(),
+                    _ => false, // replaced or closed meanwhile
+                }
+            };
+            if !still_waiting {
+                return;
+            }
+            log::info!("[webrtc] {peer}: no data channel after {RELAY_RETRY_AFTER:?}, retrying relay-only");
+            let _ = app.emit("webrtc_relay_retry", serde_json::json!({ "userId": peer }));
+            if let Err(e) = Box::pin(mgr.start_offer(&peer, &media, &app, true)).await {
+                log::warn!("[webrtc] relay-only retry for {peer} failed: {e}");
+            }
+        });
+    }
+
     /// Callee side: consume an offer, emit `webrtc_answer` event.
+    /// `relay_only` mirrors the offerer's ICE policy for a new connection.
     pub async fn handle_offer(
         &self,
         from: &str,
         sdp: String,
+        relay_only: bool,
         media_manager: &Arc<MediaManager>,
         app: &SharedSink,
     ) -> Result<(), String> {
@@ -672,7 +750,7 @@ impl WebRTCManager {
         }
 
         // Initial offer (or replacing a dead PC) — create a new PeerConnection
-        let pc = self.build_pc().await?;
+        let pc = self.build_pc(relay_only).await?;
         let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
         let remote_desc_ready = Arc::new(AtomicBool::new(false));
         let being_replaced = Arc::new(AtomicBool::new(false));

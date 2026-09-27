@@ -20,6 +20,8 @@ pub struct ServerState {
     pub db: std::sync::Mutex<SqliteConnection>,
     pub config: Config,
     pub challenges: RwLock<HashMap<String, (String, std::time::Instant)>>,
+    /// Outbound HTTP (Cloudflare TURN credential API).
+    pub http: reqwest::Client,
 }
 
 impl ServerState {
@@ -30,6 +32,10 @@ impl ServerState {
             db: std::sync::Mutex::new(conn),
             config: config.clone(),
             challenges: RwLock::new(HashMap::new()),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("Failed to build HTTP client"),
         }
     }
 }
