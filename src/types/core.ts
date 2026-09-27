@@ -121,6 +121,10 @@ export interface Attachment {
   contentHash?:    string        // blake3: for Phase 5b P2P
   chunkSize?:      number        // CHUNK_SIZE used for this file (default 256 KB)
   transferState:   'pending' | 'transferring' | 'complete' | 'failed'
+  /** Small inline preview (images only, `data:image/...;base64`, ≤ ~40 K chars).
+   *  Shown until the original arrives; the only image data that crosses a TURN
+   *  relay (relay policy, network-compatibility-plan step 3d). */
+  previewDataUrl?: string
 }
 
 // ── Reactions ──────────────────────────────────────────────────────────────────

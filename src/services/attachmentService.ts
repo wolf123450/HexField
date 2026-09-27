@@ -37,7 +37,7 @@ export function readFileBytes(file: File): Promise<Uint8Array> {
 /**
  * Hash a file, store it locally, and return a fully built Attachment record
  * ready to be included in a message. The `transferState` is set to 'complete'
- * since the sender already has all the bytes.
+ * since the sender already has all the bytes. Images get an inline preview.
  */
 export async function prepareAttachment(file: File): Promise<Attachment> {
   const bytes = await readFileBytes(file)
@@ -49,6 +49,7 @@ export async function prepareAttachment(file: File): Promise<Attachment> {
     data: Array.from(bytes),
   })
 
+  const previewDataUrl = await makeImagePreview(file)
   return {
     id:            crypto.randomUUID(),
     name:          file.name,
@@ -57,7 +58,109 @@ export async function prepareAttachment(file: File): Promise<Attachment> {
     contentHash,
     chunkSize:     CHUNK_SIZE,
     transferState: 'complete',
+    ...(previewDataUrl ? { previewDataUrl } : {}),
   }
+}
+
+// ── Image previews ────────────────────────────────────────────────────────────
+// Relay policy (docs/network-compatibility-plan.md, step 3d): full attachments
+// never cross a TURN relay, so each image carries a small inline preview in the
+// message itself. It must fit the ~64 KB data-channel frame together with the
+// rest of the message, hence the per-message budget.
+
+/** Longest side of the preview, tried in order until the size target is met. */
+const PREVIEW_MAX_SIDES = [640, 480, 320]
+const PREVIEW_QUALITIES = [0.72, 0.55, 0.4]
+/** Encoded preview size target (bytes); ~32 K chars once base64-encoded. */
+export const PREVIEW_TARGET_BYTES = 24_000
+/** Total preview characters allowed in one message (all attachments). */
+export const MESSAGE_PREVIEW_BUDGET_CHARS = 36_000
+/** Upper bound accepted from peers. */
+export const PREVIEW_MAX_CHARS = 40_000
+
+const PREVIEWABLE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp', 'image/avif'])
+const PREVIEW_DATA_URL = /^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/
+
+/** True for a preview we're willing to render: small raster data URL, nothing else. */
+export function isValidPreviewDataUrl(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= PREVIEW_MAX_CHARS && PREVIEW_DATA_URL.test(value)
+}
+
+/**
+ * Downscaled WebP (JPEG where the WebView can't encode WebP) preview of an image,
+ * at most PREVIEW_TARGET_BYTES. Null for non-images or if it can't be made small enough.
+ */
+export async function makeImagePreview(file: Blob): Promise<string | null> {
+  if (!PREVIEWABLE_TYPES.has(file.type) || typeof createImageBitmap !== 'function') return null
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await createImageBitmap(file)
+  } catch {
+    return null
+  }
+  try {
+    for (const side of PREVIEW_MAX_SIDES) {
+      const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height))
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return null
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+      for (const quality of PREVIEW_QUALITIES) {
+        const blob = await encodeCanvas(canvas, quality)
+        if (blob && blob.size <= PREVIEW_TARGET_BYTES) return await blobToDataUrl(blob)
+      }
+    }
+    return null
+  } finally {
+    bitmap.close()
+  }
+}
+
+async function encodeCanvas(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null> {
+  const webp = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/webp', quality))
+  // toBlob silently falls back to PNG when WebP encoding isn't supported.
+  if (webp?.type === 'image/webp') return webp
+  return new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality))
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
+  })
+}
+
+/**
+ * Keep previews in attachment order while they fit MESSAGE_PREVIEW_BUDGET_CHARS;
+ * drop the rest (those attachments show a download chip until the original arrives).
+ */
+export function fitPreviewsToBudget(
+  attachments: Attachment[],
+  budget = MESSAGE_PREVIEW_BUDGET_CHARS,
+): Attachment[] {
+  let used = 0
+  return attachments.map(att => {
+    if (!att.previewDataUrl) return att
+    if (used + att.previewDataUrl.length > budget) {
+      const { previewDataUrl: _dropped, ...rest } = att
+      return rest
+    }
+    used += att.previewDataUrl.length
+    return att
+  })
+}
+
+/** Remove previews that fail validation (received from peers or history sync). */
+export function sanitizeAttachments(attachments: Attachment[]): Attachment[] {
+  return attachments.map(att => {
+    if (att.previewDataUrl === undefined || isValidPreviewDataUrl(att.previewDataUrl)) return att
+    const { previewDataUrl: _invalid, ...rest } = att
+    return rest
+  })
 }
 
 // ── Receiver path ─────────────────────────────────────────────────────────────
@@ -82,13 +185,11 @@ export function setRequestChunksFn(
 }
 
 /**
- * Begin (or resume) downloading an attachment from one or more peers.
- * Returns a Promise that resolves when the download is complete.
+ * Register a download so seeders found via `attachment_have` (see `addSeeder`)
+ * are asked for the missing chunks. The caller broadcasts `attachment_want` to
+ * find seeders. Resolves when the file is complete locally.
  */
-export async function downloadAttachment(
-  attachment: Attachment,
-  _peerId: string,
-): Promise<void> {
+export async function downloadAttachment(attachment: Attachment): Promise<void> {
   const hashHex = attachment.contentHash?.replace('blake3:', '')
   if (!hashHex) throw new Error('No contentHash on attachment')
 
@@ -113,11 +214,14 @@ export async function downloadAttachment(
 
   return new Promise((resolve) => {
     state!.resolvers.push(resolve)
-    const missing = getMissingChunks(state!)
-    if (missing.length > 0 && _requestChunksFn) {
-      _requestChunksFn(hashHex, _peerId, missing)
-    }
   })
+}
+
+/** Progress (0–1) of an active download, or null if none is registered. */
+export function downloadProgress(contentHash: string): number | null {
+  const state = activeDownloads.get(contentHash.replace('blake3:', ''))
+  if (!state || state.totalChunks === 0) return null
+  return state.receivedChunks.size / state.totalChunks
 }
 
 function getMissingChunks(state: DownloadState): number[] {

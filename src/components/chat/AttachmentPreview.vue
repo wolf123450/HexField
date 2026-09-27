@@ -1,7 +1,7 @@
 <template>
   <div class="attachment-preview" :class="`state-${attachment.transferState}`">
-    <!-- ── Complete: P2P (blob URL available) ─────────────────────────── -->
-    <template v-if="attachment.transferState === 'complete' && blobUrl">
+    <!-- ── Original available locally ──────────────────────────────────── -->
+    <template v-if="blobUrl">
       <img
         v-if="attachment.mimeType.startsWith('image/')"
         :src="blobUrl"
@@ -33,8 +33,26 @@
       </div>
     </template>
 
+    <!-- ── Inline preview until the original arrives (relay policy, 3d) ── -->
+    <div
+      v-else-if="previewUrl"
+      class="preview-wrap"
+      :title="`Preview of ${attachment.name}: the full image loads when a direct connection to someone who has it is available`"
+    >
+      <img
+        :src="previewUrl"
+        class="preview-image is-preview"
+        :alt="attachment.name"
+        @click="openLightbox"
+      />
+      <span class="preview-badge">
+        <AppIcon :path="downloading ? mdiLoading : mdiImageFilterHdr" :size="12" :class="{ spin: downloading }" />
+        Preview
+      </span>
+    </div>
+
     <!-- ── Transferring ────────────────────────────────────────────────── -->
-    <div v-else-if="attachment.transferState === 'transferring'" class="transfer-chip">
+    <div v-else-if="downloading" class="transfer-chip">
       <AppIcon :path="mdiLoading" :size="16" class="spin" />
       <span class="file-name">{{ attachment.name }}</span>
       <div class="progress-bar">
@@ -43,22 +61,22 @@
       <span class="progress-label">{{ progress }}%</span>
     </div>
 
-    <!-- ── Pending (not yet started / waiting for seeder) ─────────────── -->
+    <!-- ── Failed ──────────────────────────────────────────────────────── -->
+    <div v-else-if="attachment.transferState === 'failed'" class="transfer-chip failed">
+      <AppIcon :path="mdiAlertCircle" :size="16" />
+      <span class="file-name">{{ attachment.name }}</span>
+      <span class="file-size">unavailable</span>
+    </div>
+
+    <!-- ── Not local yet: click to fetch from peers ────────────────────── -->
     <div
-      v-else-if="attachment.transferState === 'pending'"
+      v-else
       class="transfer-chip clickable"
       @click="startDownload"
     >
       <AppIcon :path="mdiDownloadCircle" :size="16" />
       <span class="file-name">{{ attachment.name }}</span>
       <span class="file-size">{{ formatSize(attachment.size) }}</span>
-    </div>
-
-    <!-- ── Failed ──────────────────────────────────────────────────────── -->
-    <div v-else-if="attachment.transferState === 'failed'" class="transfer-chip failed">
-      <AppIcon :path="mdiAlertCircle" :size="16" />
-      <span class="file-name">{{ attachment.name }}</span>
-      <span class="file-size">unavailable</span>
     </div>
 
     <!-- ── Lightbox overlay ────────────────────────────────────────────── -->
@@ -77,9 +95,14 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { mdiFile, mdiDownload, mdiDownloadCircle, mdiAlertCircle, mdiLoading } from '@mdi/js'
+import { mdiFile, mdiDownload, mdiDownloadCircle, mdiAlertCircle, mdiLoading, mdiImageFilterHdr } from '@mdi/js'
 import type { Attachment } from '@/types/core'
-import { createBlobUrl } from '@/services/attachmentService'
+import {
+  createBlobUrl,
+  downloadAttachment,
+  downloadProgress,
+  isValidPreviewDataUrl,
+} from '@/services/attachmentService'
 import { useNetworkStore } from '@/stores/networkStore'
 
 const props = defineProps<{
@@ -92,21 +115,29 @@ const networkStore = useNetworkStore()
 
 // ── Blob URL management ───────────────────────────────────────────────────────
 
-const blobUrl    = ref<string | null>(null)
-const progress   = ref(0)
+const blobUrl      = ref<string | null>(null)
+const progress     = ref(0)
+const downloading  = ref(false)
 const lightboxOpen = ref(false)
 const lightboxSrc  = ref('')
 
-async function tryLoadBlobUrl() {
-  if (props.attachment.transferState !== 'complete' || !props.attachment.contentHash) return
+const isImage    = computed(() => props.attachment.mimeType.startsWith('image/'))
+const previewUrl = computed(() =>
+  isImage.value && isValidPreviewDataUrl(props.attachment.previewDataUrl) ? props.attachment.previewDataUrl : null,
+)
+
+/** Load the original if it's stored locally (sender, or after a download). */
+async function tryLoadBlobUrl(): Promise<boolean> {
+  if (blobUrl.value) return true
+  if (!props.attachment.contentHash) return false
   const url = await createBlobUrl(props.attachment.contentHash, props.attachment.mimeType)
   if (url) blobUrl.value = url
+  return url !== null
 }
 
-onMounted(tryLoadBlobUrl)
-
-watch(() => props.attachment.transferState, (newState) => {
-  if (newState === 'complete') tryLoadBlobUrl()
+onMounted(async () => {
+  // Images fetch their original automatically; other files wait for a click.
+  if (!(await tryLoadBlobUrl()) && isImage.value) startDownload()
 })
 
 onBeforeUnmount(() => {
@@ -115,46 +146,55 @@ onBeforeUnmount(() => {
 
 // ── Download ──────────────────────────────────────────────────────────────────
 
-const _att = computed(() => props.attachment)
-
-async function startDownload() {
-  if (!_att.value.contentHash) return
-  // Tell everyone we want this file
-  networkStore.broadcastAttachmentWant(_att.value.contentHash, props.messageId)
-  // Wait for a peer to respond with attachment_have (handled in networkStore)
-  // In the meantime track progress via polling (simple approach)
-  pollProgress()
+/**
+ * Register the download and ask peers who has the file. Seeders reply with
+ * `attachment_have` and are asked for chunks (networkStore). Relayed peers
+ * neither answer nor seed (relay policy), so a relayed-only user keeps the
+ * preview until a direct connection appears.
+ */
+function startDownload() {
+  const contentHash = props.attachment.contentHash
+  if (!contentHash || downloading.value || blobUrl.value) return
+  downloading.value = true
+  downloadAttachment(props.attachment)
+    .then(() => tryLoadBlobUrl())
+    .catch(() => { /* stays on preview / download chip */ })
+    .finally(() => { downloading.value = false; stopProgress() })
+  networkStore.broadcastAttachmentWant(contentHash, props.messageId)
+  startProgress()
 }
 
-let _pollTimer: ReturnType<typeof setInterval> | null = null
+// New peers may hold the file (e.g. a direct connection replacing a relayed
+// one), so ask again whenever the connected set changes mid-download.
+watch(() => networkStore.connectedPeers, () => {
+  if (downloading.value && props.attachment.contentHash) {
+    networkStore.broadcastAttachmentWant(props.attachment.contentHash, props.messageId)
+  }
+})
 
-function pollProgress() {
-  if (_pollTimer) return
-  _pollTimer = setInterval(async () => {
-    if (!_att.value.contentHash) return
-    const hashHex = _att.value.contentHash.replace('blake3:', '')
-    const { invoke } = await import('@tauri-apps/api/core')
-    const received  = await invoke<number[]>('get_received_chunks', { contentHash: hashHex })
-    const total     = Math.ceil(_att.value.size / (256 * 1024))
-    progress.value  = total > 0 ? Math.round((received.length / total) * 100) : 0
-    if (progress.value >= 100) {
-      clearInterval(_pollTimer!)
-      _pollTimer = null
-      await tryLoadBlobUrl()
-    }
+let _progressTimer: ReturnType<typeof setInterval> | null = null
+
+function startProgress() {
+  if (_progressTimer) return
+  _progressTimer = setInterval(() => {
+    const fraction = props.attachment.contentHash ? downloadProgress(props.attachment.contentHash) : null
+    progress.value = fraction === null ? 0 : Math.round(fraction * 100)
   }, 500)
 }
 
-onBeforeUnmount(() => {
-  if (_pollTimer) clearInterval(_pollTimer)
-})
+function stopProgress() {
+  if (_progressTimer) clearInterval(_progressTimer)
+  _progressTimer = null
+}
+
+onBeforeUnmount(stopProgress)
 
 // ── Lightbox ──────────────────────────────────────────────────────────────────
 
 function openLightbox() {
-  if (blobUrl.value) {
-    lightboxSrc.value = blobUrl.value
-  }
+  const src = blobUrl.value ?? previewUrl.value
+  if (!src) return
+  lightboxSrc.value = src
   lightboxOpen.value = true
 }
 
@@ -179,6 +219,30 @@ function formatSize(bytes: number): string {
   border-radius: 6px;
   cursor: zoom-in;
   display: block;
+}
+
+.preview-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.preview-image.is-preview {
+  filter: saturate(0.9);
+}
+
+.preview-badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 11px;
+  pointer-events: none;
 }
 
 .preview-video {
