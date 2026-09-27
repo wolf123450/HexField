@@ -23,7 +23,7 @@
 # Usage (needs root, iproute2, iptables, coturn):
 #   netlab.sh up [--nat-a cone|symmetric] [--nat-b cone|symmetric] [--forward-host] [--netem "<args>"]
 #   netlab.sh down
-#   netlab.sh case <name> <nat-a> <nat-b> <forward:yes|no> <ice:stun|turn> <netem|-> <expect:pass|fail>
+#   netlab.sh case <name> <nat-a> <nat-b> <forward:yes|no> <ice:stun|turn|relay> <netem|-> <expect:pass|fail|any> [type:lan|direct|relay|-]
 #   netlab.sh matrix            # run the built-in case list, compare against expectations
 #
 # Env: PROBE=path to hexfield-netprobe (default src-tauri/target/debug/hexfield-netprobe)
@@ -139,7 +139,7 @@ cmd_up() {
 }
 
 cmd_case() { # see usage
-  local name=$1 nat_a=$2 nat_b=$3 forward=$4 ice=$5 netem=$6 expect=$7
+  local name=$1 nat_a=$2 nat_b=$3 forward=$4 ice=$5 netem=$6 expect=$7 want_type=${8:--}
   local up_args=(--nat-a "$nat_a" --nat-b "$nat_b")
   [[ $forward == yes ]] && up_args+=(--forward-host)
   [[ $netem != - ]] && up_args+=(--netem "$netem")
@@ -165,9 +165,11 @@ cmd_case() { # see usage
   nsx hf-peerA "$PROBE" --id host --listen-port "$SIGNAL_PORT" "${ice_args[@]}" \
     >"$OUT/$name.host.out" 2>"$OUT/$name.host.err" &
   sleep 1
+  local type_args=()
+  [[ $want_type != - ]] && type_args=(--expect-type "$want_type")
   local result code=0
   result=$(nsx hf-peerB "$PROBE" --id joiner --connect "$endpoint" --peer host \
-    --pings 20 --timeout-secs 30 "${ice_args[@]}" 2>"$OUT/$name.joiner.err") || code=$?
+    --pings 20 --timeout-secs 30 "${ice_args[@]}" "${type_args[@]}" 2>"$OUT/$name.joiner.err") || code=$?
   cmd_down
 
   local got=pass
@@ -182,7 +184,7 @@ cmd_case() { # see usage
   [[ $verdict == OK ]]
 }
 
-# name | natA | natB | forward | ice | netem | expected
+# name | natA | natB | forward | ice | netem | expected | connection type (checked when it passes)
 # Expectations document today's behaviour; flip a row when a fix lands.
 #   cone-nofwd-stun      → rendezvous fallback for invites without a port forward
 #   *-lossy / *-loss     → `any`: webrtc-rs SCTP data channels stall intermittently
@@ -193,18 +195,18 @@ cmd_case() { # see usage
 #                          symmetric NAT with host/srflx candidates present, so the
 #                          offerer re-offers relay-only; expect connect_ms ≈ 17 s
 CASES=(
-  "cone-fwd-stun             cone      cone      yes stun  -                         pass"
-  "cone-nofwd-stun           cone      cone      no  stun  -                         fail"
-  "cone-fwd-stun-lossy       cone      cone      yes stun  delay_80ms_20ms_loss_3%   any"
-  "cone-fwd-stun-slow        cone      cone      yes stun  delay_250ms_rate_512kbit  pass"
-  "symA-coneB-fwd-stun       symmetric cone      yes stun  -                         fail"
-  "symA-symB-fwd-stun        symmetric symmetric yes stun  -                         fail"
-  "cone-fwd-relay            cone      cone      yes relay -                         pass"
-  "symA-symB-fwd-relay       symmetric symmetric yes relay -                         pass"
-  "symA-symB-fwd-relay-loss  symmetric symmetric yes relay delay_60ms_loss_2%        any"
-  "cone-fwd-turn             cone      cone      yes turn  -                         pass"
-  "symA-symB-fwd-turn        symmetric symmetric yes turn  -                         pass"
-  "symA-coneB-fwd-turn       symmetric cone      yes turn  -                         pass"
+  "cone-fwd-stun             cone      cone      yes stun  -                         pass direct"
+  "cone-nofwd-stun           cone      cone      no  stun  -                         fail -"
+  "cone-fwd-stun-lossy       cone      cone      yes stun  delay_80ms_20ms_loss_3%   any  direct"
+  "cone-fwd-stun-slow        cone      cone      yes stun  delay_250ms_rate_512kbit  pass direct"
+  "symA-coneB-fwd-stun       symmetric cone      yes stun  -                         fail -"
+  "symA-symB-fwd-stun        symmetric symmetric yes stun  -                         fail -"
+  "cone-fwd-relay            cone      cone      yes relay -                         pass relay"
+  "symA-symB-fwd-relay       symmetric symmetric yes relay -                         pass relay"
+  "symA-symB-fwd-relay-loss  symmetric symmetric yes relay delay_60ms_loss_2%        any  relay"
+  "cone-fwd-turn             cone      cone      yes turn  -                         pass direct"
+  "symA-symB-fwd-turn        symmetric symmetric yes turn  -                         pass relay"
+  "symA-coneB-fwd-turn       symmetric cone      yes turn  -                         pass relay"
 )
 
 cmd_matrix() {
@@ -214,7 +216,7 @@ cmd_matrix() {
   for row in "${CASES[@]}"; do
     # shellcheck disable=SC2086
     set -- $row
-    cmd_case "$1" "$2" "$3" "$4" "$5" "${6//_/ }" "$7" || failures=$((failures + 1))
+    cmd_case "$1" "$2" "$3" "$4" "$5" "${6//_/ }" "$7" "$8" || failures=$((failures + 1))
   done
   write_summary
   log "$failures unexpected result(s)"
