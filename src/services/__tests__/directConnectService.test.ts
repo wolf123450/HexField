@@ -1,3 +1,9 @@
+// @vitest-environment node
+//
+// cryptoService (libsodium-wrappers-sumo, WASM) hits cross-realm TypedArray
+// mismatches under jsdom's global scope ("unsupported input type for
+// message") — see src/services/__tests__/cryptoService.test.ts for the same
+// convention.
 /**
  * Tests for directConnectService.ts (plan step 1b, manual code exchange):
  *  - encode → decode round-trip preserves the payload
