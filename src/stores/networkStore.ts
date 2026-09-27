@@ -53,6 +53,13 @@ export const useNetworkStore = defineStore('network', () => {
   let _rendezvousToken: string | null = null
   /** Set while we want a rendezvous connection; reconnects re-authenticate as this user. */
   let _rendezvousUserId: string | null = null
+  /**
+   * One-off rendezvous URL used when joining via an invite that carries its
+   * own `rendezvous` field and no local rendezvousServerUrl is configured
+   * (network-compatibility-plan step 1.1). Falls back to settingsStore's URL
+   * whenever that is set.
+   */
+  let _rendezvousUrlOverride: string | null = null
   /** TURN credentials obtained from rendezvous server. */
   let _turnCredentials: { urls: string[]; username: string; credential: string } | null = null
   /** Re-fetches TURN credentials before they expire. */
@@ -65,6 +72,14 @@ export const useNetworkStore = defineStore('network', () => {
   const RATE_LIMIT = 100          // max messages per window
   const RATE_WINDOW_MS = 1000     // 1-second sliding window
   const peerMessageCounts = new Map<string, { count: number; windowStart: number }>()
+
+  /**
+   * Timestamps of `peer_unavailable` replies from the rendezvous server, keyed
+   * by the target userId. Lets `waitForPeer` reject early with a clear message
+   * instead of waiting out the full timeout when the rendezvous server has
+   * already told us the peer isn't connected.
+   */
+  const _peerUnavailableAt = new Map<string, number>()
 
   function isRateLimited(userId: string): boolean {
     const now = Date.now()
@@ -391,7 +406,7 @@ export const useNetworkStore = defineStore('network', () => {
   async function connectToRendezvous(localUserId: string) {
     const { useSettingsStore } = await import('./settingsStore')
     const settingsStore = useSettingsStore()
-    const rendezvousUrl = settingsStore.settings.rendezvousServerUrl
+    const rendezvousUrl = settingsStore.settings.rendezvousServerUrl || _rendezvousUrlOverride
     if (!rendezvousUrl) return
     _rendezvousUserId = localUserId
 
@@ -491,6 +506,35 @@ export const useNetworkStore = defineStore('network', () => {
   }
 
   /**
+   * Join-time signaling fallback (network-compatibility-plan step 1.1): used
+   * by JoinView/JoinModal when none of an invite's LAN/direct endpoints could
+   * be reached. Ensures a rendezvous WebSocket is connected so `signal_send`
+   * on the Rust side can route the offer/answer/ICE exchange through it
+   * instead of a direct LAN connection.
+   *
+   * A no-op if signaling is already connected (e.g. this app already has its
+   * own rendezvous server configured and connected at startup). Otherwise
+   * connects using `url` — normally the invite's `rendezvous` field — falling
+   * back to the locally configured rendezvousServerUrl if `url` is empty.
+   * Throws if neither is available, or if the connection can't be confirmed
+   * within `timeoutMs`.
+   */
+  async function connectRendezvousForJoin(localUserId: string, url: string | undefined, timeoutMs = 8000): Promise<void> {
+    if (signalingState.value === 'connected') return
+
+    let target = url
+    if (!target) {
+      const { useSettingsStore } = await import('./settingsStore')
+      target = useSettingsStore().settings.rendezvousServerUrl
+    }
+    if (!target) throw new Error('No rendezvous server is available for this invite.')
+
+    _rendezvousUrlOverride = target
+    await connectToRendezvous(localUserId)
+    await waitForConnected(timeoutMs)
+  }
+
+  /**
    * ICE servers for every new peer connection, pushed to the Rust WebRTCManager.
    * Order: public STUN → custom TURN → rendezvous TURN.
    *
@@ -542,6 +586,7 @@ export const useNetworkStore = defineStore('network', () => {
     // Clear reconnect targets first: the WS task reports "disconnected".
     _rendezvousUserId = null
     _rendezvousToken = null
+    _rendezvousUrlOverride = null
     serverUrl.value = ''
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
@@ -641,9 +686,12 @@ export const useNetworkStore = defineStore('network', () => {
 
   function handleSignalMessage(payload: SignalPayload) {
     // The rendezvous server's reply when the addressee of our signal isn't
-    // connected. It has no `from`. Callers may fall back later (step 1.1).
+    // connected. It has no `from`. Recorded so waitForPeer can fail fast with
+    // a clear "offline" message instead of waiting out the full timeout.
     if (payload.type === 'peer_unavailable') {
       logger.info('network', 'rendezvous: peer unavailable:', payload.to)
+      const to = payload.to as string | undefined
+      if (to) _peerUnavailableAt.set(to, Date.now())
       return
     }
 
@@ -1477,13 +1525,25 @@ export const useNetworkStore = defineStore('network', () => {
 
   /**
    * Resolves when a specific peer appears in `connectedPeers` (WebRTC connected).
+   * Rejects early — instead of waiting out the full timeout — if the
+   * rendezvous server reports `peer_unavailable` for this userId while we
+   * wait (join fallback, network-compatibility-plan step 1.1). That rejection
+   * carries the message `peer_unavailable:<userId>` so callers can show a
+   * distinct "they're offline" message.
    */
   function waitForPeer(userId: string, timeoutMs = 15000): Promise<void> {
     if (connectedPeers.value.includes(userId)) return Promise.resolve()
+    const start = Date.now()
+    // Ignore any stale peer_unavailable report from before this wait started.
+    const staleAt = _peerUnavailableAt.get(userId)
+    if (staleAt !== undefined && staleAt < start) _peerUnavailableAt.delete(userId)
     return new Promise((resolve, reject) => {
-      const start = Date.now()
       const check = () => {
         if (connectedPeers.value.includes(userId)) return resolve()
+        const unavailableAt = _peerUnavailableAt.get(userId)
+        if (unavailableAt !== undefined && unavailableAt >= start) {
+          return reject(new Error(`peer_unavailable:${userId}`))
+        }
         if (Date.now() - start >= timeoutMs) return reject(new Error('Peer connection timed out'))
         setTimeout(check, 200)
       }
@@ -1736,6 +1796,7 @@ export const useNetworkStore = defineStore('network', () => {
     disconnect,
     waitForConnected,
     waitForPeer,
+    connectRendezvousForJoin,
     connectViaDirect,
     requestServerManifest,
     sendSignal,
