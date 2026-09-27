@@ -91,6 +91,16 @@ Recommended execution order: **2 → 3a → 3c → 1b → 1 → 6a → 4 → 5 �
 rendezvous server.
 
 **1.0 Server cleanup and auth fix (blocker for any public deployment):**
+
+> **Done.** `/auth/verify` issues HMAC-SHA256 session tokens (`server/src/session.rs`,
+> secret `HEXFIELD_SESSION_SECRET`, TTL `HEXFIELD_SESSION_TTL`) and binds each user
+> ID to its first sign key. `/ws` rejects invalid tokens with 401 and takes the user
+> ID from the token. Authenticated REST routes, including `/turn/credentials`, need
+> `Authorization: Bearer <token>`. The server forwards only `signal_*` messages and
+> answers `ping`, with `peer_unavailable` to the sender when `to` is offline. The
+> client pings every 45 s, drops the socket after 90 s of silence, and reconnects
+> through the existing backoff with a fresh token.
+
 - **Auth hole:** `/auth/verify` checks the Ed25519 challenge but returns the
   user ID itself as the "token" (`server/src/auth.rs:100`), and `/ws` accepts
   any `token` as the user ID without verifying it (`server/src/ws.rs:26`).

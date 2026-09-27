@@ -1,10 +1,12 @@
 # hexfield-server
 
-HexField rendezvous, signal relay, and discovery server. Enables HexField clients to connect across the internet, discover servers/users, resolve invite links, relay WebRTC signaling, provide TURN credentials, and broadcast presence.
+HexField rendezvous, signal relay, and discovery server. Enables HexField clients to connect across the internet, discover servers/users, resolve invite links, relay WebRTC signaling and provide TURN credentials.
+
+The server is a **signaling mailbox**, not a chat relay. It forwards only `signal_offer`/`signal_answer`/`signal_ice` messages to the addressed user. Messages, sync, presence and typing go peer-to-peer and never pass through it.
 
 ## Features
 
-- **Ed25519 challenge-response authentication** — no passwords, no accounts
+- **Ed25519 challenge-response authentication** — no passwords, no accounts; issues signed, expiring session tokens
 - **User directory** — discoverable profiles with privacy controls
 - **Server registry** — public/unlisted/secret visibility
 - **Invite code resolution** — register and resolve invite links
@@ -59,6 +61,8 @@ All options available as CLI flags or environment variables:
 | `--rate-limit-rps` | `HEXFIELD_RATE_LIMIT_RPS` | `30` | REST API per-IP requests per second |
 | `--rate-limit-burst` | `HEXFIELD_RATE_LIMIT_BURST` | `60` | REST API per-IP burst size |
 | `--ws-msg-rps` | `HEXFIELD_WS_MSG_RPS` | `50` | WebSocket per-client messages per second |
+| `--session-secret` | `HEXFIELD_SESSION_SECRET` | *(empty)* | HMAC-SHA256 key for session tokens (keep secret; use 32+ random bytes, e.g. `openssl rand -base64 48`). If empty, a random key is generated at startup with a warning, and all tokens become invalid when the server restarts |
+| `--session-ttl` | `HEXFIELD_SESSION_TTL` | `86400` | Session token lifetime in seconds |
 
 ## Docker
 
@@ -69,6 +73,7 @@ docker build -t hexfield-server .
 # Run
 docker run -p 7700:7700 -v hexfield-data:/data \
   -e HEXFIELD_DB_PATH=/data/server.db \
+  -e HEXFIELD_SESSION_SECRET="$(openssl rand -base64 48)" \
   hexfield-server
 
 # With TURN
@@ -82,6 +87,12 @@ docker run -p 7700:7700 -v hexfield-data:/data \
 ## API Reference
 
 ### Authentication
+
+Flow: `POST /auth/challenge` → sign the nonce with the Ed25519 identity key → `POST /auth/verify` → session token. Use the token as `Authorization: Bearer <token>` on authenticated routes and as the `token` query value on `/ws`.
+
+- The token is `base64url(claims).base64url(mac)`: claims `{"sub": user_id, "exp": unix_seconds}`, MAC = HMAC-SHA256 with `HEXFIELD_SESSION_SECRET`. The server checks it in constant time and rejects expired tokens.
+- A user ID is bound to the first sign key that authenticates for it. A later `/auth/verify` for the same user ID with a different key returns `401`.
+- Authenticated routes return `401` for a missing, forged or expired token. Clients re-authenticate and retry.
 
 #### `POST /auth/challenge`
 Request a challenge nonce for Ed25519 authentication.
@@ -98,7 +109,7 @@ Request a challenge nonce for Ed25519 authentication.
 **Response:** `{ "challenge": "uuid-nonce" }`
 
 #### `POST /auth/verify`
-Verify the signed challenge and receive a bearer token.
+Verify the signed challenge and receive a session token.
 
 ```json
 {
@@ -110,11 +121,11 @@ Verify the signed challenge and receive a bearer token.
 }
 ```
 
-**Response:** `{ "token": "user_id" }`
+**Response:** `{ "token": "<session token>" }`. `401` if the challenge is missing or expired, the signature is wrong, or the user ID is already bound to another key.
 
 ### Users
 
-All user endpoints require `Authorization: Bearer <token>` header.
+`/users/me` requires `Authorization: Bearer <token>`. On `/users/:user_id` the token is optional; with a valid one, private profiles of users who share a server with the caller are visible.
 
 #### `GET /users/me` — Get own profile
 #### `PUT /users/me` — Update own profile
@@ -145,10 +156,10 @@ All user endpoints require `Authorization: Bearer <token>` header.
 }
 ```
 
-#### `GET /servers/:server_id` — Get server info (respects visibility)
-#### `PUT /servers/:server_id` — Update server (owner/admin only)
+#### `GET /servers/:server_id` — Get server info (respects visibility; optional token to see `secret` servers you are a member of)
+#### `PUT /servers/:server_id` — Update server (auth required, owner/admin only)
 #### `GET /servers?q=name&limit=20&offset=0` — Discover public servers
-#### `GET /servers/:server_id/members` — List members (members only)
+#### `GET /servers/:server_id/members` — List members (auth required, members only)
 
 ### Invites
 
@@ -169,31 +180,30 @@ All user endpoints require `Authorization: Bearer <token>` header.
 
 ### TURN
 
-#### `POST /turn/credentials` — Get temporary TURN credentials
+#### `POST /turn/credentials` — Get temporary TURN credentials (auth required)
 
-```json
-{ "user_id": "uuid" }
-```
+Requires `Authorization: Bearer <token>`, so only authenticated users can mint (possibly billed) credentials. Any request body is ignored; older clients send `{ "user_id": "uuid" }`, which is accepted but not trusted. The user comes from the token.
 
 **Response:** `{ "urls": ["turn:..."], "username": "...", "credential": "...", "ttl": 86400 }`
 
 - Cloudflare backend: the credentialed entry from Cloudflare's `generate-ice-servers` response (port-53 URLs removed).
-- coturn backend: `username` is `expiry:userId` and `credential` is the HMAC-SHA1 of it with the shared secret.
-- `503` when neither backend is configured; `502` when Cloudflare's API fails.
+- coturn backend: `username` is `expiry:userId` (the token's user) and `credential` is the HMAC-SHA1 of it with the shared secret.
+- `401` without a valid session token; `503` when neither backend is configured; `502` when Cloudflare's API fails.
 
 Clients refresh credentials at 80% of `ttl`. The HexField client (webrtc-rs 0.17) only uses UDP `turn:` URLs; `turns:`/TCP entries are ignored.
 
 ### WebSocket
 
-#### `GET /ws?token=<userId>&public_sign_key=<base64url>`
+#### `GET /ws?token=<session token>`
 
-Connect for real-time signal relay and presence.
+Connect for signal relay. The upgrade is rejected with `401` unless `token` is a valid session token. The connection's user ID comes from the token; query values such as `public_sign_key` are ignored. A new connection for the same user replaces the old one.
 
 **Inbound message types:**
-- `signal_offer`, `signal_answer`, `signal_ice` — forwarded to `to` peer
-- `presence_update`, `typing_start`, `typing_stop` — broadcast to all
-- `ping` — responds with `pong`
+- `signal_offer`, `signal_answer`, `signal_ice` — forwarded to the connected user named in `to`. The server sets `from` to the authenticated sender.
+- `ping` — answered with `{"type":"pong"}`. Clients send one about every 45 s as a keepalive and reconnect if nothing arrives for two intervals.
+- Anything else (including `presence_update`, `typing_start`, `typing_stop`) is dropped.
 
-**Outbound events:**
-- `presence_update` — peer online/offline notifications
-- Signal messages with `from` field injected by server
+**Outbound messages:**
+- Forwarded `signal_*` messages, with `from` injected by the server.
+- `{"type":"peer_unavailable","to":"<userId>"}` — sent only to the sender when the `to` user of a `signal_*` message is not connected. The server never broadcasts: there are no presence or typing events, so no one learns who is online without addressing them directly.
+- `pong`.
