@@ -71,11 +71,15 @@ export async function prepareAttachment(file: File, previewTargetBytes?: number)
 /** Longest side of the preview, tried in order until the size target is met. */
 const PREVIEW_MAX_SIDES = [640, 480, 320]
 const PREVIEW_QUALITIES = [0.72, 0.55, 0.4]
-/** Encoded preview size target (bytes); ~32 K chars once base64-encoded. */
-export const PREVIEW_TARGET_BYTES = 24_000
-/** Total preview characters allowed in one message (all attachments). */
-export const MESSAGE_PREVIEW_BUDGET_CHARS = 36_000
-/** Upper bound accepted from peers. */
+/** Encoded preview size target (bytes); ~24 K chars once base64-encoded. */
+export const PREVIEW_TARGET_BYTES = 18_000
+/**
+ * Total preview characters allowed in one message (all attachments).
+ * Attachment metadata is encrypted (spec 08 §4.1), and base64 of the ciphertext
+ * adds a third, so 27 K chars of previews become ~36 K on the wire.
+ */
+export const MESSAGE_PREVIEW_BUDGET_CHARS = 27_000
+/** Upper bound accepted from peers (pre-0.2.14 senders used a 36 K budget). */
 export const PREVIEW_MAX_CHARS = 40_000
 /** Never shrink a per-image target below this, however many images are attached. */
 const PREVIEW_MIN_TARGET_BYTES = 4_000

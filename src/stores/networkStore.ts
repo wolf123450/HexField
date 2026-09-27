@@ -573,6 +573,19 @@ export const useNetworkStore = defineStore('network', () => {
   }
 
   /**
+   * Send data only to connected peers that are members of `serverId`.
+   * Chat messages, chat mutations and attachment requests go through this,
+   * so peers outside the server never see them.
+   */
+  async function broadcastToServer(serverId: string, data: unknown) {
+    const { useServersStore } = await import('./serversStore')
+    const serversStore = useServersStore()
+    if (!serversStore.members[serverId]) await serversStore.fetchMembers(serverId)
+    const members = serversStore.members[serverId] ?? {}
+    webrtcService.broadcastWhere(userId => userId in members, data)
+  }
+
+  /**
    * Initiate a WebRTC connection to a specific peer.
    */
   async function connectToPeer(userId: string) {
@@ -1218,11 +1231,32 @@ export const useNetworkStore = defineStore('network', () => {
   // ── Attachment gossip (Phase 5b) ───────────────────────────────────────────
 
   /**
-   * Broadcast to all connected peers that we want to download `contentHash`.
+   * Tell peers that we want to download `contentHash`.
    * Any peer who has the file will reply with `attachment_have`.
+   * A chat attachment's hash goes only to members of the message's server;
+   * avatars and emoji (no `messageId`) still go to every connected peer.
    */
   function broadcastAttachmentWant(contentHash: string, messageId: string) {
-    broadcast({ type: 'attachment_want', contentHash, messageId })
+    const payload = { type: 'attachment_want', contentHash, messageId }
+    if (!messageId) {
+      broadcast(payload)
+      return
+    }
+    findMessageServerId(messageId)
+      .then(serverId => {
+        if (serverId) return broadcastToServer(serverId, payload)
+        logger.warn('network', 'attachment_want: message', messageId, 'is not loaded, request not sent')
+      })
+      .catch(e => logger.warn('network', 'attachment_want error:', e))
+  }
+
+  async function findMessageServerId(messageId: string): Promise<string | null> {
+    const { useMessagesStore } = await import('./messagesStore')
+    for (const msgs of Object.values(useMessagesStore().messages)) {
+      const found = msgs.find(m => m.id === messageId)
+      if (found) return found.serverId
+    }
+    return null
   }
 
   /**
@@ -1730,6 +1764,7 @@ export const useNetworkStore = defineStore('network', () => {
     sendSignal,
     sendToPeer,
     broadcast,
+    broadcastToServer,
     connectToPeer,
     sendTypingStart,
     sendTypingStop,

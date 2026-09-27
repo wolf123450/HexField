@@ -232,8 +232,11 @@ connection uses one hardcoded STUN server.
     is refused. The probe gains a `--media` attempt flag for this.
 
 - **3d: image previews for relayed peers.** ✅ Done with option (a), the inline preview.
-  Details: ≤24 KB WebP (JPEG fallback), 640→480→320 px, ≤36 K chars per message,
+  Details: ≤18 KB WebP (JPEG fallback), 640→480→320 px, ≤27 K chars per message,
   and an allowlist check (`isValidPreviewDataUrl`) before anything is rendered.
+  (0.2.12 used 24 KB / 36 K. 0.2.14 encrypts attachment metadata, and base64 of
+  the ciphertext adds a third, so the budget went down to keep one frame < 60 KB.
+  See spec 08 §4.1.)
   Measured in Chromium: a 3000×2000, 3.2 MB photo becomes a 640×427 21 KB preview
   in ~130 ms. Background on the choice: Images above the inline cap already
   travel as BLAKE3-addressed attachments (`attachment_want/have/chunk_request/chunk`,

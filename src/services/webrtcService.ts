@@ -131,6 +131,18 @@ export class WebRTCService {
     }
   }
 
+  /** Like broadcast(), but only to the connected peers for which `include` is true. */
+  broadcastWhere(include: (userId: string) => boolean, data: unknown): void {
+    const targets = [...this._connected].filter(include)
+    if (targets.length === 0) return
+    const payload = JSON.stringify(data)
+    for (const id of targets) {
+      invoke('webrtc_send', { peerId: id, data: payload }).catch(e =>
+        logger.warn('webrtc', 'send to', id, 'failed:', e),
+      )
+    }
+  }
+
   destroyPeer(userId: string): void {
     this._connected.delete(userId)
     invoke('webrtc_close_peer', { peerId: userId }).catch(e =>
