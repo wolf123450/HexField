@@ -33,7 +33,12 @@ Small inline content only:
 
 ### Content Addressing
 
-Every attachment identified by BLAKE3 hash. Message carries only metadata:
+Every attachment identified by BLAKE3 hash. Message carries only metadata. On the
+wire this metadata is encrypted (`chat_message.attachmentsCipher`, one key boxed per
+envelope). Clients before 0.2.14 sent it as plaintext `attachments`; receivers still
+accept that. See [spec 08 §4.1](08-encryption.md#41-encrypted-attachment-metadata-0214).
+`attachment_want` for a chat attachment goes only to members of the message's server.
+Metadata shape:
 
 ```json
 {

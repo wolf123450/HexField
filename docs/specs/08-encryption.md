@@ -75,24 +75,39 @@ export const cryptoService = new CryptoService()
 
 For a channel with N members — produce N encrypted envelopes (one per recipient, including self for own history):
 
+The real code is `messagesStore.sendMessage` + `services/chatWire.ts`:
+
 ```typescript
-async function sendToChannel(channelId: string, plaintext: string): Promise<void> {
-  const members = serversStore.getMembersForChannel(channelId)
-  const envelopes: EncryptedEnvelope[] = []
-
-  for (const member of members) {
-    // Also encrypt to each of this member's attested devices
-    const devices = devicesStore.getActiveDevices(member.userId)
-    for (const device of devices) {
-      envelopes.push(
-        cryptoService.encryptMessage(plaintext, device.publicDHKey, myUserId, device.deviceId)
-      )
-    }
+const targets: EnvelopeTarget[] = []
+for (const member of Object.values(serversStore.members[serverId])) {
+  if (member.publicDHKey) targets.push({ recipientId: member.userId, dhKey: member.publicDHKey })
+  // Also encrypt to each of this member's attested devices
+  for (const device of devicesStore.getActiveDevices(member.userId)) {
+    if (device.publicDHKey !== member.publicDHKey)
+      targets.push({ recipientId: member.userId, dhKey: device.publicDHKey })
   }
-
-  signalingService.send({ type: 'chat_message', channelId, envelopes })
 }
+// encryptMessage(plaintext, senderId, recipientId, recipientDHKey) per target,
+// plus the encrypted attachment blob (§4.1) when there are attachments
+const { envelopes, attachmentsCipher } =
+  buildChatEnvelopes(cryptoService, content, myUserId, targets, attachments)
+
+networkStore.broadcastToServer(serverId, { type: 'chat_message', ..., envelopes, attachmentsCipher })
 ```
+
+**Delivery scope.** Chat messages, chat mutations (`reaction_add`, `reaction_remove`,
+`edit`, `delete`) and `attachment_want` for a chat attachment go through
+`networkStore.broadcastToServer(serverId, ...)`: only connected peers that are members
+of that server receive them. This is the same set that receives an envelope, so
+non-members lose nothing they could read. Avatar/emoji `attachment_want` (no
+`messageId`) and server-level mutations still go to every connected peer.
+
+**Receive check.** `receiveEncryptedMessage` accepts a message only if its `authorId`
+is a member of its `serverId`. If the member record is missing, it retries with the
+same backoff as for missing keys (5 × 2 s), because `member_join` can still be in
+flight through sync, and then drops the message. Members of a server that has not been
+opened yet are loaded from the DB on demand. Note: history sync (`sync_push`) writes
+rows without this check.
 
 > **Scalability note**: N-envelope overhead is significant for large channels (>50 members). Phase 3+ enhancement: symmetric group key distributed via per-member asymmetric envelopes (similar to Signal's Sealed Sender or RFC 9420 MLS).
 
@@ -108,10 +123,59 @@ interface EncryptedEnvelope {
   ciphertext:      string   // base64 XSalsa20-Poly1305 output
   nonce:           string   // base64 24-byte random nonce
   senderSignature: string   // base64 Ed25519 sig over concat(ciphertext, nonce)
+  attachmentKey?:  SealedBox // 0.2.14+: see §4.1
 }
 ```
 
 Recipients filter incoming envelope arrays by `recipientId === myUserId || myDeviceIds.includes(recipientId)`.
+
+### 4.1 Encrypted attachment metadata (0.2.14+)
+
+Attachment metadata (file name, size, MIME type, BLAKE3 hash, inline preview) is
+private. Before 0.2.14 it travelled in plaintext as `chat_message.attachments`, next
+to the envelopes. Now it is encrypted:
+
+1. The sender encrypts `JSON.stringify(attachments)` **once** with
+   `crypto_secretbox_easy` under a fresh random key → `chat_message.attachmentsCipher:
+   { ciphertext, nonce }`. One blob, not one per recipient, because the previews are
+   large (per-recipient copies would not fit a data-channel frame).
+2. For each envelope, the sender boxes `JSON.stringify({ k: key, h: blobHash })` with
+   `crypto_box_easy` (sender DH secret → the envelope's recipient DH key) →
+   `envelope.attachmentKey: { ciphertext, nonce }`.
+   `blobHash = crypto_generichash(32, ciphertext ‖ nonce)` of the blob. The hash stops
+   a recipient, who knows the key, from giving another recipient a different blob in
+   the sender's name: they cannot make a sender→third-party box.
+3. The receiver opens its `attachmentKey` with the sender's DH key, checks `h` against
+   the blob, opens the blob, then runs `sanitizeAttachments`. Any failure → the message
+   is kept with no attachments.
+
+Code: `cryptoService.sealForRecipients` / `openSealed`, and `services/chatWire.ts`
+(`buildChatEnvelopes`, `readChatAttachments`).
+
+**Compatibility.** There is no version bump: `EncryptedEnvelope.version` stays `1`,
+and the presence of the optional fields is the signal.
+
+| Sender → receiver | Result |
+|---|---|
+| new → new | `attachmentsCipher` + `attachmentKey` → attachments decrypted. |
+| old → new | No `attachmentsCipher` → the receiver reads the legacy plaintext `attachments`. |
+| new → old | The old client ignores the unknown fields. It shows the text but **no attachments** (an image-only message shows as an empty message). Accepted degradation; updating fixes it. |
+| new, both fields present | `attachmentsCipher` wins; plaintext `attachments` is ignored, never merged. |
+
+New senders never send plaintext `attachments`. The envelope's v1 fields and signature
+are unchanged, so old clients still decrypt the text. Tests:
+`src/services/__tests__/chatWire.test.ts`.
+
+**Frame budget.** Base64 of the ciphertext adds a third to the (already base64)
+previews, so the per-message preview budget went from 36 K to 27 K chars
+(`MESSAGE_PREVIEW_BUDGET_CHARS`) and the per-image target from 24 KB to 18 KB
+(`PREVIEW_TARGET_BYTES`). A test keeps a full-budget message with 20 envelopes under
+60 000 bytes.
+
+**Not covered yet.** History sync (`sync_push`) sends stored rows, including
+`raw_attachments` and `content`, as plaintext over the (DTLS-encrypted) data channel,
+and it does not check that the peer is a member of the channel's server. Edit
+`newContent` in mutations is also plaintext. Both are follow-up work.
 
 ---
 
