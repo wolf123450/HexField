@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
 import type { Message, Mutation, Attachment, ReactionSummary, EncryptedEnvelope } from '@/types/core'
 import { cryptoService } from '@/services/cryptoService'
+import { fitPreviewsToBudget, sanitizeAttachments } from '@/services/attachmentService'
 import { generateHLC, advanceHLC } from '@/utils/hlc'
 
 // Wire message shape for chat_message payloads sent over the network
@@ -156,6 +157,8 @@ export const useMessagesStore = defineStore('messages', () => {
     const now     = new Date().toISOString()
     const msgId   = uuidv7()
     const logical = generateHLC()
+    // Previews must fit one data-channel frame together with the message.
+    attachments = fitPreviewsToBudget(attachments)
 
     const msg: Message = {
       id:          msgId,
@@ -324,7 +327,7 @@ export const useMessagesStore = defineStore('messages', () => {
       authorId:    wire.authorId,
       content:     plaintext,
       contentType: wire.contentType,
-      attachments: wire.attachments ?? [],
+      attachments: sanitizeAttachments(wire.attachments ?? []),
       reactions:   [],
       isEdited:    false,
       logicalTs,
@@ -582,7 +585,7 @@ function rowToMessage(r: any): Message {
     authorId:    r.author_id,
     content:     r.content,
     contentType: r.content_type,
-    attachments: r.raw_attachments ? JSON.parse(r.raw_attachments) : [],
+    attachments: r.raw_attachments ? sanitizeAttachments(JSON.parse(r.raw_attachments)) : [],
     reactions:   [],
     isEdited:    false,
     replyToId:   r.reply_to_id ?? undefined,
