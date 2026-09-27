@@ -159,6 +159,20 @@ describe('networkStore rendezvous client', () => {
     await vi.waitFor(() => expect(signalingService.connect).toHaveBeenCalledTimes(1), { timeout: 3000 })
   })
 
+  it('retries through the backoff when the server is unreachable at launch', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    const { useSettingsStore } = await import('@/stores/settingsStore')
+    useSettingsStore().settings.rendezvousServerUrl = 'https://rdv.example'
+    const { useNetworkStore } = await import('@/stores/networkStore')
+    await useNetworkStore().init('user-alice')
+    const { signalingService } = await import('@/services/signalingService')
+
+    await vi.waitFor(
+      () => expect(signalingService.connect).toHaveBeenCalledWith('wss://rdv.example/ws?token=tok-1'),
+      { timeout: 3000 },
+    )
+  })
+
   it('does not reconnect after disconnect()', async () => {
     const { store, onState, signalingService } = await setupStore()
     vi.mocked(signalingService.connect).mockClear()

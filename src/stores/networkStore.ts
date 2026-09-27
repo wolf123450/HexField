@@ -353,9 +353,11 @@ export const useNetworkStore = defineStore('network', () => {
     }).catch(() => { /* ignore in tests */ })
 
     // Auto-connect to rendezvous server if configured
-    connectToRendezvous(localUserId).catch(e =>
-      logger.warn('network', 'Rendezvous connection failed:', e),
-    )
+    connectToRendezvous(localUserId).catch(e => {
+      logger.warn('network', 'Rendezvous connection failed:', e)
+      // Server unreachable at launch: retry through the normal backoff.
+      if (_rendezvousUserId) scheduleReconnect()
+    })
   }
 
   /**

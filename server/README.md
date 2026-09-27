@@ -61,7 +61,7 @@ All options available as CLI flags or environment variables:
 | `--rate-limit-rps` | `HEXFIELD_RATE_LIMIT_RPS` | `30` | REST API per-IP requests per second |
 | `--rate-limit-burst` | `HEXFIELD_RATE_LIMIT_BURST` | `60` | REST API per-IP burst size |
 | `--ws-msg-rps` | `HEXFIELD_WS_MSG_RPS` | `50` | WebSocket per-client messages per second |
-| `--session-secret` | `HEXFIELD_SESSION_SECRET` | *(empty)* | HMAC-SHA256 key for session tokens (keep secret; use 32+ random bytes, e.g. `openssl rand -base64 48`). If empty, a random key is generated at startup with a warning, and all tokens become invalid when the server restarts |
+| `--session-secret` | `HEXFIELD_SESSION_SECRET` | *(empty)* | HMAC-SHA256 key for session tokens (keep secret; generate 32+ random bytes once, e.g. `openssl rand -base64 48`, and keep them). If empty, a random key is generated at startup with a warning, and all tokens become invalid when the server restarts |
 | `--session-ttl` | `HEXFIELD_SESSION_TTL` | `86400` | Session token lifetime in seconds |
 
 ## Docker
@@ -73,7 +73,7 @@ docker build -t hexfield-server .
 # Run
 docker run -p 7700:7700 -v hexfield-data:/data \
   -e HEXFIELD_DB_PATH=/data/server.db \
-  -e HEXFIELD_SESSION_SECRET="$(openssl rand -base64 48)" \
+  -e HEXFIELD_SESSION_SECRET=your-session-secret \
   hexfield-server
 
 # With TURN
