@@ -1,7 +1,7 @@
 /**
  * Tests for the NAT-relay-related behaviour of networkStore:
- *  - buildICEConfig includes relay TURN candidates when natType is symmetric
- *  - buildICEConfig omits relay TURN candidates when natType is open
+ *  - ICE servers (STUN + custom TURN) are pushed to Rust on init and on settings change
+ *  - relay-capable peers are not pushed as TURN servers (no peer TURN listener yet)
  *  - presence_update gossip includes relayCapable + relayAddr when relay-capable
  *  - relay peer advertisement is tracked in relayCapablePeers
  */
@@ -17,22 +17,18 @@ vi.mock('@/services/signalingService', () => ({
   signalingService: { init: vi.fn().mockResolvedValue(undefined), connect: vi.fn(), disconnect: vi.fn(), send: vi.fn() },
 }))
 
-vi.mock('@/services/webrtcService', () => {
-  let _builder: ((userId: string) => RTCIceServer[]) | null = null
-  return {
-    WebRTCService: {
-      isAvailable: vi.fn().mockReturnValue(true),
-    },
-    webrtcService: {
-      init:                vi.fn(),
-      destroyAll:          vi.fn(),
-      destroyPeer:         vi.fn(),
-      setICEConfigBuilder: vi.fn().mockImplementation((fn: (u: string) => RTCIceServer[]) => { _builder = fn }),
-      getICEConfigBuilder: () => _builder,  // test helper
-      sendToPeer:          vi.fn().mockReturnValue(true),
-    },
-  }
-})
+vi.mock('@/services/webrtcService', () => ({
+  WebRTCService: {
+    isAvailable: vi.fn().mockReturnValue(true),
+  },
+  webrtcService: {
+    init:          vi.fn(),
+    destroyAll:    vi.fn(),
+    destroyPeer:   vi.fn(),
+    setIceServers: vi.fn().mockResolvedValue(undefined),
+    sendToPeer:    vi.fn().mockReturnValue(true),
+  },
+}))
 
 vi.mock('@/services/syncService', () => ({
   startSync:          vi.fn().mockResolvedValue(undefined),
@@ -78,64 +74,50 @@ async function setupStore(natTypeOverride: 'open' | 'restricted' | 'symmetric' |
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
-describe('buildICEConfig', () => {
+/** URLs from the most recent ICE server list pushed to Rust. */
+async function lastPushedUrls(): Promise<string[]> {
+  const { webrtcService } = await import('@/services/webrtcService')
+  const calls = vi.mocked(webrtcService.setIceServers).mock.calls
+  // The first push waits on a dynamic import of settingsStore.
+  await vi.waitFor(() => expect(calls.length).toBeGreaterThan(0))
+  const servers = calls[calls.length - 1][0]
+  return servers.flatMap(s => (Array.isArray(s.urls) ? s.urls : [s.urls]))
+}
+
+describe('ICE servers pushed to Rust', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
   })
 
-  it('always includes public STUN servers', async () => {
-    const { webrtcService } = await import('@/services/webrtcService')
+  it('pushes public STUN servers on init', async () => {
     await setupStore('open')
-    const builder = (webrtcService as any).getICEConfigBuilder()
-    expect(builder).not.toBeNull()
-    const servers: RTCIceServer[] = builder('peer-bob')
-    const stunUrls = servers.flatMap(s => (Array.isArray(s.urls) ? s.urls : [s.urls]))
-    expect(stunUrls.some(u => u.startsWith('stun:'))).toBe(true)
+    const urls = await lastPushedUrls()
+    expect(urls.filter(u => u.startsWith('stun:'))).toHaveLength(2)
   })
 
-  it('does NOT add relay TURN entries when natType is open', async () => {
-    const { webrtcService } = await import('@/services/webrtcService')
-    const store = await setupStore('open')
-    // Inject a relay-capable peer
-    store.relayCapablePeers['peer-charlie'] = '203.0.113.1:3479'
-
-    const builder = (webrtcService as any).getICEConfigBuilder()
-    const servers: RTCIceServer[] = builder('peer-bob')
-    const turnUrls = servers
-      .flatMap(s => (Array.isArray(s.urls) ? s.urls : [s.urls]))
-      .filter(u => u.startsWith('turn:'))
-    // No relay TURN entries — open NAT doesn't need them
-    expect(turnUrls).toHaveLength(0)
-  })
-
-  it('includes relay TURN entries when natType is symmetric', async () => {
-    const { webrtcService } = await import('@/services/webrtcService')
+  it('never includes relay-capable peers (no peer TURN listener exists yet)', async () => {
     const store = await setupStore('symmetric')
     store.relayCapablePeers['peer-charlie'] = '203.0.113.1:3479'
+    const { useSettingsStore } = await import('@/stores/settingsStore')
+    // Trigger a re-push so relayCapablePeers is in state when the list is built.
+    useSettingsStore().settings.customTURNServers = []
+    await new Promise(r => setTimeout(r, 5))
 
-    const builder = (webrtcService as any).getICEConfigBuilder()
-    const servers: RTCIceServer[] = builder('peer-bob')
-    const turnEntries = servers.filter(s => {
-      const urls = Array.isArray(s.urls) ? s.urls : [s.urls]
-      return urls.some(u => u.startsWith('turn:'))
-    })
-    expect(turnEntries.length).toBeGreaterThan(0)
-    expect(turnEntries[0].urls).toContain('203.0.113.1:3479')
+    const urls = await lastPushedUrls()
+    expect(urls.some(u => u.includes('203.0.113.1:3479'))).toBe(false)
   })
 
-  it('includes relay TURN entries when natType is unknown', async () => {
-    const { webrtcService } = await import('@/services/webrtcService')
-    const store = await setupStore('unknown')
-    store.relayCapablePeers['peer-dave'] = '198.51.100.2:3479'
+  it('re-pushes when custom TURN servers change in settings', async () => {
+    await setupStore('open')
+    const { useSettingsStore } = await import('@/stores/settingsStore')
+    useSettingsStore().settings.customTURNServers = [
+      { urls: 'turn:turn.example.org:3478', username: 'u', credential: 'p' },
+    ]
+    await new Promise(r => setTimeout(r, 5))
 
-    const builder = (webrtcService as any).getICEConfigBuilder()
-    const servers: RTCIceServer[] = builder('peer-bob')
-    const hasTURN = servers.some(s => {
-      const urls = Array.isArray(s.urls) ? s.urls : [s.urls]
-      return urls.some(u => u.startsWith('turn:'))
-    })
-    expect(hasTURN).toBe(true)
+    const urls = await lastPushedUrls()
+    expect(urls).toContain('turn:turn.example.org:3478')
   })
 })
 

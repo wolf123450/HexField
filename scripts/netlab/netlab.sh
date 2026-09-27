@@ -167,7 +167,7 @@ cmd_case() { # see usage
   sleep 1
   local result code=0
   result=$(nsx hf-peerB "$PROBE" --id joiner --connect "$endpoint" --peer host \
-    --pings 20 --timeout-secs 25 "${ice_args[@]}" 2>"$OUT/$name.joiner.err") || code=$?
+    --pings 20 --timeout-secs 30 "${ice_args[@]}" 2>"$OUT/$name.joiner.err") || code=$?
   cmd_down
 
   local got=pass
@@ -188,9 +188,10 @@ cmd_case() { # see usage
 #   *-lossy / *-loss     → `any`: webrtc-rs SCTP data channels stall intermittently
 #                          at 2–3% loss (stage "sctp"/"echo"); make these `pass`
 #                          once data channels are reliable under loss
-#   symA-symB-fwd-turn   → webrtc-rs 0.17 fails ICE across two symmetric NATs when
-#                          host/srflx candidates are present, even though the
-#                          relay-only row proves a working TURN path exists
+#   *-turn (symmetric)   → pass via the relay-only retry (webrtc_manager.rs,
+#                          RELAY_RETRY_AFTER = 15 s): webrtc-rs 0.17 fails ICE across
+#                          symmetric NAT with host/srflx candidates present, so the
+#                          offerer re-offers relay-only; expect connect_ms ≈ 17 s
 CASES=(
   "cone-fwd-stun             cone      cone      yes stun  -                         pass"
   "cone-nofwd-stun           cone      cone      no  stun  -                         fail"
@@ -201,8 +202,9 @@ CASES=(
   "cone-fwd-relay            cone      cone      yes relay -                         pass"
   "symA-symB-fwd-relay       symmetric symmetric yes relay -                         pass"
   "symA-symB-fwd-relay-loss  symmetric symmetric yes relay delay_60ms_loss_2%        any"
-  "symA-symB-fwd-turn        symmetric symmetric yes turn  -                         fail"
-  "symA-coneB-fwd-turn       symmetric cone      yes turn  -                         fail"
+  "cone-fwd-turn             cone      cone      yes turn  -                         pass"
+  "symA-symB-fwd-turn        symmetric symmetric yes turn  -                         pass"
+  "symA-coneB-fwd-turn       symmetric cone      yes turn  -                         pass"
 )
 
 cmd_matrix() {

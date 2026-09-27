@@ -72,11 +72,11 @@ the host's LAN address, just like an invite created behind an unmapped NAT.
   and relay at 2% loss 14 of 20. These rows use `expect=any` until this is fixed.
 - Joins with no port forward fail at the signaling stage, before WebRTC starts.
 - Symmetric NAT on either side fails with STUN only, as expected.
-- TURN works (the `relay` rows), but webrtc-rs 0.17 still fails ICE across
-  symmetric NATs when host and srflx candidates are also present (the `turn`
-  rows). Wiring TURN into the app is therefore not enough on its own. Also
-  needed: a relay-only retry, or a fix in webrtc-rs's handling of mixed
-  candidate sets.
+- TURN works (the `relay` rows), but webrtc-rs 0.17 fails ICE across symmetric
+  NATs when host and srflx candidates are also present. The offerer therefore
+  retries with relay-only ICE after 15 s (`RELAY_RETRY_AFTER` in
+  `webrtc_manager.rs`), and the `turn` rows connect at about 17 s
+  (`relay_retry: true`). The root cause is tracked as plan step 3b.
 
 ## Scope
 

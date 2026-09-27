@@ -301,19 +301,23 @@
   - [x] Headless probe `hexfield-netprobe` (`--features netprobe`) driving the real `lan` + `webrtc_manager` code via `EventSink`
   - [x] `WebRTCManager::set_ice_servers()` — ICE servers configurable in Rust (app default unchanged: Google STUN)
   - [x] `WebRTCManager::set_relay_only()` + netprobe `--relay-only`
-- [ ] **Network compatibility** — see [`network-compatibility-plan.md`](network-compatibility-plan.md); order 2 → 3a → 1b → 1 → 6a → 4 → 5 → 6b → 7 → 8; each step flips lab rows
-  - [ ] Decisions: default rendezvous/TURN instance? TURN bandwidth policy? manual-exchange UX placement?
+- [ ] **Network compatibility** — see [`network-compatibility-plan.md`](network-compatibility-plan.md); order 2 → 3a → 3c → 1b → 1 → 6a → 4 → 5 → 6b → 7 → 8; each step flips lab rows
+  - [x] Decision: default infra = GCP e2-micro rendezvous + Cloudflare TURN (user-configurable)
+  - [x] Decision: relay policy — text/presence/sync/image previews only over our relays; no voice/video; full-res images over direct connections
+  - [ ] Decision: manual-exchange UX placement (first-class vs fallback)
+  - [ ] 1.0 — **Blocker for public deploy:** real session tokens verified by `/ws` (today `token` = userId, unverified) **and required by `/turn/credentials`** (unauthenticated today — with Cloudflare configured, anyone could mint credentials on our bill); remove server presence/typing broadcasts; WS keepalive ping; `peer_unavailable` reply to sender
   - [ ] 1 — Rendezvous signaling fallback for joins (invite `rendezvous` field, WS actor → `EventSink` module, probe `--rendezvous`, server in lab) — rows `cone-nofwd-rdv`
   - [ ] 1b — Manual offer/answer code exchange (non-trickle SDP, signed compact codes, Invite/Join modal UI, probe file exchange) — row `cone-nofwd-manual`
-  - [ ] 2 — `webrtc_set_ice_servers` command fed by `buildICEConfig()` (TURN creds refresh, custom TURN, 2nd STUN); remove `setICEConfigBuilder()` stub
-  - [ ] 3a — Per-peer relay-only retry on initial ICE failure (`relayOnly` flag in `signal_offer`) — flips `sym*-turn` rows
+  - [x] 2 — `webrtc_set_ice_servers` command fed by `buildICEServers()` (TURN creds refresh at 80% TTL, custom-TURN settings watch, 2nd STUN); `setICEConfigBuilder()` stub removed; Cloudflare TURN credential backend in `server/src/routes/turn.rs` (coturn kept); server now compiles again (hmac 0.13) and is built/tested in CI
+  - [x] 3a — Relay-only retry: offerer re-offers with relay-only ICE if the data channel isn't open after 15 s and TURN is configured (`relayOnly` in `signal_offer`, `webrtc_relay_retry` event) — `sym*-turn` rows pass at ~17 s; `cone-fwd-turn` guard stays direct
+  - [ ] 3c — Enforce relay policy: per-peer `connectionType`, gate media for relayed peers with UI reason, image preview (≤150 KB) + hash with full-res fetch over direct links, refuse chunk requests over relay, slower heartbeat/keepalive for relayed peers
   - [ ] 3b — Root-cause webrtc-rs mixed-candidate ICE failure across symmetric NAT (time-box ~1 day)
   - [ ] 4 — ICE restart + heartbeat-timeout reconnect with backoff; probe `--duration`; rows `flap`, `rebind`, `host-restart`
   - [ ] 5 — UDP-blocked fallback: WS relay over wss:443 via rendezvous (webrtc-rs 0.17 TURN is UDP-only) — row `udp-blocked`
   - [ ] 6a — Data channels stall at 2–3% loss (webrtc-sctp `inflight queue TSN` / `Invalid SystemTime`; lab rows `*-lossy`, `*-loss` are `any`) — upstream check, app-level retry/ack, flip rows to `pass` at 20/20
   - [ ] 6b — Media under impairment (synthetic Opus track, RTCP loss/jitter thresholds)
   - [ ] 7 — IPv6 endpoints in invites, double-NAT lab row, UPnP IPv6/PCP evaluation
-  - [ ] 8 — Real-world validation on GCP free tier (server + coturn) across home / hotspot / guest Wi-Fi
+  - [ ] 8 — Deploy default infra (GCP e2-micro + Caddy + Cloudflare TURN, needs 1.0) with usage alerts at 80% of free tiers; real-world validation across home / hotspot / guest Wi-Fi
 - [x] **Tests**
   - [x] `detectNATType()` returns expected type for full-cone, port-restricted, and symmetric setups (mock STUN)
   - [x] `buildICEConfig` includes relay candidates when NAT type is symmetric

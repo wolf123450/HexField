@@ -23,7 +23,7 @@ vi.mock('@/services/webrtcService', () => ({
     init:                vi.fn(),
     destroyAll:          vi.fn(),
     destroyPeer:         vi.fn(),
-    setICEConfigBuilder: vi.fn(),
+    setIceServers: vi.fn().mockResolvedValue(undefined),
     sendToPeer:          vi.fn().mockReturnValue(true),
   },
 }))

@@ -9,7 +9,7 @@ HexField rendezvous, signal relay, and discovery server. Enables HexField client
 - **Server registry** — public/unlisted/secret visibility
 - **Invite code resolution** — register and resolve invite links
 - **WebSocket signal relay** — WebRTC offer/answer/ICE forwarding
-- **TURN credential generation** — coturn HMAC-SHA1 shared-secret scheme
+- **TURN credential generation** — Cloudflare Realtime TURN (short-lived keys via its API), or coturn HMAC-SHA1 shared-secret scheme
 - **Per-IP rate limiting** — tower-governor for REST, per-client sliding window for WebSocket
 - **SQLite + Diesel ORM** — compile-time checked queries, embedded migrations
 
@@ -52,7 +52,9 @@ All options available as CLI flags or environment variables:
 | `--db-path` | `HEXFIELD_DB_PATH` | `hexfield-server.db` | SQLite database path |
 | `--turn-url` | `HEXFIELD_TURN_URL` | *(empty)* | TURN server URL (e.g. `turn:turn.example.com:3478`) |
 | `--turn-secret` | `HEXFIELD_TURN_SECRET` | *(empty)* | TURN shared secret for HMAC credential generation |
-| `--turn-ttl` | `HEXFIELD_TURN_TTL` | `86400` | TURN credential TTL in seconds |
+| `--cf-turn-key-id` | `HEXFIELD_CF_TURN_KEY_ID` | *(empty)* | Cloudflare Realtime TURN key ID. With the API token set, Cloudflare is used instead of coturn |
+| `--cf-turn-api-token` | `HEXFIELD_CF_TURN_API_TOKEN` | *(empty)* | Cloudflare Realtime TURN key API token (keep secret) |
+| `--turn-ttl` | `HEXFIELD_TURN_TTL` | `86400` | TURN credential TTL in seconds (both backends) |
 | `--max-connections` | `HEXFIELD_MAX_CONNECTIONS` | `5000` | Max concurrent WebSocket connections |
 | `--rate-limit-rps` | `HEXFIELD_RATE_LIMIT_RPS` | `30` | REST API per-IP requests per second |
 | `--rate-limit-burst` | `HEXFIELD_RATE_LIMIT_BURST` | `60` | REST API per-IP burst size |
@@ -173,7 +175,13 @@ All user endpoints require `Authorization: Bearer <token>` header.
 { "user_id": "uuid" }
 ```
 
-**Response:** `{ "urls": ["turn:..."], "username": "expiry:userId", "credential": "hmac", "ttl": 86400 }`
+**Response:** `{ "urls": ["turn:..."], "username": "...", "credential": "...", "ttl": 86400 }`
+
+- Cloudflare backend: the credentialed entry from Cloudflare's `generate-ice-servers` response (port-53 URLs removed).
+- coturn backend: `username` is `expiry:userId` and `credential` is the HMAC-SHA1 of it with the shared secret.
+- `503` when neither backend is configured; `502` when Cloudflare's API fails.
+
+Clients refresh credentials at 80% of `ttl`. The HexField client (webrtc-rs 0.17) only uses UDP `turn:` URLs; `turns:`/TCP entries are ignored.
 
 ### WebSocket
 

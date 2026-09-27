@@ -13,6 +13,11 @@ pub struct Config {
     pub turn_url: String,
     #[arg(long, env = "HEXFIELD_TURN_SECRET", default_value = "")]
     pub turn_secret: String,
+    /// Cloudflare Realtime TURN key ID; with the API token, preferred over coturn.
+    #[arg(long, env = "HEXFIELD_CF_TURN_KEY_ID", default_value = "")]
+    pub cf_turn_key_id: String,
+    #[arg(long, env = "HEXFIELD_CF_TURN_API_TOKEN", default_value = "", hide_env_values = true)]
+    pub cf_turn_api_token: String,
     #[arg(long, env = "HEXFIELD_TURN_TTL", default_value_t = 86400)]
     pub turn_ttl: u64,
     #[arg(long, env = "HEXFIELD_MAX_CONNECTIONS", default_value_t = 5000)]
@@ -28,4 +33,7 @@ pub struct Config {
 impl Config {
     pub fn parse_from_env() -> Self { Config::parse() }
     pub fn has_turn(&self) -> bool { !self.turn_url.is_empty() && !self.turn_secret.is_empty() }
+    pub fn has_cloudflare_turn(&self) -> bool {
+        !self.cf_turn_key_id.is_empty() && !self.cf_turn_api_token.is_empty()
+    }
 }

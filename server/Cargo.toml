@@ -23,6 +23,9 @@ diesel_migrations = "2"
 hmac = "0.13.0"
 sha1 = "0.11.0"
 tracing = "0.1"
+# Cloudflare TURN credential API. ring provider (no aws-lc/cmake in the slim image).
+reqwest = { version = "0.13", default-features = false, features = ["json", "http2", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 uuid = { version = "1", features = ["v4", "v7"] }
