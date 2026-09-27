@@ -44,6 +44,8 @@ Usage: hexfield-netprobe --id <userId> [options]
   --ping-timeout-secs <n> Joiner: wait up to n s for each echo (default 5). A long
                          value lets a stalled data channel recover (watchdog
                          reconnect) inside the echo stage
+  --ping-interval-ms <n> Joiner: pause n ms between echoes (default 0), to spread
+                         the echo stage over a longer time
   --timeout-secs <n>     Joiner: give up connecting after n s (default 30).
                          Host: exit after n s (default 0 = run until killed)
   --no-relay-retry       Do not re-offer relay-only when the first attempt stalls
@@ -62,6 +64,7 @@ struct Args {
     turn_pass: String,
     pings: u32,
     ping_timeout_secs: u64,
+    ping_interval_ms: u64,
     timeout_secs: Option<u64>,
     relay_only: bool,
     expect_type: Option<String>,
@@ -82,6 +85,7 @@ fn parse_args() -> Result<Args, String> {
         turn_pass: String::new(),
         pings: 10,
         ping_timeout_secs: 5,
+        ping_interval_ms: 0,
         timeout_secs: None,
         relay_only: false,
         expect_type: None,
@@ -112,6 +116,10 @@ fn parse_args() -> Result<Args, String> {
             "--ping-timeout-secs" => {
                 args.ping_timeout_secs =
                     value("--ping-timeout-secs")?.parse().map_err(|e| format!("--ping-timeout-secs: {e}"))?
+            }
+            "--ping-interval-ms" => {
+                args.ping_interval_ms =
+                    value("--ping-interval-ms")?.parse().map_err(|e| format!("--ping-interval-ms: {e}"))?
             }
             "--timeout-secs" => {
                 args.timeout_secs = Some(value("--timeout-secs")?.parse().map_err(|e| format!("--timeout-secs: {e}"))?)
@@ -342,6 +350,34 @@ async fn run_host(mut probe: Probe, timeout: Option<Duration>) -> i32 {
     0
 }
 
+/// Echo-stage bookkeeping for the joiner.
+#[derive(Default)]
+struct EchoStats {
+    rtts: Vec<f64>,
+    sent: HashMap<u64, Instant>,
+    /// Reconnects during the echo stage (the stall watchdog in webrtc_manager).
+    reconnects: u32,
+}
+
+impl EchoStats {
+    /// Record one event; returns the sequence number of a pong.
+    fn record(&mut self, ev: ProbeEvent, peer: &str) -> Option<u64> {
+        match ev {
+            ProbeEvent::Pong(n) => {
+                if let Some(t) = self.sent.remove(&n) {
+                    self.rtts.push(t.elapsed().as_secs_f64() * 1000.0);
+                }
+                Some(n)
+            }
+            ProbeEvent::Connected(p) if p == peer => {
+                self.reconnects += 1;
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
 async fn run_joiner(
     mut probe: Probe,
     addr: String,
@@ -349,6 +385,7 @@ async fn run_joiner(
     peer: String,
     pings: u32,
     ping_timeout: Duration,
+    ping_interval: Duration,
     timeout: Duration,
     expect_type: Option<String>,
 ) -> i32 {
@@ -423,33 +460,29 @@ async fn run_joiner(
     }
 
     // 3. Data-channel echo round trips.
-    let mut rtts: Vec<f64> = Vec::new();
-    let mut sent: HashMap<u64, Instant> = HashMap::new();
-    // Reconnects during the echo stage (the stall watchdog in webrtc_manager).
-    let mut reconnects = 0u32;
+    let mut echo = EchoStats::default();
     for seq in 0..pings as u64 {
+        if seq > 0 && !ping_interval.is_zero() {
+            // Keep routing events (late pongs, reconnects) while pausing.
+            let pause_end = Instant::now() + ping_interval;
+            while let Some(ev) = probe.next(pause_end).await {
+                echo.record(ev, &peer);
+            }
+        }
         let ping = json!({ "type": "probe_ping", "seq": seq });
-        sent.insert(seq, Instant::now());
+        echo.sent.insert(seq, Instant::now());
         if let Err(e) = probe.mgr.send(&peer, ping.to_string()).await {
             log::warn!("[netprobe] ping {seq} failed: {e}");
             continue;
         }
         let ping_deadline = Instant::now() + ping_timeout;
         while let Some(ev) = probe.next(ping_deadline).await {
-            match ev {
-                ProbeEvent::Pong(n) => {
-                    if let Some(t) = sent.remove(&n) {
-                        rtts.push(t.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    if n == seq {
-                        break;
-                    }
-                }
-                ProbeEvent::Connected(p) if p == peer => reconnects += 1,
-                _ => {}
+            if echo.record(ev, &peer) == Some(seq) {
+                break;
             }
         }
     }
+    let EchoStats { rtts, reconnects, .. } = echo;
     result["pings"] = json!(pings);
     result["pongs"] = json!(rtts.len());
     result["reconnects"] = json!(reconnects);
@@ -532,7 +565,8 @@ async fn main() {
         (Some((addr, port)), Some(peer)) => {
             let timeout = Duration::from_secs(args.timeout_secs.unwrap_or(30));
             let ping_timeout = Duration::from_secs(args.ping_timeout_secs);
-            run_joiner(probe, addr, port, peer, args.pings, ping_timeout, timeout, args.expect_type).await
+            let ping_interval = Duration::from_millis(args.ping_interval_ms);
+            run_joiner(probe, addr, port, peer, args.pings, ping_timeout, ping_interval, timeout, args.expect_type).await
         }
         _ => run_host(probe, args.timeout_secs.map(Duration::from_secs)).await,
     };
