@@ -35,6 +35,12 @@ pub async fn signal_connect(
         *tx_guard = Some(outgoing_tx);
     }
 
+    // The task holds only a weak handle to its own sender, so dropping the
+    // stored sender (disconnect or a newer connect) still closes `outgoing_rx`.
+    let own_tx = {
+        let tx_guard = state.signal_tx.lock().map_err(|e| e.to_string())?;
+        tx_guard.as_ref().map(|s| s.downgrade())
+    };
     // Clone the Arc so the spawned task can clear the sender on shutdown
     let signal_tx_ref = Arc::clone(&state.signal_tx);
     let app = app_handle.clone();
@@ -42,30 +48,54 @@ pub async fn signal_connect(
     tokio::spawn(async move {
         let _ = app.emit("signal_state", "connecting");
 
+        // Log only scheme/host/path: the query carries the session token.
+        let log_url = url.split('?').next().unwrap_or_default().to_string();
+
         let ws_stream = match tokio_tungstenite::connect_async(&url).await {
             Ok((stream, _)) => stream,
             Err(e) => {
-                log::error!("WS connect failed: {}", e);
-                let _ = app.emit("signal_state", "error");
-                if let Ok(mut tx) = signal_tx_ref.lock() {
-                    *tx = None;
+                log::error!("WS connect to {} failed: {}", log_url, e);
+                if release_if_current(&signal_tx_ref, own_tx.as_ref()) {
+                    let _ = app.emit("signal_state", "error");
                 }
                 return;
             }
         };
 
         let _ = app.emit("signal_state", "connected");
-        log::info!("WS signaling connected to {}", url);
+        log::info!("WS signaling connected to {}", log_url);
 
         let (mut ws_sink, mut ws_source) = ws_stream.split();
 
+        let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
+        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        keepalive.tick().await; // the first tick fires immediately
+        let mut last_rx = tokio::time::Instant::now();
+
         loop {
             tokio::select! {
+                // Keepalive: app-level ping (the server answers pong). A
+                // connection silent for two intervals is treated as dead.
+                _ = keepalive.tick() => {
+                    if last_rx.elapsed() >= KEEPALIVE_INTERVAL * 2 {
+                        log::warn!("WS signaling: no traffic for {:?}, reconnecting", last_rx.elapsed());
+                        break;
+                    }
+                    let ping = serde_json::json!({ "type": "ping" }).to_string();
+                    if let Err(e) = ws_sink.send(WsMessage::Text(ping.into())).await {
+                        log::error!("WS keepalive send error: {}", e);
+                        break;
+                    }
+                }
                 // Incoming WS message -> emit to frontend
                 msg = ws_source.next() => {
+                    if matches!(msg, Some(Ok(_))) {
+                        last_rx = tokio::time::Instant::now();
+                    }
                     match msg {
                         Some(Ok(WsMessage::Text(text))) => {
                             match serde_json::from_str::<serde_json::Value>(&text) {
+                                Ok(payload) if is_pong(&payload) => {}
                                 Ok(payload) => {
                                     if let Err(e) = app.emit("signal_message", payload) {
                                         log::error!("Failed to emit signal_message: {}", e);
@@ -107,15 +137,47 @@ pub async fn signal_connect(
             }
         }
 
-        // Clean up
+        // Clean up. A connection replaced by a newer `signal_connect` stays
+        // quiet: its "disconnected" would make the frontend reconnect again.
         let _ = ws_sink.close().await;
-        let _ = app.emit("signal_state", "disconnected");
-        if let Ok(mut tx) = signal_tx_ref.lock() {
-            *tx = None;
+        if release_if_current(&signal_tx_ref, own_tx.as_ref()) {
+            let _ = app.emit("signal_state", "disconnected");
         }
     });
 
     Ok(())
+}
+
+/// How often the rendezvous WebSocket sends a keepalive ping. Well under the
+/// idle timeouts of common NATs and proxies.
+const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
+
+fn is_pong(payload: &serde_json::Value) -> bool {
+    payload.get("type").and_then(|t| t.as_str()) == Some("pong")
+}
+
+type SignalTxSlot = std::sync::Mutex<Option<mpsc::Sender<serde_json::Value>>>;
+
+/// Called when a connection task ends. Returns false if a newer connection
+/// has replaced this one (leave it alone). Otherwise clears the stored sender
+/// if it is still ours and returns true, so the caller reports the state change.
+fn release_if_current(
+    slot: &SignalTxSlot,
+    own: Option<&mpsc::WeakSender<serde_json::Value>>,
+) -> bool {
+    let Ok(mut guard) = slot.lock() else { return true };
+    let ours = own.and_then(|w| w.upgrade());
+    match guard.as_ref() {
+        // Explicit disconnect already cleared the slot.
+        None => true,
+        Some(current) => match ours {
+            Some(me) if current.same_channel(&me) => {
+                *guard = None;
+                true
+            }
+            _ => false,
+        },
+    }
 }
 
 /// Disconnect from the signaling server.
@@ -388,6 +450,44 @@ mod tests {
         let swapped = port.swap(0, Ordering::Relaxed);
         assert_eq!(swapped, 9999);
         assert_eq!(port.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn pong_is_recognised() {
+        assert!(super::is_pong(&serde_json::json!({ "type": "pong" })));
+        assert!(!super::is_pong(&serde_json::json!({ "type": "signal_offer" })));
+        assert!(!super::is_pong(&serde_json::json!({})));
+    }
+
+    type Tx = tokio::sync::mpsc::Sender<serde_json::Value>;
+
+    #[test]
+    fn release_clears_own_sender_and_reports() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        let weak = tx.downgrade();
+        let slot: Mutex<Option<Tx>> = Mutex::new(Some(tx));
+        assert!(super::release_if_current(&slot, Some(&weak)));
+        assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn release_leaves_newer_connection_alone() {
+        let (old_tx, _old_rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        let old_weak = old_tx.downgrade();
+        drop(old_tx); // replaced by a newer signal_connect
+        let (new_tx, _new_rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        let slot: Mutex<Option<Tx>> = Mutex::new(Some(new_tx));
+        assert!(!super::release_if_current(&slot, Some(&old_weak)));
+        assert!(slot.lock().unwrap().is_some(), "newer sender must stay");
+    }
+
+    #[test]
+    fn release_after_explicit_disconnect_reports() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        let weak = tx.downgrade();
+        drop(tx);
+        let slot: Mutex<Option<Tx>> = Mutex::new(None);
+        assert!(super::release_if_current(&slot, Some(&weak)));
     }
 
     #[test]

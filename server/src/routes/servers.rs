@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::db;
 use crate::models::{Server, ServerMember, NewServer, NewServerMember, ServerUpdate, User};
 use crate::schema::{servers, server_members, users};
-use crate::middleware::extract_user_id;
+use crate::middleware::{optional_user, AuthUser};
 use crate::state::ServerState;
 
 #[derive(Serialize)]
@@ -70,10 +70,9 @@ pub struct MemberInfo {
 /// POST /servers
 pub async fn register_server(
     State(state): State<Arc<ServerState>>,
-    headers: HeaderMap,
+    AuthUser(owner_id): AuthUser,
     Json(req): Json<RegisterServerReq>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let owner_id = extract_user_id(&headers).ok_or((StatusCode::UNAUTHORIZED, String::new()))?;
     let vis = req.visibility.unwrap_or_else(|| "unlisted".into());
     if !["public", "unlisted", "secret"].contains(&vis.as_str()) {
         return Err((StatusCode::BAD_REQUEST, "visibility must be 'public', 'unlisted', or 'secret'".into()));
@@ -113,11 +112,10 @@ pub async fn register_server(
 /// PUT /servers/:server_id — owner/admin only
 pub async fn update_server(
     State(state): State<Arc<ServerState>>,
-    headers: HeaderMap,
+    AuthUser(uid): AuthUser,
     Path(server_id): Path<String>,
     Json(body): Json<UpdateServerReq>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let uid = extract_user_id(&headers).ok_or((StatusCode::UNAUTHORIZED, String::new()))?;
     let conn = &mut *state.db.lock().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Check role
@@ -159,7 +157,7 @@ pub async fn get_server(
     headers: HeaderMap,
     Path(server_id): Path<String>,
 ) -> Result<Json<ServerInfo>, StatusCode> {
-    let requester = extract_user_id(&headers);
+    let requester = optional_user(&state, &headers);
     let conn = &mut *state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let srv = servers::table
@@ -221,10 +219,9 @@ pub async fn discover_servers(
 /// GET /servers/:server_id/members (members only)
 pub async fn get_members(
     State(state): State<Arc<ServerState>>,
-    headers: HeaderMap,
+    AuthUser(uid): AuthUser,
     Path(server_id): Path<String>,
 ) -> Result<Json<Vec<MemberInfo>>, StatusCode> {
-    let uid = extract_user_id(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let conn = &mut *state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Verify requester is member

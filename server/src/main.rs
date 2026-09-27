@@ -5,6 +5,7 @@ mod middleware;
 mod models;
 mod routes;
 mod schema;
+mod session;
 mod state;
 mod ws;
 

@@ -48,8 +48,10 @@ export const useNetworkStore = defineStore('network', () => {
   /** Snapshot of custom TURN servers from settingsStore — refreshed on init. */
   let _cachedCustomTURN: RTCIceServer[] = []
 
-  /** Rendezvous server auth token (userId after verified challenge). */
+  /** Rendezvous session token from /auth/verify (signed, expires server-side). */
   let _rendezvousToken: string | null = null
+  /** Set while we want a rendezvous connection; reconnects re-authenticate as this user. */
+  let _rendezvousUserId: string | null = null
   /** TURN credentials obtained from rendezvous server. */
   let _turnCredentials: { urls: string[]; username: string; credential: string } | null = null
   /** Re-fetches TURN credentials before they expire. */
@@ -351,22 +353,45 @@ export const useNetworkStore = defineStore('network', () => {
     }).catch(() => { /* ignore in tests */ })
 
     // Auto-connect to rendezvous server if configured
-    connectToRendezvous(localUserId).catch(e =>
-      logger.warn('network', 'Rendezvous connection failed:', e),
-    )
+    connectToRendezvous(localUserId).catch(e => {
+      logger.warn('network', 'Rendezvous connection failed:', e)
+      // Server unreachable at launch: retry through the normal backoff.
+      if (_rendezvousUserId) scheduleReconnect()
+    })
   }
 
   /**
    * Challenge-response authenticate with the rendezvous server and open a
-   * WebSocket for signal relay + presence.  Non-fatal — failures are logged.
+   * WebSocket for signal relay. Also used by the reconnect path, so every
+   * reconnect gets a fresh session token.
    */
   async function connectToRendezvous(localUserId: string) {
     const { useSettingsStore } = await import('./settingsStore')
-    const { useIdentityStore } = await import('./identityStore')
     const settingsStore = useSettingsStore()
-    const identityStore = useIdentityStore()
     const rendezvousUrl = settingsStore.settings.rendezvousServerUrl
     if (!rendezvousUrl) return
+    _rendezvousUserId = localUserId
+
+    const token = await authenticateRendezvous(rendezvousUrl, localUserId)
+
+    // Connect WebSocket through the WS signaling relay. The server takes the
+    // user ID from the token.
+    const wsScheme = rendezvousUrl.startsWith('https') ? 'wss' : 'ws'
+    const wsBase = rendezvousUrl.replace(/^https?/, wsScheme)
+    await signalingService.connect(`${wsBase}/ws?token=${encodeURIComponent(token)}`)
+    logger.info('network', 'Connected to rendezvous WS')
+
+    // Fetch TURN credentials (non-fatal)
+    await fetchTurnCredentials(rendezvousUrl, localUserId)
+  }
+
+  /**
+   * Challenge/verify with the rendezvous server. Stores and returns the
+   * session token used for `/ws` and as `Authorization: Bearer` on REST calls.
+   */
+  async function authenticateRendezvous(rendezvousUrl: string, localUserId: string): Promise<string> {
+    const { useIdentityStore } = await import('./identityStore')
+    const identityStore = useIdentityStore()
 
     // 1. Request challenge nonce
     const challengeResp = await fetch(`${rendezvousUrl}/auth/challenge`, {
@@ -399,34 +424,34 @@ export const useNetworkStore = defineStore('network', () => {
     })
     if (!verifyResp.ok) throw new Error('Auth verify failed')
     const { token } = await verifyResp.json()
+    if (typeof token !== 'string' || !token) throw new Error('Auth verify returned no token')
     _rendezvousToken = token
     logger.info('network', 'Authenticated with rendezvous server')
-
-    // 4. Connect WebSocket through the WS signaling relay
-    const wsScheme = rendezvousUrl.startsWith('https') ? 'wss' : 'ws'
-    const wsBase = rendezvousUrl.replace(/^https?/, wsScheme)
-    const wsUrl = `${wsBase}/ws?token=${encodeURIComponent(token)}&public_sign_key=${encodeURIComponent(identityStore.publicSignKey ?? '')}`
-    await signalingService.connect(wsUrl)
-    logger.info('network', 'Connected to rendezvous WS')
-
-    // 5. Fetch TURN credentials (non-fatal)
-    await fetchTurnCredentials(rendezvousUrl, localUserId)
+    return token
   }
 
   /**
    * Fetch TURN credentials from the rendezvous server, push them to Rust, and
    * schedule a refresh at 80% of their TTL. Non-fatal: failures are logged and
-   * retried after a minute.
+   * retried after a minute. Authenticates with the current session token and
+   * re-authenticates once if the server says it has expired.
    */
   async function fetchTurnCredentials(rendezvousUrl: string, localUserId: string) {
     if (turnRefreshTimer) { clearTimeout(turnRefreshTimer); turnRefreshTimer = null }
     let retryInSecs = 60
     try {
-      const turnResp = await fetch(`${rendezvousUrl}/turn/credentials`, {
+      const request = (token: string | null) => fetch(`${rendezvousUrl}/turn/credentials`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ user_id: localUserId }),
       })
+      let turnResp = await request(_rendezvousToken)
+      if (turnResp.status === 401) {
+        turnResp = await request(await authenticateRendezvous(rendezvousUrl, localUserId))
+      }
       if (turnResp.ok) {
         const { urls, username, credential, ttl } = await turnResp.json()
         _turnCredentials = { urls, username, credential }
@@ -491,6 +516,10 @@ export const useNetworkStore = defineStore('network', () => {
    * Disconnect from the signaling server and tear down all peers.
    */
   async function disconnect() {
+    // Clear reconnect targets first: the WS task reports "disconnected".
+    _rendezvousUserId = null
+    _rendezvousToken = null
+    serverUrl.value = ''
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
@@ -559,19 +588,42 @@ export const useNetworkStore = defineStore('network', () => {
   function handleStateChange(state: string) {
     signalingState.value = state as SignalingState
 
-    if (state === 'disconnected' && serverUrl.value) {
-      // Auto-reconnect with exponential backoff
-      reconnectAttempt.value++
-      const delay = Math.min(1000 * Math.pow(2, reconnectAttempt.value - 1), 60000)
-      reconnectTimer = setTimeout(() => {
-        signalingService.connect(serverUrl.value)
-      }, delay)
+    if ((state === 'disconnected' || state === 'error') && (_rendezvousUserId || serverUrl.value)) {
+      scheduleReconnect()
     } else if (state === 'connected') {
       reconnectAttempt.value = 0
     }
   }
 
+  /**
+   * Auto-reconnect with exponential backoff. A rendezvous connection
+   * re-authenticates first, since its session token may have expired.
+   */
+  function scheduleReconnect() {
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectAttempt.value++
+    const delay = Math.min(1000 * Math.pow(2, reconnectAttempt.value - 1), 60000)
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      const attempt = _rendezvousUserId
+        ? connectToRendezvous(_rendezvousUserId)
+        : signalingService.connect(serverUrl.value)
+      // A failure before the WS task starts (e.g. auth request) emits no state event.
+      attempt.catch(e => {
+        logger.warn('network', 'Signaling reconnect failed:', e)
+        if (_rendezvousUserId || serverUrl.value) scheduleReconnect()
+      })
+    }, delay)
+  }
+
   function handleSignalMessage(payload: SignalPayload) {
+    // The rendezvous server's reply when the addressee of our signal isn't
+    // connected. It has no `from`. Callers may fall back later (step 1.1).
+    if (payload.type === 'peer_unavailable') {
+      logger.info('network', 'rendezvous: peer unavailable:', payload.to)
+      return
+    }
+
     const from = payload.from as string | undefined
     if (!from) return
 
