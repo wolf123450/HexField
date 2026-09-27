@@ -13,12 +13,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
+use crate::middleware::AuthUser;
 use crate::state::ServerState;
 
 const CF_TURN_API: &str = "https://rtc.live.cloudflare.com/v1/turn/keys";
-
-#[derive(Deserialize)]
-pub struct CredentialRequest { pub user_id: String }
 
 #[derive(Serialize, Debug, PartialEq)]
 pub struct TurnCredentials {
@@ -30,14 +28,16 @@ pub struct TurnCredentials {
 
 type ApiError = (StatusCode, String);
 
+/// POST /turn/credentials. Requires a session token. Any request body (older
+/// clients send `{ "user_id": ... }`) is ignored: the user comes from the token.
 pub async fn get_credentials(
     State(state): State<Arc<ServerState>>,
-    Json(req): Json<CredentialRequest>,
+    AuthUser(user_id): AuthUser,
 ) -> Result<Json<TurnCredentials>, ApiError> {
     if state.config.has_cloudflare_turn() {
         cloudflare_credentials(&state).await.map(Json)
     } else if state.config.has_turn() {
-        coturn_credentials(&state.config, &req.user_id).map(Json)
+        coturn_credentials(&state.config, &user_id).map(Json)
     } else {
         Err((StatusCode::SERVICE_UNAVAILABLE, "TURN not configured".into()))
     }

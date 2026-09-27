@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::db;
 use crate::models::{User, UserUpdate};
 use crate::schema::{users, server_members};
-use crate::middleware::extract_user_id;
+use crate::middleware::{optional_user, AuthUser};
 use crate::state::ServerState;
 
 /// Public-facing user profile (subset of User, excludes internal fields).
@@ -57,9 +57,8 @@ pub struct SearchQuery {
 /// GET /users/me
 pub async fn get_me(
     State(state): State<Arc<ServerState>>,
-    headers: HeaderMap,
+    AuthUser(uid): AuthUser,
 ) -> Result<Json<UserProfile>, StatusCode> {
-    let uid = extract_user_id(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let conn = &mut *state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let user = users::table
@@ -76,10 +75,9 @@ pub async fn get_me(
 /// PUT /users/me
 pub async fn update_me(
     State(state): State<Arc<ServerState>>,
-    headers: HeaderMap,
+    AuthUser(uid): AuthUser,
     Json(body): Json<UpdateProfileReq>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let uid = extract_user_id(&headers).ok_or((StatusCode::UNAUTHORIZED, String::new()))?;
 
     if let Some(ref d) = body.discoverability {
         if d != "public" && d != "private" {
@@ -111,7 +109,7 @@ pub async fn get_user(
     headers: HeaderMap,
     Path(target_id): Path<String>,
 ) -> Result<Json<UserProfile>, StatusCode> {
-    let requester = extract_user_id(&headers);
+    let requester = optional_user(&state, &headers);
     let conn = &mut *state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let user = users::table
