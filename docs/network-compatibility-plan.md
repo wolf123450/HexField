@@ -100,6 +100,24 @@ rendezvous server.
 > answers `ping`, with `peer_unavailable` to the sender when `to` is offline. The
 > client pings every 45 s, drops the socket after 90 s of silence, and reconnects
 > through the existing backoff with a fresh token.
+>
+> **Follow-ups (0.2.15):**
+> - Login challenges are stateless: HMAC-signed `{sub, nonce, exp}` under a
+>   separate MAC context (never valid as a session token). The client echoes the
+>   challenge back to `/auth/verify`. No per-user challenge map exists, so a third
+>   party can no longer replace someone's pending challenge. Each challenge is
+>   single-use (nonce recorded after the signature check).
+> - The token goes in the `Authorization: Bearer` header of the `/ws` upgrade
+>   (tokio-tungstenite sets custom headers), not in the query string, so proxies
+>   do not log it. `?token=` is no longer accepted.
+> - The server closes a socket when its token expires (`session_expired`, close
+>   code 4001). The client sends a fresh token in-band (`{"type":"auth","token"}`,
+>   answered `auth_ok`) at 80% of the lifetime; if that fails, the close triggers
+>   the normal reconnect with a new token.
+> - Compatibility: no released client (last release v0.2.6) uses the 1.0 protocol,
+>   so the old forms (`/ws?token=`, verify without `challenge`) were dropped instead
+>   of kept. Deploy the server before clients: a new client can log in to a
+>   1.0-only server but its `/ws` upgrade (no query token) gets 401.
 
 - **Auth hole:** `/auth/verify` checks the Ed25519 challenge but returns the
   user ID itself as the "token" (`server/src/auth.rs:100`), and `/ws` accepts

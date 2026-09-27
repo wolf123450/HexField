@@ -2,6 +2,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::{header::AUTHORIZATION, HeaderValue, Request};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::AppState;
@@ -10,15 +12,34 @@ use crate::lan;
 #[cfg(not(mobile))]
 use std::sync::atomic::Ordering;
 
+/// Build the WebSocket upgrade request. A session token goes in the
+/// `Authorization: Bearer` header, never in the URL, so it stays out of
+/// proxy access logs.
+fn ws_request(url: &str, token: Option<&str>) -> Result<Request<()>, String> {
+    let mut req = url.into_client_request().map_err(|e| e.to_string())?;
+    if let Some(t) = token.filter(|t| !t.is_empty()) {
+        let value = HeaderValue::from_str(&format!("Bearer {t}")).map_err(|e| e.to_string())?;
+        req.headers_mut().insert(AUTHORIZATION, value);
+    }
+    Ok(req)
+}
+
 /// Connect to a WebSocket signaling server.
 /// Spawns a tokio task that reads incoming messages and emits them as Tauri events.
 /// Outgoing messages are sent via the `signal_tx` channel stored in AppState.
+/// `token` (rendezvous session token) is sent as `Authorization: Bearer`.
 #[tauri::command]
 pub async fn signal_connect(
     app_handle: AppHandle,
     state: State<'_, AppState>,
     url: String,
+    token: Option<String>,
 ) -> Result<(), String> {
+    let request = ws_request(&url, token.as_deref()).map_err(|e| {
+        log::error!("WS signaling: bad URL or token: {}", e);
+        e
+    })?;
+
     // Disconnect any existing connection first
     {
         let mut tx_guard = state.signal_tx.lock().map_err(|e| e.to_string())?;
@@ -48,10 +69,10 @@ pub async fn signal_connect(
     tokio::spawn(async move {
         let _ = app.emit("signal_state", "connecting");
 
-        // Log only scheme/host/path: the query carries the session token.
+        // Log only scheme/host/path, never a query string.
         let log_url = url.split('?').next().unwrap_or_default().to_string();
 
-        let ws_stream = match tokio_tungstenite::connect_async(&url).await {
+        let ws_stream = match tokio_tungstenite::connect_async(request).await {
             Ok((stream, _)) => stream,
             Err(e) => {
                 log::error!("WS connect to {} failed: {}", log_url, e);
@@ -106,7 +127,13 @@ pub async fn signal_connect(
                                 }
                             }
                         }
-                        Some(Ok(WsMessage::Close(_))) | None => {
+                        Some(Ok(WsMessage::Close(frame))) => {
+                            // Code 4001: session token expired. The frontend
+                            // reconnects with a fresh token.
+                            log::info!("WS connection closed by server: {:?}", frame);
+                            break;
+                        }
+                        None => {
                             log::info!("WS connection closed");
                             break;
                         }
@@ -450,6 +477,28 @@ mod tests {
         let swapped = port.swap(0, Ordering::Relaxed);
         assert_eq!(swapped, 9999);
         assert_eq!(port.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn ws_request_puts_token_in_authorization_header_not_url() {
+        let req = super::ws_request("wss://rdv.example/ws", Some("tok.abc")).unwrap();
+        assert_eq!(req.headers().get("authorization").unwrap(), "Bearer tok.abc");
+        assert_eq!(req.uri().to_string(), "wss://rdv.example/ws");
+        assert!(req.headers().get("sec-websocket-key").is_some());
+    }
+
+    #[test]
+    fn ws_request_without_token_has_no_authorization_header() {
+        let req = super::ws_request("ws://10.0.0.1:7700/ws", None).unwrap();
+        assert!(req.headers().get("authorization").is_none());
+        let req = super::ws_request("ws://10.0.0.1:7700/ws", Some("")).unwrap();
+        assert!(req.headers().get("authorization").is_none());
+    }
+
+    #[test]
+    fn ws_request_rejects_bad_input() {
+        assert!(super::ws_request("not a url", None).is_err());
+        assert!(super::ws_request("ws://h/ws", Some("bad\ntoken")).is_err());
     }
 
     #[test]
