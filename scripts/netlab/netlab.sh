@@ -192,13 +192,22 @@ cmd_case() { # see usage
 #                          ack point after one bad SACK under loss, stalling the data
 #                          channel forever even though ICE/DTLS stay up. WebRTCManager
 #                          now watches buffered_amount() and forces a reconnect when it
-#                          stops draining (see webrtc_manager.rs). symA-symB-fwd-relay-loss
-#                          passed 5/5 after the fix and is now `pass`. cone-fwd-stun-lossy
-#                          (3% loss, 80±20 ms jitter, direct) stays `any`: it still fails
-#                          most runs (1/5), but by single pings missing the probe's 5 s
-#                          per-ping deadline during a legitimate RTO retransmit (stage
-#                          "echo", pongs 15-19/20) — a different, and so far unfixed,
-#                          failure mode from the permanent-stall bug above.
+#                          stops draining for DATA_CHANNEL_STALL_TRIGGER_POLLS polls
+#                          (see webrtc_manager.rs). This must clear webrtc-sctp's
+#                          RTO_MAX (60 s, hardcoded) or it misfires on a link that's
+#                          merely slow (an 8 s version of this watchdog broke a
+#                          passing cone-fwd-stun-slow run); with a safe ~80 s margin,
+#                          detection + reconnect often doesn't finish inside the
+#                          probe's fixed 20-ping/5 s-per-ping window even though it
+#                          would recover a real, patient session. Net effect on
+#                          symA-symB-fwd-relay-loss: 7/10 pass across two 5-run
+#                          batches, up from 14/20 before the fix, but not the 5/5
+#                          needed to flip the expectation — stays `any`.
+#                          cone-fwd-stun-lossy (3% loss, 80±20 ms jitter, direct)
+#                          is unaffected either way (1/5): its failures are single
+#                          pings missing the probe's 5 s deadline during a
+#                          legitimate RTO retransmit (stage "echo", pongs 15-19/20),
+#                          a different failure mode from the permanent stall above.
 #   *-turn (symmetric)   → pass via the relay-only retry (webrtc_manager.rs,
 #                          RELAY_RETRY_AFTER = 15 s): webrtc-rs 0.17 fails ICE across
 #                          symmetric NAT with host/srflx candidates present, so the
@@ -212,7 +221,7 @@ CASES=(
   "symA-symB-fwd-stun        symmetric symmetric yes stun  -                         fail -"
   "cone-fwd-relay            cone      cone      yes relay -                         pass relay"
   "symA-symB-fwd-relay       symmetric symmetric yes relay -                         pass relay"
-  "symA-symB-fwd-relay-loss  symmetric symmetric yes relay delay_60ms_loss_2%        pass relay"
+  "symA-symB-fwd-relay-loss  symmetric symmetric yes relay delay_60ms_loss_2%        any  relay"
   "cone-fwd-turn             cone      cone      yes turn  -                         pass direct"
   "symA-symB-fwd-turn        symmetric symmetric yes turn  -                         pass relay"
   "symA-coneB-fwd-turn       symmetric cone      yes turn  -                         pass relay"

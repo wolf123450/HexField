@@ -252,13 +252,22 @@ const RELAY_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(15
 /// `DATA_CHANNEL_STALL_TRIGGER_POLLS` consecutive polls, tear down the
 /// PeerConnection and re-offer, exactly like `schedule_relay_retry` already
 /// does for a data channel that never opens at all.
-const DATA_CHANNEL_STALL_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
+///
+/// This must stay well above `RTO_MAX` (60 s, also hardcoded): a slow but
+/// *working* link (e.g. a tight bandwidth cap plus real RTT) can legitimately
+/// leave a few bytes queued for many seconds while SCTP paces sends or backs
+/// off a retransmission, and a first version of this watchdog (8 s total)
+/// mistook that for a stall and force-reconnected a passing
+/// `cone-fwd-stun-slow` (250 ms delay, 512 kbit) lab run, turning a pass into
+/// a fail. The permanent desync this targets never drains no matter how long
+/// we wait, so there's no cost to waiting well past `RTO_MAX` before acting.
+const DATA_CHANNEL_STALL_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Consecutive non-draining polls (with `buffered_amount() > 0`) before a
-/// data channel is treated as stalled. Two polls (~8 s) is generous enough to
-/// ride out a normal RTO-driven retransmission (`RTO_INITIAL` = 3 s) without
-/// mistaking it for the permanent desync above.
-const DATA_CHANNEL_STALL_TRIGGER_POLLS: u32 = 2;
+/// data channel is treated as stalled. 8 polls (~80 s) clears `RTO_MAX`
+/// (60 s) with margin, so it can't fire while a legitimate single
+/// retransmission backoff is still in flight.
+const DATA_CHANNEL_STALL_TRIGGER_POLLS: u32 = 8;
 
 /// Default ICE configuration: two of Google's public STUN servers, so one
 /// being unreachable doesn't cost us server-reflexive candidates.
