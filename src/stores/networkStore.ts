@@ -51,6 +51,10 @@ export const useNetworkStore = defineStore('network', () => {
 
   /** Rendezvous session token from /auth/verify (signed, expires server-side). */
   let _rendezvousToken: string | null = null
+  /** Expiry of `_rendezvousToken` (unix seconds), from /auth/verify `expires_at`. */
+  let _rendezvousTokenExpiresAt: number | null = null
+  /** Sends a fresh token over the open /ws before the current one expires. */
+  let sessionRefreshTimer: ReturnType<typeof setTimeout> | null = null
   /** Set while we want a rendezvous connection; reconnects re-authenticate as this user. */
   let _rendezvousUserId: string | null = null
   /** TURN credentials obtained from rendezvous server. */
@@ -397,12 +401,14 @@ export const useNetworkStore = defineStore('network', () => {
 
     const token = await authenticateRendezvous(rendezvousUrl, localUserId)
 
-    // Connect WebSocket through the WS signaling relay. The server takes the
-    // user ID from the token.
+    // Connect WebSocket through the WS signaling relay. The token goes in the
+    // Authorization header of the upgrade (never the URL); the server takes
+    // the user ID from it.
     const wsScheme = rendezvousUrl.startsWith('https') ? 'wss' : 'ws'
     const wsBase = rendezvousUrl.replace(/^https?/, wsScheme)
-    await signalingService.connect(`${wsBase}/ws?token=${encodeURIComponent(token)}`)
+    await signalingService.connect(`${wsBase}/ws`, token)
     logger.info('network', 'Connected to rendezvous WS')
+    scheduleSessionRefresh(rendezvousUrl, localUserId)
 
     // Fetch TURN credentials (non-fatal)
     await fetchTurnCredentials(rendezvousUrl, localUserId)
@@ -443,14 +449,44 @@ export const useNetworkStore = defineStore('network', () => {
         public_dh_key: identityStore.publicDHKey ?? '',
         display_name: identityStore.displayName,
         signature,
+        // The server keeps no challenge state: echo the signed challenge back.
+        challenge,
       }),
     })
     if (!verifyResp.ok) throw new Error('Auth verify failed')
-    const { token } = await verifyResp.json()
+    const { token, expires_at } = await verifyResp.json()
     if (typeof token !== 'string' || !token) throw new Error('Auth verify returned no token')
     _rendezvousToken = token
+    _rendezvousTokenExpiresAt = typeof expires_at === 'number' ? expires_at : null
     logger.info('network', 'Authenticated with rendezvous server')
     return token
+  }
+
+  /**
+   * The server closes /ws when the session token expires. Before that, at
+   * 80% of the token's lifetime, re-authenticate and send the new token over
+   * the open socket (`{ type: 'auth', token }`), which extends the session
+   * without a reconnect. If this fails, the server's close still triggers the
+   * normal reconnect with a fresh token.
+   */
+  function scheduleSessionRefresh(rendezvousUrl: string, localUserId: string, retry = false) {
+    if (sessionRefreshTimer) { clearTimeout(sessionRefreshTimer); sessionRefreshTimer = null }
+    if (_rendezvousTokenExpiresAt === null) return
+    const remainingSecs = _rendezvousTokenExpiresAt - Date.now() / 1000
+    const delaySecs = retry ? 60 : Math.max(30, remainingSecs * 0.8)
+    if (delaySecs >= remainingSecs) return // expires first; the reconnect path takes over
+    sessionRefreshTimer = setTimeout(async () => {
+      sessionRefreshTimer = null
+      if (_rendezvousUserId !== localUserId) return
+      try {
+        const token = await authenticateRendezvous(rendezvousUrl, localUserId)
+        await signalingService.send({ type: 'auth', token })
+        scheduleSessionRefresh(rendezvousUrl, localUserId)
+      } catch (e) {
+        logger.warn('network', 'Rendezvous session refresh failed:', e)
+        scheduleSessionRefresh(rendezvousUrl, localUserId, true)
+      }
+    }, delaySecs * 1000)
   }
 
   /**
@@ -542,6 +578,11 @@ export const useNetworkStore = defineStore('network', () => {
     // Clear reconnect targets first: the WS task reports "disconnected".
     _rendezvousUserId = null
     _rendezvousToken = null
+    _rendezvousTokenExpiresAt = null
+    if (sessionRefreshTimer) {
+      clearTimeout(sessionRefreshTimer)
+      sessionRefreshTimer = null
+    }
     serverUrl.value = ''
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
@@ -644,6 +685,12 @@ export const useNetworkStore = defineStore('network', () => {
     // connected. It has no `from`. Callers may fall back later (step 1.1).
     if (payload.type === 'peer_unavailable') {
       logger.info('network', 'rendezvous: peer unavailable:', payload.to)
+      return
+    }
+    // Rendezvous session control replies. After `session_expired` the server
+    // closes the socket and the reconnect path re-authenticates.
+    if (payload.type === 'auth_ok' || payload.type === 'auth_failed' || payload.type === 'session_expired') {
+      logger.info('network', `rendezvous: ${payload.type}`)
       return
     }
 
