@@ -180,6 +180,24 @@ impl Default for VideoQualityTier {
     }
 }
 
+// ── Manual code exchange (plan step 1b) ─────────────────────────────────────
+//
+// A PC created for a "Direct connect" offer is built and gathers ICE before
+// the offerer knows the remote peer's real userId (the two sides discover
+// each other's identity only when the codes are pasted). Rather than keying
+// it into `peers` under a placeholder and renaming later — which would
+// require every `wire_callbacks`/`wire_data_channel` closure to read the peer
+// id from a shared cell instead of capturing it by value — the pending PC and
+// its (still unwired) data channel are held here, keyed by a caller-chosen
+// session id. `apply_answer_code` wires the callbacks with the now-known real
+// userId and moves the entry into `peers`.
+
+struct PendingOffer {
+    pc: Arc<RTCPeerConnection>,
+    /// Created but not yet wired to `wire_data_channel` (no peer id to label events with yet).
+    dc: Arc<RTCDataChannel>,
+}
+
 // ── Per-peer state ──────────────────────────────────────────────────────────
 
 struct PeerEntry {
@@ -218,6 +236,9 @@ pub struct WebRTCManager {
     ice_servers: std::sync::Mutex<Vec<RTCIceServer>>,
     /// Restrict ICE to TURN relay candidates (diagnostics / netprobe).
     relay_only: AtomicBool,
+    /// Direct-connect offers awaiting a pasted answer code, keyed by a
+    /// frontend-chosen session id (the remote userId isn't known yet).
+    pending_offers: Arc<Mutex<HashMap<String, PendingOffer>>>,
 }
 
 /// How long the offerer waits for the data channel before re-offering with
@@ -249,6 +270,7 @@ impl WebRTCManager {
             local_video_track_high: Arc::new(Mutex::new(None)),
             ice_servers: std::sync::Mutex::new(default_ice_servers()),
             relay_only: AtomicBool::new(false),
+            pending_offers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -916,6 +938,182 @@ impl WebRTCManager {
         Ok(())
     }
 
+    // ── Manual code exchange (plan step 1b) ────────────────────────────────
+    //
+    // Non-trickle variants for serverless, out-of-band signaling: the caller
+    // waits for ICE gathering to finish and pastes a single self-contained
+    // code instead of the offerer/answerer/ICE events used elsewhere in this
+    // file. See PendingOffer above for why the offer side is staged separately
+    // from `peers` until the remote userId is known.
+
+    /// Offerer side: build a PC, create an offer, and wait for ICE gathering to
+    /// complete so the returned SDP carries every candidate (no trickle).
+    /// `session_id` is a caller-chosen id (the remote userId isn't known yet);
+    /// pass it to `apply_answer_code` once the pasted-back answer arrives, or
+    /// to `cancel_offer_session` if the user gives up first.
+    pub async fn create_offer_code(&self, session_id: &str) -> Result<String, String> {
+        log::debug!("[webrtc] create_offer_code session={session_id}");
+        let pc = self.build_pc(false).await?;
+        let dc = pc
+            .create_data_channel("hexfield", None)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let offer = pc.create_offer(None).await.map_err(|e| e.to_string())?;
+        let mut gather_complete = pc.gathering_complete_promise().await;
+        pc.set_local_description(offer)
+            .await
+            .map_err(|e| e.to_string())?;
+        let _ = gather_complete.recv().await;
+
+        let final_desc = pc
+            .local_description()
+            .await
+            .ok_or_else(|| "no local description after ICE gathering".to_string())?;
+
+        self.pending_offers
+            .lock()
+            .await
+            .insert(session_id.to_string(), PendingOffer { pc, dc });
+
+        Ok(final_desc.sdp)
+    }
+
+    /// Answerer side: consume a pasted offer code and return a complete answer
+    /// (ICE gathering finished, non-trickle). `from` is the offerer's real
+    /// userId, decoded from the offer code by the frontend before this call.
+    pub async fn accept_offer_code(
+        &self,
+        from: &str,
+        sdp: String,
+        media_manager: &Arc<MediaManager>,
+        app: &SharedSink,
+    ) -> Result<String, String> {
+        log::debug!("[webrtc] accept_offer_code from {from}");
+        let pc = self.build_pc(false).await?;
+        let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
+        let remote_desc_ready = Arc::new(AtomicBool::new(false));
+        let being_replaced = Arc::new(AtomicBool::new(false));
+
+        let old_pc_to_close: Option<(Arc<RTCPeerConnection>, Arc<Mutex<Option<Arc<RTCDataChannel>>>>)> = {
+            let peers = self.peers.lock().await;
+            peers.get(from).map(|old| {
+                old.being_replaced.store(true, Ordering::Release);
+                (old.pc.clone(), old.dc.clone())
+            })
+        };
+        if let Some((old_pc, old_dc_slot)) = old_pc_to_close {
+            tokio::spawn(async move {
+                *old_dc_slot.lock().await = None;
+                let _ = old_pc.close().await;
+            });
+        }
+
+        Self::wire_callbacks(pc.clone(), from.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone());
+
+        self.peers.lock().await.insert(
+            from.to_string(),
+            PeerEntry {
+                pc: pc.clone(),
+                dc: dc_slot,
+                remote_desc_ready: remote_desc_ready.clone(),
+                being_replaced,
+                audio_track: Arc::new(Mutex::new(None)),
+                video_track: Arc::new(Mutex::new(None)),
+                video_quality_tier: Arc::new(Mutex::new(VideoQualityTier::default())),
+            },
+        );
+
+        let offer = RTCSessionDescription::offer(sdp).map_err(|e| e.to_string())?;
+        pc.set_remote_description(offer)
+            .await
+            .map_err(|e| e.to_string())?;
+        remote_desc_ready.store(true, Ordering::Release);
+        self.drain_ice_queue(from, &pc).await;
+
+        let answer = pc.create_answer(None).await.map_err(|e| e.to_string())?;
+        let mut gather_complete = pc.gathering_complete_promise().await;
+        pc.set_local_description(answer)
+            .await
+            .map_err(|e| e.to_string())?;
+        let _ = gather_complete.recv().await;
+
+        let final_desc = pc
+            .local_description()
+            .await
+            .ok_or_else(|| "no local description after ICE gathering".to_string())?;
+        Ok(final_desc.sdp)
+    }
+
+    /// Offerer side: apply a pasted answer code to the PC created by
+    /// `create_offer_code`, now that `remote_user_id` (decoded from the answer
+    /// code) is known. Wires the callbacks and moves the entry into `peers`.
+    pub async fn apply_answer_code(
+        &self,
+        session_id: &str,
+        remote_user_id: &str,
+        sdp: String,
+        media_manager: &Arc<MediaManager>,
+        app: &SharedSink,
+    ) -> Result<(), String> {
+        log::debug!("[webrtc] apply_answer_code session={session_id} from {remote_user_id}");
+        let PendingOffer { pc, dc } = self
+            .pending_offers
+            .lock()
+            .await
+            .remove(session_id)
+            .ok_or_else(|| "no pending offer for this session (expired or already used)".to_string())?;
+
+        let dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
+        let being_replaced = Arc::new(AtomicBool::new(false));
+
+        let old_pc_to_close: Option<(Arc<RTCPeerConnection>, Arc<Mutex<Option<Arc<RTCDataChannel>>>>)> = {
+            let peers = self.peers.lock().await;
+            peers.get(remote_user_id).map(|old| {
+                old.being_replaced.store(true, Ordering::Release);
+                (old.pc.clone(), old.dc.clone())
+            })
+        };
+        if let Some((old_pc, old_dc_slot)) = old_pc_to_close {
+            tokio::spawn(async move {
+                *old_dc_slot.lock().await = None;
+                let _ = old_pc.close().await;
+            });
+        }
+
+        Self::wire_callbacks(pc.clone(), remote_user_id.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone());
+        Self::wire_data_channel(dc, remote_user_id.to_string(), dc_slot.clone(), Arc::downgrade(&pc), app.clone());
+
+        let answer = RTCSessionDescription::answer(sdp).map_err(|e| e.to_string())?;
+        pc.set_remote_description(answer)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        self.drain_ice_queue(remote_user_id, &pc).await;
+
+        self.peers.lock().await.insert(
+            remote_user_id.to_string(),
+            PeerEntry {
+                pc,
+                dc: dc_slot,
+                remote_desc_ready: Arc::new(AtomicBool::new(true)),
+                being_replaced,
+                audio_track: Arc::new(Mutex::new(None)),
+                video_track: Arc::new(Mutex::new(None)),
+                video_quality_tier: Arc::new(Mutex::new(VideoQualityTier::default())),
+            },
+        );
+        Ok(())
+    }
+
+    /// Discard a pending offer session (user cancelled before a reply arrived,
+    /// or the code expired). No-op if the session id is unknown.
+    pub async fn cancel_offer_session(&self, session_id: &str) {
+        if let Some(pending) = self.pending_offers.lock().await.remove(session_id) {
+            let _ = pending.pc.close().await;
+        }
+    }
+
     /// Both sides: add a remote ICE candidate.
     /// If the peer entry doesn't exist yet, or set_remote_description hasn't
     /// completed, the candidate is buffered in ice_queue and applied once ready.
@@ -1359,7 +1557,10 @@ impl WebRTCManager {
 
 #[cfg(test)]
 mod tests {
-    use super::ConnectionType;
+    use super::*;
+    use serde_json::Value;
+    use std::time::Duration;
+    use tokio::sync::mpsc::UnboundedSender;
 
     #[test]
     fn classifies_selected_pairs() {
@@ -1368,5 +1569,112 @@ mod tests {
         assert_eq!(ConnectionType::from_candidate_types("host", "prflx"), ConnectionType::Direct);
         assert_eq!(ConnectionType::from_candidate_types("relay", "srflx"), ConnectionType::Relay);
         assert_eq!(ConnectionType::from_candidate_types("host", "relay"), ConnectionType::Relay);
+    }
+
+    /// A manager with no ICE servers configured — gathering completes almost
+    /// immediately (host candidates only, no STUN round trip to wait on),
+    /// which keeps these tests fast and independent of real network access.
+    fn test_manager() -> WebRTCManager {
+        let mgr = WebRTCManager::new();
+        mgr.set_ice_servers(vec![]);
+        mgr
+    }
+
+    fn test_sink() -> SharedSink {
+        let (tx, _rx): (UnboundedSender<(String, Value)>, _) = tokio::sync::mpsc::unbounded_channel();
+        Arc::new(tx)
+    }
+
+    async fn with_timeout<F, T>(fut: F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        tokio::time::timeout(Duration::from_secs(10), fut)
+            .await
+            .expect("operation timed out")
+    }
+
+    #[tokio::test]
+    async fn create_offer_code_gathers_ice_and_returns_full_sdp() {
+        let mgr = test_manager();
+        let sdp = with_timeout(mgr.create_offer_code("session-1")).await.unwrap();
+        assert!(sdp.contains("m=application"), "sdp missing data channel media line: {sdp}");
+        assert!(sdp.contains("a=ice-ufrag"), "non-trickle sdp missing ICE credentials: {sdp}");
+        // The session is now staged, awaiting a pasted-back answer.
+        assert_eq!(mgr.pending_offers.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn accept_offer_code_returns_full_answer_sdp() {
+        let offerer = test_manager();
+        let offer_sdp = with_timeout(offerer.create_offer_code("session-a")).await.unwrap();
+
+        let answerer = test_manager();
+        let media = Arc::new(MediaManager::new());
+        let sink = test_sink();
+        let answer_sdp = with_timeout(answerer.accept_offer_code("alice", offer_sdp, &media, &sink))
+            .await
+            .unwrap();
+        assert!(answer_sdp.contains("m=application"), "answer missing data channel media line: {answer_sdp}");
+        assert!(answer_sdp.contains("a=ice-ufrag"), "non-trickle answer missing ICE credentials: {answer_sdp}");
+        assert!(answerer.peers.lock().await.contains_key("alice"));
+    }
+
+    #[tokio::test]
+    async fn apply_answer_code_finalizes_the_pending_session_under_the_real_user_id() {
+        let offerer = test_manager();
+        let offer_sdp = with_timeout(offerer.create_offer_code("session-b")).await.unwrap();
+
+        let answerer = test_manager();
+        let media = Arc::new(MediaManager::new());
+        let sink = test_sink();
+        let answer_sdp = with_timeout(answerer.accept_offer_code("alice", offer_sdp, &media, &sink))
+            .await
+            .unwrap();
+
+        with_timeout(offerer.apply_answer_code("session-b", "bob", answer_sdp, &media, &sink))
+            .await
+            .unwrap();
+
+        assert!(offerer.peers.lock().await.contains_key("bob"));
+        assert!(offerer.pending_offers.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_answer_code_rejects_unknown_session() {
+        let mgr = test_manager();
+        let media = Arc::new(MediaManager::new());
+        let sink = test_sink();
+        let err = mgr
+            .apply_answer_code("no-such-session", "bob", "v=0".to_string(), &media, &sink)
+            .await
+            .unwrap_err();
+        assert!(err.contains("no pending offer"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn accept_offer_code_rejects_malformed_sdp() {
+        let mgr = test_manager();
+        let media = Arc::new(MediaManager::new());
+        let sink = test_sink();
+        let err = mgr
+            .accept_offer_code("alice", "not an sdp".to_string(), &media, &sink)
+            .await
+            .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_offer_session_discards_the_pending_pc() {
+        let mgr = test_manager();
+        with_timeout(mgr.create_offer_code("session-c")).await.unwrap();
+        assert_eq!(mgr.pending_offers.lock().await.len(), 1);
+
+        mgr.cancel_offer_session("session-c").await;
+        assert!(mgr.pending_offers.lock().await.is_empty());
+
+        // Cancelling twice, or a session that never existed, is a harmless no-op.
+        mgr.cancel_offer_session("session-c").await;
+        mgr.cancel_offer_session("never-existed").await;
     }
 }
