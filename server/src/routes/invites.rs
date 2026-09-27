@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     Json,
 };
 use diesel::prelude::*;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::models::{Invite, NewInvite};
 use crate::schema::{invites, server_members};
-use crate::middleware::extract_user_id;
+use crate::middleware::AuthUser;
 use crate::state::ServerState;
 
 #[derive(Deserialize)]
@@ -35,10 +35,9 @@ pub struct InviteInfo {
 /// POST /invites — register invite code (admin/owner required if server is registered)
 pub async fn register_invite(
     State(state): State<Arc<ServerState>>,
-    headers: HeaderMap,
+    AuthUser(creator_id): AuthUser,
     Json(req): Json<RegisterInviteReq>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let creator_id = extract_user_id(&headers).ok_or((StatusCode::UNAUTHORIZED, String::new()))?;
     let conn = &mut *state.db.lock().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Check role if server is registered
