@@ -23,7 +23,8 @@ export default defineConfig(async () => ({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
-    exclude: ["**/node_modules/**", "**/dist/**", "e2e/**"],
+    // .claude/** holds agent git worktrees (full repo copies) — never test those from here.
+    exclude: ["**/node_modules/**", "**/dist/**", "e2e/**", ".claude/**"],
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
       "libsodium-wrappers": path.resolve("node_modules/libsodium-wrappers/dist/modules/libsodium-wrappers.js"),

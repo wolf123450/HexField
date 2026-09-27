@@ -111,6 +111,13 @@
             </div>
           </div>
           <span class="vp-name">{{ peerDisplayName(uid) }}</span>
+          <span
+            v-if="networkStore.isRelayed(uid)"
+            class="vp-relayed"
+            title="No direct connection (relayed): voice and screen share are unavailable with this person"
+          >
+            <AppIcon :path="mdiLanDisconnect" :size="12" />
+          </span>
         </div>
       </template>
       </template>
@@ -232,7 +239,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watchEffect, onMounted, onUnmounted, nextTick } from 'vue'
-import { mdiCog, mdiMicrophone, mdiMicrophoneOff, mdiAccountPlus, mdiChevronLeft, mdiPin, mdiGavel } from '@mdi/js'
+import { mdiCog, mdiMicrophone, mdiMicrophoneOff, mdiAccountPlus, mdiChevronLeft, mdiPin, mdiGavel, mdiLanDisconnect } from '@mdi/js'
 import { useServersStore } from '@/stores/serversStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useMessagesStore } from '@/stores/messagesStore'
@@ -968,6 +975,13 @@ function setOwnStatus(status: 'online' | 'idle' | 'dnd' | 'offline', manual?: bo
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.vp-relayed {
+  display: flex;
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--text-muted, var(--text-secondary));
 }
 
 .vp-you {
