@@ -179,6 +179,11 @@ export interface PeerInvite {
   serverId:     string
   serverName:   string          // display-only, for join confirmation UI
   inviteToken:  string          // random nonce validated on the owner side
+  // Optional rendezvous server URL the inviter is reachable through, used by
+  // the joiner as a signaling fallback when no direct/LAN endpoint connects
+  // (network-compatibility-plan step 1.1). Unset on older invites — older
+  // clients ignore this field, so v stays 2.
+  rendezvous?:  string
 }
 
 /**
