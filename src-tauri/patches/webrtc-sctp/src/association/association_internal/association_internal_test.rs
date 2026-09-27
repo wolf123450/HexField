@@ -591,3 +591,130 @@ async fn test_assoc_max_message_size_explicit() -> Result<()> {
 
     Ok(())
 }
+
+// HexField patch (see PATCHES.md): a bad SACK must be ignored without popping
+// anything, so the next good SACK still applies.
+
+fn sack_test_association() -> AssociationInternal {
+    let mut a = create_association_internal(Config {
+        net_conn: Arc::new(DumbConn {}),
+        max_receive_buffer_size: 0,
+        max_message_size: 0,
+        name: "client".to_owned(),
+        local_port: 5000,
+        remote_port: 5000,
+    });
+    a.set_state(AssociationState::Established);
+    a.cumulative_tsn_ack_point = 9;
+    a.my_next_tsn = 13;
+    for tsn in 10..=12 {
+        a.inflight_queue.push_no_check(ChunkPayloadData {
+            beginning_fragment: true,
+            ending_fragment: true,
+            tsn,
+            stream_identifier: 1,
+            user_data: Bytes::from_static(b"ABC"),
+            nsent: 1,
+            ..Default::default()
+        });
+    }
+    a
+}
+
+fn sack(cumulative_tsn_ack: u32, gaps: &[(u16, u16)]) -> ChunkSelectiveAck {
+    ChunkSelectiveAck {
+        cumulative_tsn_ack,
+        advertised_receiver_window_credit: 65536,
+        gap_ack_blocks: gaps
+            .iter()
+            .map(|&(start, end)| crate::chunk::chunk_selective_ack::GapAckBlock { start, end })
+            .collect(),
+        duplicate_tsn: vec![],
+    }
+}
+
+#[tokio::test]
+async fn test_sack_with_unknown_gap_tsn_changes_nothing() -> Result<()> {
+    let mut a = sack_test_association();
+
+    // Cum ack 11 is fine, but the gap block names TSN 16, never sent.
+    // Unpatched 0.17.1 popped 10 and 11 before failing on the gap block.
+    assert!(a.handle_sack(&sack(11, &[(5, 5)])).await.is_err());
+    assert_eq!(a.cumulative_tsn_ack_point, 9, "ack point must not move");
+    assert_eq!(a.inflight_queue.len(), 3, "nothing may be popped");
+
+    // The next valid SACK still applies.
+    a.handle_sack(&sack(11, &[])).await?;
+    assert_eq!(a.cumulative_tsn_ack_point, 11);
+    assert_eq!(a.inflight_queue.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sack_beyond_next_tsn_changes_nothing() -> Result<()> {
+    let mut a = sack_test_association();
+
+    assert!(a.handle_sack(&sack(13, &[])).await.is_err());
+    assert_eq!(a.cumulative_tsn_ack_point, 9);
+    assert_eq!(a.inflight_queue.len(), 3);
+
+    a.handle_sack(&sack(12, &[])).await?;
+    assert_eq!(a.cumulative_tsn_ack_point, 12);
+    assert!(a.inflight_queue.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sack_with_missing_inflight_tsn_changes_nothing() -> Result<()> {
+    let mut a = sack_test_association();
+    // Simulate the desync left behind by the unpatched code: TSN 10 is gone
+    // but the ack point still says 9.
+    assert!(a.inflight_queue.pop(10).is_some());
+
+    assert!(a.handle_sack(&sack(12, &[])).await.is_err());
+    assert_eq!(a.cumulative_tsn_ack_point, 9);
+    assert_eq!(a.inflight_queue.len(), 2, "11 and 12 must stay in flight");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sack_reversed_gap_block_changes_nothing() -> Result<()> {
+    let mut a = sack_test_association();
+
+    assert!(a.handle_sack(&sack(10, &[(2, 1)])).await.is_err());
+    assert_eq!(a.cumulative_tsn_ack_point, 9);
+    assert_eq!(a.inflight_queue.len(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sack_gap_offset_zero_is_skipped() -> Result<()> {
+    let mut a = sack_test_association();
+
+    // Offset 0 names the cum ack (10) itself; the rest of the SACK applies.
+    a.handle_sack(&sack(10, &[(0, 2)])).await?;
+    assert_eq!(a.cumulative_tsn_ack_point, 10);
+    assert_eq!(a.inflight_queue.len(), 2);
+    assert!(a.inflight_queue.get(11).is_some_and(|c| c.acked));
+    assert!(a.inflight_queue.get(12).is_some_and(|c| c.acked));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sack_after_clock_step_back_still_applies() -> Result<()> {
+    let mut a = sack_test_association();
+    // Sent "in the future": the RTT sample fails. Unpatched 0.17.1 returned
+    // ErrInvalidSystemTime after popping the chunk.
+    let future = SystemTime::now() + std::time::Duration::from_secs(3600);
+    for tsn in 10..=12 {
+        if let Some(c) = a.inflight_queue.get_mut(tsn) {
+            c.since = future;
+        }
+    }
+
+    a.handle_sack(&sack(10, &[(2, 2)])).await?;
+    assert_eq!(a.cumulative_tsn_ack_point, 10);
+    assert_eq!(a.inflight_queue.len(), 2);
+    assert!(a.inflight_queue.get(12).is_some_and(|c| c.acked));
+    Ok(())
+}
