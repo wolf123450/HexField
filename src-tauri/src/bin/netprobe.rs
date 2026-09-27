@@ -172,11 +172,13 @@ enum ProbeEvent {
 
 struct Probe {
     id: String,
-    mgr: WebRTCManager,
+    mgr: Arc<WebRTCManager>,
     media: Arc<MediaManager>,
     sink: SharedSink,
     lan_peers: Arc<LanPeers>,
     events: UnboundedReceiver<(String, Value)>,
+    /// Set when the manager fell back to a relay-only re-offer.
+    relay_retried: bool,
 }
 
 impl Probe {
@@ -195,13 +197,14 @@ impl Probe {
 
     /// Route one event from the networking layer. Returns the events the role
     /// loops react to; everything else is handled here.
-    async fn route(&self, name: &str, p: Value) -> Option<ProbeEvent> {
+    async fn route(&mut self, name: &str, p: Value) -> Option<ProbeEvent> {
         let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
         match name {
             "webrtc_offer" | "webrtc_answer" => {
                 let kind = if name == "webrtc_offer" { "signal_offer" } else { "signal_answer" };
                 let to = s("to");
-                let msg = json!({ "type": kind, "to": to, "from": self.id, "sdp": s("sdp") });
+                let relay_only = p.get("relayOnly").and_then(Value::as_bool).unwrap_or(false);
+                let msg = json!({ "type": kind, "to": to, "from": self.id, "sdp": s("sdp"), "relayOnly": relay_only });
                 self.send_lan(&to, msg).await;
             }
             "webrtc_ice" => {
@@ -221,7 +224,8 @@ impl Probe {
                 log::debug!("[netprobe] ← {from}: {}", p["type"]);
                 let result = match p.get("type").and_then(Value::as_str) {
                     Some("signal_offer") => {
-                        self.mgr.handle_offer(&from, s("sdp"), &self.media, &self.sink).await
+                        let relay_only = p.get("relayOnly").and_then(Value::as_bool).unwrap_or(false);
+                        self.mgr.handle_offer(&from, s("sdp"), relay_only, &self.media, &self.sink).await
                     }
                     Some("signal_answer") => self.mgr.handle_answer(&from, s("sdp")).await,
                     Some("signal_ice") => {
@@ -242,6 +246,10 @@ impl Probe {
                 if let Err(e) = result {
                     log::warn!("[netprobe] signal from {from} failed: {e}");
                 }
+            }
+            "webrtc_relay_retry" => {
+                log::info!("[netprobe] {} not connected yet, relay-only retry", s("userId"));
+                self.relay_retried = true;
             }
             "webrtc_connected" => return Some(ProbeEvent::Connected(s("userId"))),
             "webrtc_disconnected" => return Some(ProbeEvent::Disconnected(s("userId"))),
@@ -357,6 +365,7 @@ async fn run_joiner(mut probe: Probe, addr: String, port: u16, peer: String, pin
         }
     }
     result["connect_ms"] = json!(started.elapsed().as_millis() as u64);
+    result["relay_retry"] = json!(probe.relay_retried);
     if let Some((local, remote)) = probe.mgr.selected_candidate_types(&peer).await {
         result["local_candidate"] = json!(local);
         result["remote_candidate"] = json!(remote);
@@ -423,7 +432,7 @@ async fn main() {
 
     let (tx, rx) = unbounded_channel::<(String, Value)>();
     let sink: SharedSink = Arc::new(tx);
-    let mgr = WebRTCManager::new();
+    let mgr = Arc::new(WebRTCManager::new());
     mgr.set_local_user_id(args.id.clone());
     if !args.ice.is_empty() {
         mgr.set_ice_servers(ice_servers(&args));
@@ -448,6 +457,7 @@ async fn main() {
         sink,
         lan_peers,
         events: rx,
+        relay_retried: false,
     };
 
     let code = match (args.connect, args.peer) {

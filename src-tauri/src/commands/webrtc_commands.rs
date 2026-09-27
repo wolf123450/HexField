@@ -98,10 +98,14 @@ pub async fn webrtc_create_offer(
 pub async fn webrtc_handle_offer(
     from: String,
     sdp: String,
+    relay_only: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.webrtc_manager.handle_offer(&from, sdp, &state.media_manager, &crate::event_sink::from_app(&app)).await
+    state
+        .webrtc_manager
+        .handle_offer(&from, sdp, relay_only.unwrap_or(false), &state.media_manager, &crate::event_sink::from_app(&app))
+        .await
 }
 
 /// Process an answer received from `from` (must have an existing peer entry).
