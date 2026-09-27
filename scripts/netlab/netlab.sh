@@ -187,9 +187,18 @@ cmd_case() { # see usage
 # name | natA | natB | forward | ice | netem | expected | connection type (checked when it passes)
 # Expectations document today's behaviour; flip a row when a fix lands.
 #   cone-nofwd-stun      → rendezvous fallback for invites without a port forward
-#   *-lossy / *-loss     → `any`: webrtc-rs SCTP data channels stall intermittently
-#                          at 2–3% loss (stage "sctp"/"echo"); make these `pass`
-#                          once data channels are reliable under loss
+#   *-loss / *-lossy     → step 6a. A webrtc-sctp 0.17.1 bug (`process_selective_ack`
+#                          in association_internal.rs) permanently desyncs the SCTP
+#                          ack point after one bad SACK under loss, stalling the data
+#                          channel forever even though ICE/DTLS stay up. WebRTCManager
+#                          now watches buffered_amount() and forces a reconnect when it
+#                          stops draining (see webrtc_manager.rs). symA-symB-fwd-relay-loss
+#                          passed 5/5 after the fix and is now `pass`. cone-fwd-stun-lossy
+#                          (3% loss, 80±20 ms jitter, direct) stays `any`: it still fails
+#                          most runs (1/5), but by single pings missing the probe's 5 s
+#                          per-ping deadline during a legitimate RTO retransmit (stage
+#                          "echo", pongs 15-19/20) — a different, and so far unfixed,
+#                          failure mode from the permanent-stall bug above.
 #   *-turn (symmetric)   → pass via the relay-only retry (webrtc_manager.rs,
 #                          RELAY_RETRY_AFTER = 15 s): webrtc-rs 0.17 fails ICE across
 #                          symmetric NAT with host/srflx candidates present, so the
@@ -203,7 +212,7 @@ CASES=(
   "symA-symB-fwd-stun        symmetric symmetric yes stun  -                         fail -"
   "cone-fwd-relay            cone      cone      yes relay -                         pass relay"
   "symA-symB-fwd-relay       symmetric symmetric yes relay -                         pass relay"
-  "symA-symB-fwd-relay-loss  symmetric symmetric yes relay delay_60ms_loss_2%        any  relay"
+  "symA-symB-fwd-relay-loss  symmetric symmetric yes relay delay_60ms_loss_2%        pass relay"
   "cone-fwd-turn             cone      cone      yes turn  -                         pass direct"
   "symA-symB-fwd-turn        symmetric symmetric yes turn  -                         pass relay"
   "symA-coneB-fwd-turn       symmetric cone      yes turn  -                         pass relay"
