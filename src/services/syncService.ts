@@ -1,10 +1,15 @@
 /**
  * syncService — P2P history reconciliation using Negentropy (via Tauri Rust backend).
  *
- * Three-pass sync per peer connection:
- *   Pass 0: messages  table, per channel
- *   Pass 1: mutations table, per channel
- *   Pass 2: mutations table, channel_id = '__server__' (server-level mutations)
+ * Three-pass sync per peer connection, only for servers that both we and the
+ * peer are members of (every frame carries its serverId):
+ *   Pass 0: mutations table, channel_id = '__server__' (server-level mutations), per server
+ *   Pass 1: messages  table, per channel
+ *   Pass 2: mutations table, per channel
+ *
+ * Scope is enforced on both sides: we never serve or accept rows outside a
+ * server shared with the peer (membership checked here, channel/server match
+ * checked by the Rust `sync_*` commands).
  *
  * Wire message types (over WebRTC data channel):
  *   sync_neg_init  — initiator starts negentropy for one channel+pass
@@ -24,6 +29,7 @@ type SyncTable = 'messages' | 'mutations'
 interface SyncNegInit {
   type: 'sync_neg_init'
   sessionId: string
+  serverId: string
   channelId: string
   table: SyncTable
   msg: string // base64 negentropy message
@@ -39,6 +45,7 @@ interface SyncPush {
   type: 'sync_push'
   sessionId: string
   table: SyncTable
+  serverId: string
   channelId: string
   messages?: MessageRow[]
   mutations?: MutationRow[]
@@ -48,6 +55,7 @@ interface SyncWant {
   type: 'sync_want'
   sessionId: string
   table: SyncTable
+  serverId: string
   channelId: string
   ids: string[]
 }
@@ -61,9 +69,13 @@ export type SyncWireMessage =
 // ── Session state ─────────────────────────────────────────────────────────────
 
 interface PendingSession {
+  peerId: string
+  serverId: string
   channelId: string
   table: SyncTable
 }
+
+const SERVER_CHANNEL = '__server__'
 
 // sessionId → pending context (what we're waiting for the responder to reply to)
 const _pendingSessions = new Map<string, PendingSession>()
@@ -77,19 +89,56 @@ export function setSendFn(fn: SendFn): void {
   _sendToPeer = fn
 }
 
+// ── Membership scope ─────────────────────────────────────────────────────────
+
+/** True when both we and `peerId` are members of `serverId`. */
+async function _sharesServer(peerId: string, serverId: string): Promise<boolean> {
+  if (typeof serverId !== 'string' || !serverId) return false
+  const { useIdentityStore } = await import('@/stores/identityStore')
+  const myId = useIdentityStore().userId
+  if (!myId) return false
+  const { useServersStore } = await import('@/stores/serversStore')
+  const serversStore = useServersStore()
+  return await serversStore.isServerMember(serverId, myId)
+    && await serversStore.isServerMember(serverId, peerId)
+}
+
+/** IDs of the servers that both we and `peerId` are members of. */
+async function _sharedServerIds(peerId: string): Promise<string[]> {
+  const { useServersStore } = await import('@/stores/serversStore')
+  const shared: string[] = []
+  for (const serverId of Object.keys(useServersStore().servers)) {
+    if (await _sharesServer(peerId, serverId)) shared.push(serverId)
+  }
+  return shared
+}
+
 // ── Initiator: start sync for a newly connected peer ─────────────────────────
+
+interface SyncChannel {
+  channel_id: string
+  server_id: string
+}
 
 export async function startSync(peerId: string): Promise<void> {
   logger.debug('sync', 'startSync with peer:', peerId)
   try {
-    // Pass 0: Server-level mutations FIRST (members, channels, devices, emoji, server updates)
-    await _startNegSession(peerId, '__server__', 'mutations')
+    const serverIds = await _sharedServerIds(peerId)
+    if (serverIds.length === 0) {
+      logger.debug('sync', 'no shared servers with peer:', peerId)
+      return
+    }
 
-    // Then per-channel passes
-    const channelIds: string[] = await invoke('sync_list_channels')
-    for (const channelId of channelIds) {
-      await _startNegSession(peerId, channelId, 'messages')
-      await _startNegSession(peerId, channelId, 'mutations')
+    // Pass 0: Server-level mutations FIRST (members, channels, emoji, server updates)
+    for (const serverId of serverIds) {
+      await _startNegSession(peerId, serverId, SERVER_CHANNEL, 'mutations')
+    }
+
+    // Then per-channel passes, only for channels of the shared servers
+    const channels: SyncChannel[] = await invoke('sync_list_channels', { serverIds })
+    for (const { channel_id: channelId, server_id: serverId } of channels) {
+      await _startNegSession(peerId, serverId, channelId, 'messages')
+      await _startNegSession(peerId, serverId, channelId, 'mutations')
     }
   } catch (e) {
     logger.warn('sync', 'startSync error:', e)
@@ -98,15 +147,16 @@ export async function startSync(peerId: string): Promise<void> {
 
 async function _startNegSession(
   peerId: string,
+  serverId: string,
   channelId: string,
   table: SyncTable,
 ): Promise<void> {
-  logger.debug('sync', 'neg session:', channelId, table, '→', peerId)
+  logger.debug('sync', 'neg session:', serverId, channelId, table, '→', peerId)
   try {
-    const msg: string = await invoke('sync_initiate', { channelId, table })
+    const msg: string = await invoke('sync_initiate', { serverId, channelId, table })
     const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-    _pendingSessions.set(sessionId, { channelId, table })
-    _sendToPeer(peerId, { type: 'sync_neg_init', sessionId, channelId, table, msg } satisfies SyncNegInit)
+    _pendingSessions.set(sessionId, { peerId, serverId, channelId, table })
+    _sendToPeer(peerId, { type: 'sync_neg_init', sessionId, serverId, channelId, table, msg } satisfies SyncNegInit)
   } catch (e) {
     logger.warn('sync', `initiate failed for ${channelId}/${table}:`, e)
   }
@@ -126,7 +176,7 @@ export async function handleSyncMessage(
       await _onNegReply(peerId, msg)
       break
     case 'sync_push':
-      await _onPush(msg)
+      await _onPush(peerId, msg)
       break
     case 'sync_want':
       await _onWant(peerId, msg)
@@ -138,7 +188,14 @@ export async function handleSyncMessage(
 
 async function _onNegInit(peerId: string, wire: SyncNegInit): Promise<void> {
   try {
+    // Only reconcile servers the peer shares with us; Rust then checks that
+    // wire.channelId really belongs to wire.serverId.
+    if (!await _sharesServer(peerId, wire.serverId)) {
+      logger.warn('sync', 'ignoring neg_init for a server not shared with', peerId, wire.serverId)
+      return
+    }
     const reply: string = await invoke('sync_respond', {
+      serverId:  wire.serverId,
       channelId: wire.channelId,
       table:     wire.table,
       msg:       wire.msg,
@@ -153,16 +210,17 @@ async function _onNegInit(peerId: string, wire: SyncNegInit): Promise<void> {
 
 async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
   const session = _pendingSessions.get(wire.sessionId)
-  if (!session) {
+  if (!session || session.peerId !== peerId) {
     logger.warn('sync', 'received neg_reply for unknown session', wire.sessionId)
     return
   }
   _pendingSessions.delete(wire.sessionId)
 
-  const { channelId, table } = session
+  const { serverId, channelId, table } = session
 
   try {
     const diff: { have_ids: string[]; need_ids: string[] } = await invoke('sync_process_response', {
+      serverId,
       channelId,
       table,
       msg: wire.msg,
@@ -171,7 +229,7 @@ async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
 
     // Push content we have that the peer needs
     if (diff.have_ids.length > 0) {
-      await _pushItems(peerId, wire.sessionId, channelId, table, diff.have_ids)
+      await _pushItems(peerId, wire.sessionId, serverId, channelId, table, diff.have_ids)
     }
 
     // Request content the peer has that we need
@@ -180,6 +238,7 @@ async function _onNegReply(peerId: string, wire: SyncNegReply): Promise<void> {
         type: 'sync_want',
         sessionId: wire.sessionId,
         table,
+        serverId,
         channelId,
         ids: diff.need_ids,
       } satisfies SyncWant)
@@ -204,21 +263,33 @@ const SCTP_SAFE_BYTES = 60_000
 const SYNC_PUSH_OVERHEAD = 256
 const ITEM_BUDGET = SCTP_SAFE_BYTES - SYNC_PUSH_OVERHEAD // 59,744
 
+/**
+ * Send the requested rows to `peerId`. Every push path (neg_reply diff and
+ * sync_want) goes through here, so this is where the send side is gated:
+ * nothing is served unless the peer shares `serverId` with us, and the Rust
+ * getters only return rows whose own channel/server match the scope, whatever
+ * IDs were asked for.
+ */
 async function _pushItems(
   peerId: string,
   sessionId: string,
+  serverId: string,
   channelId: string,
   table: SyncTable,
   ids: string[],
 ): Promise<void> {
   try {
+    if (!await _sharesServer(peerId, serverId)) {
+      logger.warn('sync', 'refusing to serve a server not shared with', peerId, serverId)
+      return
+    }
     if (table === 'messages') {
-      const messages: MessageRow[] = await invoke('sync_get_messages', { ids })
+      const messages: MessageRow[] = await invoke('sync_get_messages', { serverId, channelId, ids })
       let batch: MessageRow[] = []
       let batchBytes = 0
       const flush = () => {
         if (batch.length === 0) return
-        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, messages: batch } satisfies SyncPush)
+        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, serverId, channelId, messages: batch } satisfies SyncPush)
         batch = []
         batchBytes = 0
       }
@@ -257,12 +328,12 @@ async function _pushItems(
       }
       flush()
     } else {
-      const mutations: MutationRow[] = await invoke('sync_get_mutations', { ids })
+      const mutations: MutationRow[] = await invoke('sync_get_mutations', { serverId, channelId, ids })
       let batch: MutationRow[] = []
       let batchBytes = 0
       const flush = () => {
         if (batch.length === 0) return
-        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, channelId, mutations: batch } satisfies SyncPush)
+        _sendToPeer(peerId, { type: 'sync_push', sessionId, table, serverId, channelId, mutations: batch } satisfies SyncPush)
         batch = []
         batchBytes = 0
       }
@@ -296,8 +367,39 @@ function _rowToMutation(r: MutationRow): Mutation {
   }
 }
 
-async function _onPush(wire: SyncPush): Promise<void> {
+/**
+ * Receive-side gate: drop the push unless both we and the sender are members
+ * of `wire.serverId`, then keep only the rows whose own channel/server match
+ * the frame (Rust `sync_scope_*` also checks the channel is in that server).
+ * Returns the push with only in-scope rows, or null when nothing is left.
+ */
+async function _scopePush(peerId: string, wire: SyncPush): Promise<SyncPush | null> {
+  if (typeof wire.channelId !== 'string' || !wire.channelId) return null
+  const rows = wire.table === 'messages' ? wire.messages : wire.table === 'mutations' ? wire.mutations : undefined
+  if (!Array.isArray(rows) || rows.length === 0) return null
+  if (!await _sharesServer(peerId, wire.serverId)) {
+    logger.warn('sync', 'dropping push for a server not shared with', peerId, wire.serverId)
+    return null
+  }
+  const scope = { serverId: wire.serverId, channelId: wire.channelId }
+  if (wire.table === 'messages') {
+    const messages: MessageRow[] = await invoke('sync_scope_messages', { ...scope, messages: rows })
+    if (messages.length < rows.length) {
+      logger.warn('sync', `dropped ${rows.length - messages.length} out-of-scope messages from`, peerId)
+    }
+    return messages.length > 0 ? { ...wire, messages, mutations: undefined } : null
+  }
+  const mutations: MutationRow[] = await invoke('sync_scope_mutations', { ...scope, mutations: rows })
+  if (mutations.length < rows.length) {
+    logger.warn('sync', `dropped ${rows.length - mutations.length} out-of-scope mutations from`, peerId)
+  }
+  return mutations.length > 0 ? { ...wire, messages: undefined, mutations } : null
+}
+
+async function _onPush(peerId: string, pushed: SyncPush): Promise<void> {
   try {
+    const wire = await _scopePush(peerId, pushed)
+    if (!wire) return
     if (wire.table === 'messages' && wire.messages && wire.messages.length > 0) {
       await invoke('sync_save_messages', { messages: wire.messages })
       // Refresh in-memory state for the affected channel
@@ -393,5 +495,8 @@ async function _onPush(wire: SyncPush): Promise<void> {
 // ── Respond to a want request ─────────────────────────────────────────────────
 
 async function _onWant(peerId: string, wire: SyncWant): Promise<void> {
-  await _pushItems(peerId, wire.sessionId, wire.channelId, wire.table, wire.ids)
+  if (!Array.isArray(wire.ids) || wire.ids.length === 0) return
+  // _pushItems checks the peer shares wire.serverId; the Rust getters then
+  // return only rows of wire.channelId in that server.
+  await _pushItems(peerId, wire.sessionId, wire.serverId, wire.channelId, wire.table, wire.ids)
 }

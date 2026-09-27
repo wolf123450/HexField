@@ -108,9 +108,11 @@ describe('channelsStore', () => {
     await store.deleteChannel(ch.id)
     expect(invoke).toHaveBeenCalledWith('db_save_mutation', expect.objectContaining({
       mutation: expect.objectContaining({
-        type:       'channel_delete',
-        target_id:  ch.id,
-        channel_id: '__server__',
+        type:        'channel_delete',
+        target_id:   ch.id,
+        channel_id:  '__server__',
+        // serverId keeps the row attributable for history sync after the channel is gone
+        new_content: JSON.stringify({ serverId: 'srv-1' }),
       }),
     }))
   })
@@ -163,7 +165,7 @@ describe('channelsStore', () => {
         type:        'channel_update',
         target_id:   ch.id,
         channel_id:  '__server__',
-        new_content: JSON.stringify({ name: 'renamed' }),
+        new_content: JSON.stringify({ serverId: 'srv-1', name: 'renamed' }),
       }),
     }))
   })
