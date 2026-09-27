@@ -1174,7 +1174,10 @@ impl AssociationInternal {
                                 self.rto_mgr.get_rto()
                             );
                         } else {
-                            log::debug!("[{}] SACK: clock stepped back, RTT sample skipped", self.name);
+                            log::debug!(
+                                "[{}] SACK: clock stepped back, RTT sample skipped",
+                                self.name
+                            );
                         }
                     }
                 }
@@ -1235,7 +1238,10 @@ impl AssociationInternal {
                                     self.rto_mgr.get_rto()
                                 );
                             } else {
-                                log::debug!("[{}] SACK: clock stepped back, RTT sample skipped", self.name);
+                                log::debug!(
+                                    "[{}] SACK: clock stepped back, RTT sample skipped",
+                                    self.name
+                                );
                             }
                         }
 

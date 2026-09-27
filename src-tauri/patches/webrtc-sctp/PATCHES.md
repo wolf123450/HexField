@@ -58,7 +58,10 @@ and runs after the ack point has been advanced, so it cannot desync the queue.
 
 Unit tests for the bad-SACK cases are at the end of
 `src/association/association_internal/association_internal_test.rs`.
-Run them from this directory: `cargo test --lib association_internal`.
+Run them from this directory, with a target dir of its own:
+`cargo test --lib association_internal`. A plain `cargo test --lib` also shows
+two failures in `fuzz_artifact_test`. They exist upstream too: those tests read
+a `fuzz/artifacts` directory that the crates.io package does not ship.
 
 ## Dropping the patch
 
