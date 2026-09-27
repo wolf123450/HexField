@@ -249,4 +249,85 @@ describe('networkStore rendezvous client', () => {
     expect(infoSpy).toHaveBeenCalledWith('network', expect.stringContaining('peer unavailable'), 'user-bob')
     expect(webrtcService.handleOffer).not.toHaveBeenCalled()
   })
+
+  // ── Join fallback (network-compatibility-plan step 1.1) ─────────────────
+
+  describe('connectRendezvousForJoin', () => {
+    it('is a no-op once signaling is already connected', async () => {
+      const { store, onState, signalingService } = await setupStore()
+      onState('connected')
+      vi.mocked(signalingService.connect).mockClear()
+      fetchMock.mockClear()
+
+      await store.connectRendezvousForJoin('user-alice', 'https://other-rdv.example')
+
+      expect(signalingService.connect).not.toHaveBeenCalled()
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('connects using the invite-supplied URL when nothing is configured locally', async () => {
+      setActivePinia(createPinia())
+      const { useSettingsStore } = await import('@/stores/settingsStore')
+      useSettingsStore().settings.rendezvousServerUrl = '' // nothing configured
+      const { useNetworkStore } = await import('@/stores/networkStore')
+      const store = useNetworkStore()
+      await store.init('user-alice')
+      const { signalingService } = await import('@/services/signalingService')
+      const [, onState] = vi.mocked(signalingService.init).mock.calls[0] as unknown as [
+        unknown, (s: string) => void,
+      ]
+
+      const joinPromise = store.connectRendezvousForJoin('user-alice', 'https://invite-rdv.example')
+      // The real Rust WS actor emits "connected" once the socket opens; simulate that
+      // so waitForConnected() inside connectRendezvousForJoin resolves.
+      await vi.waitFor(() => expect(signalingService.connect).toHaveBeenCalled())
+      onState('connected')
+      await joinPromise
+
+      expect(callsTo('/auth/challenge').some(([url]) => url.startsWith('https://invite-rdv.example'))).toBe(true)
+      expect(signalingService.connect).toHaveBeenCalledWith('wss://invite-rdv.example/ws', expect.any(String))
+    })
+
+    it('throws when neither the invite nor local settings provide a rendezvous URL', async () => {
+      setActivePinia(createPinia())
+      const { useSettingsStore } = await import('@/stores/settingsStore')
+      useSettingsStore().settings.rendezvousServerUrl = ''
+      const { useNetworkStore } = await import('@/stores/networkStore')
+      const store = useNetworkStore()
+      await store.init('user-alice')
+
+      await expect(store.connectRendezvousForJoin('user-alice', undefined))
+        .rejects.toThrow('No rendezvous server is available for this invite.')
+    })
+  })
+
+  describe('waitForPeer', () => {
+    it('rejects early with a distinct message when the peer is reported unavailable', async () => {
+      const { store, onMessage } = await setupStore()
+
+      const wait = store.waitForPeer('user-bob', 5000)
+      onMessage({ type: 'peer_unavailable', to: 'user-bob' })
+
+      await expect(wait).rejects.toThrow('peer_unavailable:user-bob')
+    })
+
+    it('ignores a stale peer_unavailable report from before the wait started', async () => {
+      const { store, onMessage } = await setupStore()
+
+      onMessage({ type: 'peer_unavailable', to: 'user-bob' })
+      vi.useFakeTimers()
+      try {
+        // Ensure the wait's start timestamp is unambiguously after the stale report.
+        await vi.advanceTimersByTimeAsync(10)
+        const wait = store.waitForPeer('user-bob', 300)
+        wait.catch(() => {}) // avoid unhandled rejection while advancing timers below
+
+        await vi.advanceTimersByTimeAsync(400)
+
+        await expect(wait).rejects.toThrow('Peer connection timed out')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
 })

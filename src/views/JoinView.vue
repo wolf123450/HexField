@@ -16,6 +16,7 @@ import { useServersStore } from '@/stores/serversStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useIdentityStore } from '@/stores/identityStore'
 import type { PeerInvite } from '@/types/core'
 
 const route     = useRoute()
@@ -40,6 +41,7 @@ onMounted(async () => {
   const serversStore  = useServersStore()
   const channelsStore = useChannelsStore()
   const networkStore  = useNetworkStore()
+  const identityStore = useIdentityStore()
 
   try {
     const param = route.params.inviteCode as string
@@ -47,7 +49,7 @@ onMounted(async () => {
 
     const invite = decodeInvite(param)
 
-    // Try each endpoint until one connects
+    // Try each direct/LAN endpoint until one connects.
     let connected = false
     for (const ep of invite.endpoints) {
       try {
@@ -59,7 +61,24 @@ onMounted(async () => {
         // try next endpoint
       }
     }
-    if (!connected) throw new Error('Could not reach the server owner. Make sure you\'re on the same network.')
+
+    // No direct/LAN endpoint worked (no port forward, different networks, or
+    // the invite carried none at all) — fall back to rendezvous signaling
+    // (network-compatibility-plan step 1.1). `signal_send` on the Rust side
+    // already prefers a direct LAN route when one is registered, so this only
+    // changes behavior when the loop above found nothing.
+    if (!connected) {
+      try {
+        statusMsg.value = 'Falling back to rendezvous signaling…'
+        await networkStore.connectRendezvousForJoin(identityStore.userId ?? '', invite.rendezvous)
+      } catch (e: unknown) {
+        throw new Error(
+          e instanceof Error && e.message
+            ? `Could not reach ${invite.displayName}: ${e.message}`
+            : `Could not reach ${invite.displayName}. Make sure you're on the same network.`,
+        )
+      }
+    }
 
     statusMsg.value = 'Establishing encrypted connection…'
     // If mDNS has already connected us to this peer (same-machine scenario),
@@ -67,7 +86,14 @@ onMounted(async () => {
     if (!networkStore.connectedPeers.includes(invite.userId)) {
       await networkStore.connectToPeer(invite.userId)
     }
-    await networkStore.waitForPeer(invite.userId, 15000)
+    try {
+      await networkStore.waitForPeer(invite.userId, 15000)
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.startsWith('peer_unavailable:')) {
+        throw new Error(`${invite.displayName} is not online right now. Try again once they're connected.`)
+      }
+      throw new Error(`Could not establish a connection to ${invite.displayName}. They may be offline or unreachable.`)
+    }
 
     statusMsg.value = `Requesting server info for "${invite.serverName}"…`
     const manifest = await networkStore.requestServerManifest(invite.userId, invite.serverId, invite.inviteToken)
