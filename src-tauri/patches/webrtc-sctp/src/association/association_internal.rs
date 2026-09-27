@@ -1116,6 +1116,10 @@ impl AssociationInternal {
         &mut self,
         d: &ChunkSelectiveAck,
     ) -> Result<(HashMap<u16, i64>, u32)> {
+        // HexField patch: reject a bad SACK before anything is popped, and
+        // never return an error once popping has started (see PATCHES.md).
+        self.validate_selective_ack(d)?;
+
         let mut bytes_acked_per_stream = HashMap::new();
 
         // New ack point, so pop all ACKed packets from inflight_queue
@@ -1158,18 +1162,20 @@ impl AssociationInternal {
                     //        chunk or for a later instance)
                     if c.nsent == 1 && sna32gte(c.tsn, self.min_tsn2measure_rtt) {
                         self.min_tsn2measure_rtt = self.my_next_tsn;
-                        let rtt = match SystemTime::now().duration_since(c.since) {
-                            Ok(rtt) => rtt,
-                            Err(_) => return Err(Error::ErrInvalidSystemTime),
-                        };
-                        let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
-                        log::trace!(
-                            "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
-                            self.name,
-                            rtt.as_millis(),
-                            srtt,
-                            self.rto_mgr.get_rto()
-                        );
+                        // HexField patch: skip the sample when the clock
+                        // stepped back instead of failing mid-SACK.
+                        if let Ok(rtt) = SystemTime::now().duration_since(c.since) {
+                            let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
+                            log::trace!(
+                                "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
+                                self.name,
+                                rtt.as_millis(),
+                                srtt,
+                                self.rto_mgr.get_rto()
+                            );
+                        } else {
+                            log::debug!("[{}] SACK: clock stepped back, RTT sample skipped", self.name);
+                        }
                     }
                 }
 
@@ -1178,6 +1184,7 @@ impl AssociationInternal {
                     self.in_fast_recovery = false;
                 }
             } else {
+                // Unreachable after validate_selective_ack; kept as a guard.
                 return Err(Error::ErrInflightQueueTsnPop);
             }
 
@@ -1188,8 +1195,9 @@ impl AssociationInternal {
 
         // Mark selectively acknowledged chunks as "acked"
         for g in &d.gap_ack_blocks {
-            for i in g.start..=g.end {
-                let tsn = d.cumulative_tsn_ack + i as u32;
+            // HexField patch: offset 0 is the cumulative TSN ack, already popped.
+            for i in g.start.max(1)..=g.end {
+                let tsn = d.cumulative_tsn_ack.wrapping_add(i as u32);
 
                 let (is_existed, is_acked) = if let Some(c) = self.inflight_queue.get(tsn) {
                     (true, c.acked)
@@ -1215,18 +1223,20 @@ impl AssociationInternal {
 
                         if c.nsent == 1 {
                             self.min_tsn2measure_rtt = self.my_next_tsn;
-                            let rtt = match SystemTime::now().duration_since(c.since) {
-                                Ok(rtt) => rtt,
-                                Err(_) => return Err(Error::ErrInvalidSystemTime),
-                            };
-                            let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
-                            log::trace!(
-                                "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
-                                self.name,
-                                rtt.as_millis(),
-                                srtt,
-                                self.rto_mgr.get_rto()
-                            );
+                            // HexField patch: skip the sample when the clock
+                            // stepped back instead of failing mid-SACK.
+                            if let Ok(rtt) = SystemTime::now().duration_since(c.since) {
+                                let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
+                                log::trace!(
+                                    "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
+                                    self.name,
+                                    rtt.as_millis(),
+                                    srtt,
+                                    self.rto_mgr.get_rto()
+                                );
+                            } else {
+                                log::debug!("[{}] SACK: clock stepped back, RTT sample skipped", self.name);
+                            }
                         }
 
                         if sna32lt(htna, tsn) {
@@ -1234,6 +1244,7 @@ impl AssociationInternal {
                         }
                     }
                 } else {
+                    // Unreachable after validate_selective_ack; kept as a guard.
                     return Err(Error::ErrTsnRequestNotExist);
                 }
             }
@@ -1242,6 +1253,73 @@ impl AssociationInternal {
         Ok((bytes_acked_per_stream, htna))
     }
 
+    /// Checks a SACK against the in-flight queue without changing any state.
+    /// process_selective_ack pops chunks, so everything that can make it fail
+    /// must be checked first: an early return after a pop leaves the popped
+    /// TSNs gone while cumulative_tsn_ack_point stays behind them, and every
+    /// later SACK then fails too (HexField patch, see PATCHES.md).
+    fn validate_selective_ack(&self, d: &ChunkSelectiveAck) -> Result<()> {
+        // The cumulative TSN ack must not cover data we never sent. This also
+        // bounds the loop below by the size of the in-flight queue.
+        if !sna32lt(d.cumulative_tsn_ack, self.my_next_tsn) {
+            log::debug!(
+                "[{}] SACK ignored: cumTSN={} is not below my_next_tsn={}",
+                self.name,
+                d.cumulative_tsn_ack,
+                self.my_next_tsn
+            );
+            return Err(Error::ErrInflightQueueTsnPop);
+        }
+
+        // Every TSN up to the cumulative TSN ack must pop from the front.
+        let first = self.cumulative_tsn_ack_point.wrapping_add(1);
+        if sna32lte(first, d.cumulative_tsn_ack)
+            && self.inflight_queue.sorted.front() != Some(&first)
+        {
+            log::debug!(
+                "[{}] SACK ignored: in-flight queue front {:?} is not TSN {}",
+                self.name,
+                self.inflight_queue.sorted.front(),
+                first
+            );
+            return Err(Error::ErrInflightQueueTsnPop);
+        }
+        let mut i = first;
+        while sna32lte(i, d.cumulative_tsn_ack) {
+            if self.inflight_queue.get(i).is_none() {
+                log::debug!("[{}] SACK ignored: TSN {} is not in flight", self.name, i);
+                return Err(Error::ErrInflightQueueTsnPop);
+            }
+            i = i.wrapping_add(1);
+        }
+
+        // Every TSN a gap ack block names must be in flight. Offset 0 is the
+        // cumulative TSN ack itself; it is skipped, not rejected.
+        for g in &d.gap_ack_blocks {
+            if g.start > g.end {
+                log::debug!(
+                    "[{}] SACK ignored: gap ack block {}-{} is reversed",
+                    self.name,
+                    g.start,
+                    g.end
+                );
+                return Err(Error::ErrTsnRequestNotExist);
+            }
+            for off in g.start.max(1)..=g.end {
+                let tsn = d.cumulative_tsn_ack.wrapping_add(off as u32);
+                if self.inflight_queue.get(tsn).is_none() {
+                    log::debug!(
+                        "[{}] SACK ignored: gap ack TSN {} is not in flight",
+                        self.name,
+                        tsn
+                    );
+                    return Err(Error::ErrTsnRequestNotExist);
+                }
+            }
+        }
+
+        Ok(())
+    }
     async fn on_cumulative_tsn_ack_point_advanced(&mut self, total_bytes_acked: i64) {
         // RFC 4096, sec 6.3.2.  Retransmission Timer Rules
         //   R2)  Whenever all outstanding data sent to an address have been

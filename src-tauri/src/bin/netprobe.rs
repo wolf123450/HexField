@@ -41,6 +41,9 @@ Usage: hexfield-netprobe --id <userId> [options]
   --relay-only           Only use TURN relay candidates (needs a turn: --ice URL)
   --expect-type <t>      Joiner: fail unless the connection type is lan|direct|relay
   --pings <n>            Data-channel echo round trips after connecting (default 10)
+  --ping-timeout-secs <n> Joiner: wait up to n s for each echo (default 5). A long
+                         value lets a stalled data channel recover (watchdog
+                         reconnect) inside the echo stage
   --timeout-secs <n>     Joiner: give up connecting after n s (default 30).
                          Host: exit after n s (default 0 = run until killed)
   --no-relay-retry       Do not re-offer relay-only when the first attempt stalls
@@ -58,6 +61,7 @@ struct Args {
     turn_user: String,
     turn_pass: String,
     pings: u32,
+    ping_timeout_secs: u64,
     timeout_secs: Option<u64>,
     relay_only: bool,
     expect_type: Option<String>,
@@ -77,6 +81,7 @@ fn parse_args() -> Result<Args, String> {
         turn_user: String::new(),
         turn_pass: String::new(),
         pings: 10,
+        ping_timeout_secs: 5,
         timeout_secs: None,
         relay_only: false,
         expect_type: None,
@@ -104,6 +109,10 @@ fn parse_args() -> Result<Args, String> {
             "--turn-user" => args.turn_user = value("--turn-user")?,
             "--turn-pass" => args.turn_pass = value("--turn-pass")?,
             "--pings" => args.pings = value("--pings")?.parse().map_err(|e| format!("--pings: {e}"))?,
+            "--ping-timeout-secs" => {
+                args.ping_timeout_secs =
+                    value("--ping-timeout-secs")?.parse().map_err(|e| format!("--ping-timeout-secs: {e}"))?
+            }
             "--timeout-secs" => {
                 args.timeout_secs = Some(value("--timeout-secs")?.parse().map_err(|e| format!("--timeout-secs: {e}"))?)
             }
@@ -339,6 +348,7 @@ async fn run_joiner(
     port: u16,
     peer: String,
     pings: u32,
+    ping_timeout: Duration,
     timeout: Duration,
     expect_type: Option<String>,
 ) -> i32 {
@@ -415,6 +425,8 @@ async fn run_joiner(
     // 3. Data-channel echo round trips.
     let mut rtts: Vec<f64> = Vec::new();
     let mut sent: HashMap<u64, Instant> = HashMap::new();
+    // Reconnects during the echo stage (the stall watchdog in webrtc_manager).
+    let mut reconnects = 0u32;
     for seq in 0..pings as u64 {
         let ping = json!({ "type": "probe_ping", "seq": seq });
         sent.insert(seq, Instant::now());
@@ -422,20 +434,25 @@ async fn run_joiner(
             log::warn!("[netprobe] ping {seq} failed: {e}");
             continue;
         }
-        let ping_deadline = Instant::now() + Duration::from_secs(5);
+        let ping_deadline = Instant::now() + ping_timeout;
         while let Some(ev) = probe.next(ping_deadline).await {
-            if let ProbeEvent::Pong(n) = ev {
-                if let Some(t) = sent.remove(&n) {
-                    rtts.push(t.elapsed().as_secs_f64() * 1000.0);
+            match ev {
+                ProbeEvent::Pong(n) => {
+                    if let Some(t) = sent.remove(&n) {
+                        rtts.push(t.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    if n == seq {
+                        break;
+                    }
                 }
-                if n == seq {
-                    break;
-                }
+                ProbeEvent::Connected(p) if p == peer => reconnects += 1,
+                _ => {}
             }
         }
     }
     result["pings"] = json!(pings);
     result["pongs"] = json!(rtts.len());
+    result["reconnects"] = json!(reconnects);
     if !rtts.is_empty() {
         let avg = rtts.iter().sum::<f64>() / rtts.len() as f64;
         let max = rtts.iter().cloned().fold(0.0, f64::max);
@@ -514,7 +531,8 @@ async fn main() {
     let code = match (args.connect, args.peer) {
         (Some((addr, port)), Some(peer)) => {
             let timeout = Duration::from_secs(args.timeout_secs.unwrap_or(30));
-            run_joiner(probe, addr, port, peer, args.pings, timeout, args.expect_type).await
+            let ping_timeout = Duration::from_secs(args.ping_timeout_secs);
+            run_joiner(probe, addr, port, peer, args.pings, ping_timeout, timeout, args.expect_type).await
         }
         _ => run_host(probe, args.timeout_secs.map(Duration::from_secs)).await,
     };
