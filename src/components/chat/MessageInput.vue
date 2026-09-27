@@ -54,7 +54,7 @@ import { useMessagesStore } from '@/stores/messagesStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useNetworkStore } from '@/stores/networkStore'
 import type { Attachment } from '@/types/core'
-import { prepareAttachment } from '@/services/attachmentService'
+import { prepareAttachment, computePreviewTargetBytes, makeImagePreview } from '@/services/attachmentService'
 
 const props = defineProps<{
   channelId: string
@@ -69,6 +69,9 @@ const fileInputRef    = ref<HTMLInputElement | null>(null)
 const wrapRef         = ref<HTMLDivElement | null>(null)
 const draft           = ref('')
 const pendingAttachments = ref<Attachment[]>([])
+// Parallel to pendingAttachments — the original File for each, so previews can be
+// regenerated at a smaller size as more images are attached to the same message.
+const pendingFiles: (File | null)[] = []
 
 let typingTimeout: ReturnType<typeof setTimeout> | null = null
 let isTyping = false
@@ -137,11 +140,16 @@ async function submit() {
   autoResize()
   const atts = pendingAttachments.value.slice()
   pendingAttachments.value = []
+  pendingFiles.length = 0
 
   await messagesStore.sendMessage(props.channelId, props.serverId, content, atts)
 }
 
 // ── File attachments ────────────────────────────────────────────────────────
+
+function isImageFile(file: File): boolean {
+  return file.type.startsWith('image/')
+}
 
 async function onFileSelected(event: Event) {
   const input = event.target as HTMLInputElement
@@ -150,12 +158,37 @@ async function onFileSelected(event: Event) {
   // Reset so the same file can be selected again
   input.value = ''
 
-  const att = await prepareAttachment(file)
+  const imageCount = pendingFiles.filter(f => f && isImageFile(f)).length + (isImageFile(file) ? 1 : 0)
+  const target = computePreviewTargetBytes(imageCount)
+  const att = await prepareAttachment(file, target)
   pendingAttachments.value.push(att)
+  pendingFiles.push(file)
+
+  // Re-target existing image previews so all images in the message share the
+  // budget evenly, rather than the first ones claiming it and later ones
+  // being dropped by fitPreviewsToBudget at send time.
+  if (imageCount > 1) await regeneratePreviews()
+}
+
+async function regeneratePreviews() {
+  const imageCount = pendingFiles.filter(f => f && isImageFile(f)).length
+  const target = computePreviewTargetBytes(imageCount)
+  for (let i = 0; i < pendingAttachments.value.length; i++) {
+    const file = pendingFiles[i]
+    if (!file || !isImageFile(file)) continue
+    const previewDataUrl = await makeImagePreview(file, target)
+    const att = pendingAttachments.value[i]
+    pendingAttachments.value[i] = previewDataUrl
+      ? { ...att, previewDataUrl }
+      : { ...att, previewDataUrl: undefined }
+  }
 }
 
 function removeAttachment(index: number) {
   pendingAttachments.value.splice(index, 1)
+  pendingFiles.splice(index, 1)
+  // Removing an image frees up budget — let the remaining previews grow back.
+  void regeneratePreviews()
 }
 
 function autoResize() {
