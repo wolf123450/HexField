@@ -28,6 +28,13 @@ pub struct Config {
     pub rate_limit_burst: u32,
     #[arg(long, env = "HEXFIELD_WS_MSG_RPS", default_value_t = 50)]
     pub ws_msg_rps: u32,
+    /// HMAC key for session tokens. If empty, a random key is generated at
+    /// startup and tokens stop working when the server restarts.
+    #[arg(long, env = "HEXFIELD_SESSION_SECRET", default_value = "", hide_env_values = true)]
+    pub session_secret: String,
+    /// Session token lifetime in seconds.
+    #[arg(long, env = "HEXFIELD_SESSION_TTL", default_value_t = 86400)]
+    pub session_ttl: u64,
 }
 
 impl Config {

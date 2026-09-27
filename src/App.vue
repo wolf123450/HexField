@@ -102,14 +102,7 @@ onMounted(async () => {
       .catch(() => {
         // LAN discovery is optional — app works without it.
       })
-
-    // Connect to rendezvous server if configured
-    const rendezvousUrl = settingsStore.settings.rendezvousServerUrl
-    if (rendezvousUrl) {
-      networkStore.connect(rendezvousUrl).catch(() => {
-        // Non-fatal — app works without a rendezvous server
-      })
-    }
+    // The rendezvous server (if configured) is connected by networkStore.init().
   }
 
   // Load joined servers

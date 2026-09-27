@@ -34,6 +34,8 @@ pub struct VerifyRequest {
     pub signature: String,
 }
 
+/// `token` is a signed session token (see `session.rs`). Send it as
+/// `Authorization: Bearer <token>` and as the `token` query value on `/ws`.
 #[derive(Serialize)]
 pub struct VerifyResponse { pub token: String }
 
@@ -77,6 +79,22 @@ pub async fn verify(
         let conn = &mut *state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let now = db::now_iso();
 
+        // Pin the user ID to the first key that authenticated for it. Without
+        // this, anyone could sign a challenge for someone else's user ID with
+        // their own key and take over that ID.
+        let existing_key: Option<String> = users::table
+            .find(&req.user_id)
+            .select(users::public_sign_key)
+            .first(conn)
+            .optional()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Some(key) = existing_key {
+            if key != req.public_sign_key {
+                tracing::warn!("auth: key mismatch for existing user {}", req.user_id);
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        }
+
         diesel::insert_into(users::table)
             .values(&NewUser {
                 user_id: &req.user_id,
@@ -97,5 +115,92 @@ pub async fn verify(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
 
-    Ok(Json(VerifyResponse { token: req.user_id }))
+    Ok(Json(VerifyResponse { token: state.issue_session_token(&req.user_id) }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::middleware::optional_user;
+    use axum::http::HeaderMap;
+    use clap::Parser;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn test_state() -> Arc<ServerState> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let config = Config::parse_from([
+            "hexfield-server", "--db-path", ":memory:",
+            "--session-secret", "0123456789abcdef0123456789abcdef",
+        ]);
+        Arc::new(ServerState::new(&config))
+    }
+
+    /// Run challenge + verify for `user_id`, advertising `key` and signing with `signer`.
+    async fn login_with(
+        state: &Arc<ServerState>, user_id: &str, key: &SigningKey, signer: &SigningKey,
+    ) -> Result<String, StatusCode> {
+        let pk = URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes());
+        let Json(ch) = challenge(State(state.clone()), Json(ChallengeRequest {
+            user_id: user_id.into(), public_sign_key: pk.clone(),
+            public_dh_key: "dh".into(), display_name: "name".into(),
+        })).await;
+        let signature = URL_SAFE_NO_PAD.encode(signer.sign(ch.challenge.as_bytes()).to_bytes());
+        let Json(resp) = verify(State(state.clone()), Json(VerifyRequest {
+            user_id: user_id.into(), public_sign_key: pk,
+            public_dh_key: "dh".into(), display_name: "name".into(), signature,
+        })).await?;
+        Ok(resp.token)
+    }
+
+    async fn login(state: &Arc<ServerState>, user_id: &str, key: &SigningKey) -> Result<String, StatusCode> {
+        login_with(state, user_id, key, key).await
+    }
+
+    fn bearer(token: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        h
+    }
+
+    #[tokio::test]
+    async fn verify_issues_a_session_token_not_the_user_id() {
+        let state = test_state();
+        let token = login(&state, "alice", &SigningKey::from_bytes(&[1; 32])).await.unwrap();
+        assert_ne!(token, "alice");
+        assert_eq!(state.verify_session_token(&token).as_deref(), Some("alice"));
+        assert_eq!(optional_user(&state, &bearer(&token)).as_deref(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn bare_user_id_is_not_a_valid_bearer() {
+        let state = test_state();
+        login(&state, "alice", &SigningKey::from_bytes(&[1; 32])).await.unwrap();
+        assert_eq!(optional_user(&state, &bearer("alice")), None);
+        assert_eq!(optional_user(&state, &HeaderMap::new()), None);
+    }
+
+    #[tokio::test]
+    async fn same_key_can_log_in_again() {
+        let state = test_state();
+        let key = SigningKey::from_bytes(&[1; 32]);
+        login(&state, "alice", &key).await.unwrap();
+        assert!(login(&state, "alice", &key).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn different_key_cannot_take_over_existing_user_id() {
+        let state = test_state();
+        login(&state, "alice", &SigningKey::from_bytes(&[1; 32])).await.unwrap();
+        let err = login(&state, "alice", &SigningKey::from_bytes(&[2; 32])).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn signature_from_wrong_key_is_rejected() {
+        let state = test_state();
+        let key = SigningKey::from_bytes(&[1; 32]);
+        let err = login_with(&state, "bob", &key, &SigningKey::from_bytes(&[2; 32])).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
 }
