@@ -4,15 +4,14 @@ use diesel::prelude::*;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use uuid::Uuid;
 
 use crate::db;
 use crate::models::NewUser;
 use crate::schema::users;
 use crate::state::ServerState;
 
-const CHALLENGE_TTL: Duration = Duration::from_secs(300);
+/// Challenge lifetime in seconds.
+const CHALLENGE_TTL_SECS: u64 = 300;
 
 #[derive(Deserialize)]
 pub struct ChallengeRequest {
@@ -22,6 +21,9 @@ pub struct ChallengeRequest {
     pub display_name: String,
 }
 
+/// `challenge` is an opaque, server-signed string bound to the requested
+/// user ID (see `session.rs`). Sign its UTF-8 bytes and send it back
+/// unchanged in `VerifyRequest::challenge`.
 #[derive(Serialize)]
 pub struct ChallengeResponse { pub challenge: String }
 
@@ -32,38 +34,33 @@ pub struct VerifyRequest {
     pub public_dh_key: String,
     pub display_name: String,
     pub signature: String,
+    /// The challenge string from `/auth/challenge`, echoed back. Required:
+    /// the server keeps no per-user challenge state.
+    #[serde(default)]
+    pub challenge: String,
 }
 
 /// `token` is a signed session token (see `session.rs`). Send it as
-/// `Authorization: Bearer <token>` and as the `token` query value on `/ws`.
+/// `Authorization: Bearer <token>`, on REST routes and on the `/ws` upgrade.
+/// `expires_at` is the token's expiry in unix seconds.
 #[derive(Serialize)]
-pub struct VerifyResponse { pub token: String }
+pub struct VerifyResponse { pub token: String, pub expires_at: u64 }
 
 pub async fn challenge(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<ChallengeRequest>,
 ) -> Json<ChallengeResponse> {
-    let nonce = Uuid::new_v4().to_string();
-    {
-        let mut challenges = state.challenges.write().await;
-        challenges.retain(|_, (_, created)| created.elapsed() < CHALLENGE_TTL);
-        challenges.insert(req.user_id.clone(), (nonce.clone(), Instant::now()));
-    }
-    Json(ChallengeResponse { challenge: nonce })
+    // Stateless: requesting a challenge for someone else's user ID cannot
+    // replace or invalidate theirs.
+    Json(ChallengeResponse { challenge: state.issue_challenge(&req.user_id, CHALLENGE_TTL_SECS) })
 }
 
 pub async fn verify(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<VerifyRequest>,
 ) -> Result<Json<VerifyResponse>, StatusCode> {
-    // Pop challenge
-    let nonce = {
-        let mut challenges = state.challenges.write().await;
-        match challenges.remove(&req.user_id) {
-            Some((nonce, created)) if created.elapsed() < CHALLENGE_TTL => nonce,
-            _ => return Err(StatusCode::UNAUTHORIZED),
-        }
-    };
+    // The challenge must be ours, unexpired, unused and issued for this user ID.
+    let challenge = state.check_challenge(&req.challenge, &req.user_id).ok_or(StatusCode::UNAUTHORIZED)?;
 
     // Verify Ed25519 signature
     let key_bytes = URL_SAFE_NO_PAD.decode(&req.public_sign_key).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -72,7 +69,11 @@ pub async fn verify(
     let sig_bytes = URL_SAFE_NO_PAD.decode(&req.signature).map_err(|_| StatusCode::BAD_REQUEST)?;
     let sig_arr: [u8; 64] = sig_bytes.try_into().map_err(|_| StatusCode::BAD_REQUEST)?;
     let signature = Signature::from_bytes(&sig_arr);
-    verifying_key.verify(nonce.as_bytes(), &signature).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    verifying_key.verify(req.challenge.as_bytes(), &signature).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    // Single use: a replayed verify request with the same challenge fails.
+    if !state.consume_challenge(&challenge) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
 
     // Upsert user via Diesel
     {
@@ -115,7 +116,8 @@ pub async fn verify(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
 
-    Ok(Json(VerifyResponse { token: state.issue_session_token(&req.user_id) }))
+    let (token, expires_at) = state.issue_session_token(&req.user_id);
+    Ok(Json(VerifyResponse { token, expires_at }))
 }
 
 #[cfg(test)]
@@ -136,21 +138,34 @@ mod tests {
         Arc::new(ServerState::new(&config))
     }
 
+    async fn get_challenge(state: &Arc<ServerState>, user_id: &str) -> String {
+        let Json(ch) = challenge(State(state.clone()), Json(ChallengeRequest {
+            user_id: user_id.into(), public_sign_key: "pk".into(),
+            public_dh_key: "dh".into(), display_name: "name".into(),
+        })).await;
+        ch.challenge
+    }
+
+    /// Sign `challenge` with `signer` and call verify for `user_id`, advertising `key`.
+    async fn verify_with(
+        state: &Arc<ServerState>, user_id: &str, key: &SigningKey, signer: &SigningKey, challenge: &str,
+    ) -> Result<String, StatusCode> {
+        let pk = URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes());
+        let signature = URL_SAFE_NO_PAD.encode(signer.sign(challenge.as_bytes()).to_bytes());
+        let Json(resp) = verify(State(state.clone()), Json(VerifyRequest {
+            user_id: user_id.into(), public_sign_key: pk,
+            public_dh_key: "dh".into(), display_name: "name".into(), signature,
+            challenge: challenge.into(),
+        })).await?;
+        Ok(resp.token)
+    }
+
     /// Run challenge + verify for `user_id`, advertising `key` and signing with `signer`.
     async fn login_with(
         state: &Arc<ServerState>, user_id: &str, key: &SigningKey, signer: &SigningKey,
     ) -> Result<String, StatusCode> {
-        let pk = URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes());
-        let Json(ch) = challenge(State(state.clone()), Json(ChallengeRequest {
-            user_id: user_id.into(), public_sign_key: pk.clone(),
-            public_dh_key: "dh".into(), display_name: "name".into(),
-        })).await;
-        let signature = URL_SAFE_NO_PAD.encode(signer.sign(ch.challenge.as_bytes()).to_bytes());
-        let Json(resp) = verify(State(state.clone()), Json(VerifyRequest {
-            user_id: user_id.into(), public_sign_key: pk,
-            public_dh_key: "dh".into(), display_name: "name".into(), signature,
-        })).await?;
-        Ok(resp.token)
+        let ch = get_challenge(state, user_id).await;
+        verify_with(state, user_id, key, signer, &ch).await
     }
 
     async fn login(state: &Arc<ServerState>, user_id: &str, key: &SigningKey) -> Result<String, StatusCode> {
@@ -202,5 +217,65 @@ mod tests {
         let key = SigningKey::from_bytes(&[1; 32]);
         let err = login_with(&state, "bob", &key, &SigningKey::from_bytes(&[2; 32])).await.unwrap_err();
         assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn third_party_challenge_request_does_not_invalidate_pending_one() {
+        let state = test_state();
+        let key = SigningKey::from_bytes(&[1; 32]);
+        let mine = get_challenge(&state, "alice").await;
+        // Mallory asks for challenges for alice's user ID in the meantime.
+        for _ in 0..20 {
+            get_challenge(&state, "alice").await;
+        }
+        assert!(verify_with(&state, "alice", &key, &key, &mine).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn challenge_is_single_use() {
+        let state = test_state();
+        let key = SigningKey::from_bytes(&[1; 32]);
+        let ch = get_challenge(&state, "alice").await;
+        assert!(verify_with(&state, "alice", &key, &key, &ch).await.is_ok());
+        let err = verify_with(&state, "alice", &key, &key, &ch).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn challenge_is_bound_to_its_user_id() {
+        let state = test_state();
+        let key = SigningKey::from_bytes(&[1; 32]);
+        let for_bob = get_challenge(&state, "bob").await;
+        let err = verify_with(&state, "alice", &key, &key, &for_bob).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn missing_or_forged_challenge_is_rejected() {
+        let state = test_state();
+        let key = SigningKey::from_bytes(&[1; 32]);
+        // Old clients sent no challenge.
+        assert_eq!(verify_with(&state, "alice", &key, &key, "").await.unwrap_err(), StatusCode::UNAUTHORIZED);
+        // A session token is not a challenge.
+        let (token, _) = state.issue_session_token("alice");
+        assert_eq!(verify_with(&state, "alice", &key, &key, &token).await.unwrap_err(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn failed_signature_does_not_consume_challenge() {
+        let state = test_state();
+        let key = SigningKey::from_bytes(&[1; 32]);
+        let ch = get_challenge(&state, "alice").await;
+        let bad = verify_with(&state, "alice", &key, &SigningKey::from_bytes(&[2; 32]), &ch).await;
+        assert_eq!(bad.unwrap_err(), StatusCode::UNAUTHORIZED);
+        assert!(verify_with(&state, "alice", &key, &key, &ch).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn challenge_is_not_a_session_token() {
+        let state = test_state();
+        let ch = get_challenge(&state, "alice").await;
+        assert_eq!(state.verify_session_token(&ch), None);
+        assert_eq!(optional_user(&state, &bearer(&ch)), None);
     }
 }

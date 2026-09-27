@@ -1,45 +1,57 @@
 use axum::{
-    extract::{ws::{Message, WebSocket}, Query, State, WebSocketUpgrade},
-    http::StatusCode,
+    extract::{ws::{CloseFrame, Message, WebSocket}, State, WebSocketUpgrade},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+use std::time::Duration;
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 
-use crate::state::{ConnectedClient, ServerState};
+use crate::session::Session;
+use crate::state::{now_secs, ConnectedClient, ServerState};
 
-#[derive(Deserialize)]
-pub struct WsParams {
-    /// Session token from `/auth/verify`. The user ID is taken from it.
-    #[serde(default)]
-    pub token: String,
-}
+/// Close code sent when the connection's session token expires. The client
+/// re-authenticates and reconnects.
+pub const CLOSE_SESSION_EXPIRED: u16 = 4001;
 
-/// GET /ws?token=<session token>. Rejects the upgrade with 401 unless the
-/// token is valid; the connection's user ID always comes from the token.
+/// GET /ws with `Authorization: Bearer <session token>` on the upgrade
+/// request. Rejects the upgrade with 401 unless the token is valid; the
+/// connection's user ID always comes from the token. The token is not read
+/// from the query string, so it does not end up in proxy access logs.
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
-    Query(params): Query<WsParams>,
+    headers: HeaderMap,
     State(state): State<Arc<ServerState>>,
 ) -> Response {
-    let Some(user_id) = state.verify_session_token(&params.token) else {
+    let Some(session) = crate::middleware::bearer_token(&headers).and_then(|t| state.verify_session(t)) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    ws.on_upgrade(move |socket| handle_socket(socket, user_id, state))
+    ws.on_upgrade(move |socket| handle_socket(socket, session, state))
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+/// The instant at which a token with expiry `exp` (unix seconds) runs out.
+fn deadline_for(exp: u64) -> Instant {
+    Instant::now() + Duration::from_secs(exp.saturating_sub(now_secs()))
 }
 
-async fn handle_socket(socket: WebSocket, user_id: String, state: Arc<ServerState>) {
+/// Handle `{"type":"auth","token":...}` sent on an open socket: a fresh
+/// token for the same user extends the connection's deadline. Returns the
+/// new expiry, or None if the token is invalid or for another user.
+fn refresh_session(state: &ServerState, user_id: &str, payload: &serde_json::Value) -> Option<u64> {
+    let token = payload.get("token").and_then(|v| v.as_str())?;
+    let session = state.verify_session(token)?;
+    (session.user_id == user_id).then_some(session.exp)
+}
+
+async fn handle_socket(socket: WebSocket, session: Session, state: Arc<ServerState>) {
+    let Session { user_id, exp } = session;
     let (mut ws_sink, mut ws_source) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let (close_tx, mut close_rx) = oneshot::channel::<CloseFrame>();
 
     let client = Arc::new(ConnectedClient {
         tx,
@@ -61,26 +73,69 @@ async fn handle_socket(socket: WebSocket, user_id: String, state: Arc<ServerStat
     { let mut c = state.clients.write().await; c.insert(user_id.clone(), client.clone()); }
     tracing::info!("WS connected: {}", user_id);
 
-    let send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if ws_sink.send(Message::Text(msg.into())).await.is_err() { break; }
+    let mut send_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                // Queued text goes out before a close frame.
+                biased;
+                msg = rx.recv() => match msg {
+                    Some(msg) => {
+                        if ws_sink.send(Message::Text(msg.into())).await.is_err() { break; }
+                    }
+                    None => break,
+                },
+                frame = &mut close_rx => {
+                    if let Ok(frame) = frame {
+                        let _ = ws_sink.send(Message::Close(Some(frame))).await;
+                    }
+                    break;
+                }
+            }
         }
         let _ = ws_sink.close().await;
     });
 
+    // Close the socket when the session token expires, unless the client
+    // sends a fresh token first (`{"type":"auth","token":...}`).
+    let expiry = tokio::time::sleep_until(deadline_for(exp));
+    tokio::pin!(expiry);
+    let mut expired = false;
+
     let ws_msg_rps = state.config.ws_msg_rps;
-    while let Some(msg) = ws_source.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
-                if !check_ws_rate_limit(&client, ws_msg_rps) { continue; }
-                let text_str: &str = &text;
-                if let Ok(payload) = serde_json::from_str::<serde_json::Value>(text_str) {
+    loop {
+        tokio::select! {
+            msg = ws_source.next() => match msg {
+                Some(Ok(Message::Text(text))) => {
+                    if !check_ws_rate_limit(&client, ws_msg_rps) { continue; }
+                    let text_str: &str = &text;
+                    let Ok(payload) = serde_json::from_str::<serde_json::Value>(text_str) else { continue };
+                    if payload.get("type").and_then(|v| v.as_str()) == Some("auth") {
+                        let reply = match refresh_session(&state, &user_id, &payload) {
+                            Some(new_exp) => {
+                                expiry.as_mut().reset(deadline_for(new_exp));
+                                serde_json::json!({ "type": "auth_ok", "expires_at": new_exp })
+                            }
+                            None => serde_json::json!({ "type": "auth_failed" }),
+                        };
+                        let _ = client.tx.send(reply.to_string());
+                        continue;
+                    }
                     let clients = state.clients.read().await;
                     deliver(route(&clients, &user_id, payload), &client);
                 }
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                Some(Ok(_)) => {}
+            },
+            _ = &mut expiry => {
+                tracing::info!("WS session expired: {}", user_id);
+                let _ = client.tx.send(serde_json::json!({ "type": "session_expired" }).to_string());
+                let _ = close_tx.send(CloseFrame {
+                    code: CLOSE_SESSION_EXPIRED,
+                    reason: "session expired".into(),
+                });
+                expired = true;
+                break;
             }
-            Ok(Message::Close(_)) | Err(_) => break,
-            _ => {}
         }
     }
 
@@ -93,6 +148,10 @@ async fn handle_socket(socket: WebSocket, user_id: String, state: Arc<ServerStat
         }
     }
     tracing::info!("WS disconnected: {}", user_id);
+    // On expiry, let the send task flush `session_expired` and the close frame.
+    if expired && tokio::time::timeout(Duration::from_secs(5), &mut send_task).await.is_ok() {
+        return;
+    }
     send_task.abort();
 }
 
@@ -210,5 +269,143 @@ mod tests {
     fn signal_without_to_is_dropped() {
         let clients = HashMap::from([("bob".to_string(), client())]);
         assert!(route(&clients, "alice", json!({ "type": "signal_offer" })).is_none());
+    }
+
+    // ── Loopback tests of the /ws endpoint ───────────────────────────────
+
+    use axum::{routing::get, Router};
+    use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest, protocol::frame::coding::CloseCode};
+
+    type Client = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+    fn test_state() -> Arc<ServerState> {
+        use clap::Parser;
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let config = crate::config::Config::parse_from([
+            "hexfield-server", "--db-path", ":memory:",
+            "--session-secret", "0123456789abcdef0123456789abcdef",
+        ]);
+        Arc::new(ServerState::new(&config))
+    }
+
+    /// Serve `/ws` on a loopback port and return its URL.
+    async fn serve(state: Arc<ServerState>) -> String {
+        let app = Router::new().route("/ws", get(ws_handler)).with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("ws://{addr}/ws")
+    }
+
+    async fn connect(url: &str, bearer: Option<&str>) -> Result<Client, tungstenite::Error> {
+        let mut req = url.into_client_request()?;
+        if let Some(t) = bearer {
+            req.headers_mut().insert("authorization", format!("Bearer {t}").parse().unwrap());
+        }
+        tokio_tungstenite::connect_async(req).await.map(|(ws, _)| ws)
+    }
+
+    fn assert_unauthorized(res: Result<Client, tungstenite::Error>) {
+        match res {
+            Err(tungstenite::Error::Http(resp)) => assert_eq!(resp.status(), StatusCode::UNAUTHORIZED),
+            Err(e) => panic!("expected 401, got {e}"),
+            Ok(_) => panic!("expected 401, upgrade succeeded"),
+        }
+    }
+
+    /// Next message within `secs`, or panic.
+    async fn next(ws: &mut Client, secs: u64) -> tungstenite::Message {
+        tokio::time::timeout(Duration::from_secs(secs), ws.next())
+            .await
+            .expect("timed out waiting for a message")
+            .expect("stream ended")
+            .expect("read error")
+    }
+
+    async fn next_json(ws: &mut Client, secs: u64) -> Value {
+        match next(ws, secs).await {
+            tungstenite::Message::Text(t) => serde_json::from_str(&t).unwrap(),
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
+
+    async fn send_json(ws: &mut Client, v: Value) {
+        ws.send(tungstenite::Message::Text(v.to_string().into())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn upgrade_accepts_bearer_header() {
+        let state = test_state();
+        let url = serve(state.clone()).await;
+        let (token, _) = state.issue_session_token("alice");
+        let mut ws = connect(&url, Some(&token)).await.unwrap();
+        send_json(&mut ws, json!({ "type": "ping" })).await;
+        assert_eq!(next_json(&mut ws, 5).await, json!({ "type": "pong" }));
+    }
+
+    #[tokio::test]
+    async fn upgrade_rejects_missing_forged_or_expired_token() {
+        let state = test_state();
+        let url = serve(state.clone()).await;
+        assert_unauthorized(connect(&url, None).await);
+        assert_unauthorized(connect(&url, Some("alice")).await);
+        let expired = state.issue_session_token_until("alice", now_secs() - 1);
+        assert_unauthorized(connect(&url, Some(&expired)).await);
+    }
+
+    #[tokio::test]
+    async fn token_in_query_string_is_not_accepted() {
+        let state = test_state();
+        let url = serve(state.clone()).await;
+        let (token, _) = state.issue_session_token("alice");
+        assert_unauthorized(connect(&format!("{url}?token={token}"), None).await);
+    }
+
+    #[tokio::test]
+    async fn socket_is_closed_when_token_expires() {
+        let state = test_state();
+        let url = serve(state.clone()).await;
+        let token = state.issue_session_token_until("alice", now_secs() + 1);
+        let mut ws = connect(&url, Some(&token)).await.unwrap();
+        assert_eq!(next_json(&mut ws, 5).await, json!({ "type": "session_expired" }));
+        match next(&mut ws, 5).await {
+            tungstenite::Message::Close(Some(frame)) => {
+                assert_eq!(frame.code, CloseCode::from(CLOSE_SESSION_EXPIRED));
+            }
+            other => panic!("expected close frame, got {other:?}"),
+        }
+        // The user's entry is removed, so signals to them get peer_unavailable.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!state.clients.read().await.contains_key("alice"));
+    }
+
+    #[tokio::test]
+    async fn fresh_token_on_socket_extends_the_session() {
+        let state = test_state();
+        let url = serve(state.clone()).await;
+        let short = state.issue_session_token_until("alice", now_secs() + 1);
+        let mut ws = connect(&url, Some(&short)).await.unwrap();
+        let (fresh, fresh_exp) = state.issue_session_token("alice");
+        send_json(&mut ws, json!({ "type": "auth", "token": fresh })).await;
+        assert_eq!(next_json(&mut ws, 5).await, json!({ "type": "auth_ok", "expires_at": fresh_exp }));
+        // Past the old expiry, the socket still works.
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        send_json(&mut ws, json!({ "type": "ping" })).await;
+        assert_eq!(next_json(&mut ws, 5).await, json!({ "type": "pong" }));
+    }
+
+    #[tokio::test]
+    async fn refresh_with_another_users_token_is_rejected() {
+        let state = test_state();
+        let url = serve(state.clone()).await;
+        let short = state.issue_session_token_until("alice", now_secs() + 1);
+        let mut ws = connect(&url, Some(&short)).await.unwrap();
+        let (bobs, _) = state.issue_session_token("bob");
+        send_json(&mut ws, json!({ "type": "auth", "token": bobs })).await;
+        assert_eq!(next_json(&mut ws, 5).await, json!({ "type": "auth_failed" }));
+        send_json(&mut ws, json!({ "type": "auth", "token": "garbage" })).await;
+        assert_eq!(next_json(&mut ws, 5).await, json!({ "type": "auth_failed" }));
+        // The original deadline still applies.
+        assert_eq!(next_json(&mut ws, 5).await, json!({ "type": "session_expired" }));
     }
 }
