@@ -122,6 +122,11 @@ const addServerMenu: MenuItem[] = [
     label: 'Join a Server',
     callback: () => { uiStore.showJoinModal = true },
   },
+  {
+    type: 'action',
+    label: 'Direct Connect (no server)',
+    callback: () => { uiStore.showDirectConnectModal = true },
+  },
 ]
 </script>
 
