@@ -4,6 +4,13 @@ import type { Server, ServerMember } from '@/types/core'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
+// Mutations are signed at creation (spec 08 §5) — stub the signer.
+vi.mock('@/services/cryptoService', () => ({
+  cryptoService: {
+    signJson: vi.fn((p: Record<string, unknown>) => ({ ...p, __sig: 'test-sig', __pub: 'test-pub' })),
+  },
+}))
+
 // identityStore is dynamically imported inside createServer — stub it out
 vi.mock('@/stores/identityStore', () => ({
   useIdentityStore: () => ({

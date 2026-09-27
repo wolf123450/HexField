@@ -205,6 +205,7 @@ import { useIdentityStore } from '@/stores/identityStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useDevicesStore } from '@/stores/devicesStore'
 import { useUIStore } from '@/stores/uiStore'
+import { signMutation, serializeMutation } from '@/services/mutationAuth'
 
 const settingsStore = useSettingsStore()
 const devicesStore  = useDevicesStore()
@@ -280,18 +281,17 @@ async function revoke(deviceId: string) {
   await devicesStore.revokeDevice(deviceId)
   // Broadcast revocation mutation to peers
   const { useNetworkStore } = await import('@/stores/networkStore')
-  useNetworkStore().broadcast({
-    type:     'mutation',
-    mutation: {
-      id:        crypto.randomUUID(),
-      type:      'device_revoke',
-      targetId:  deviceId,
-      channelId: '',
-      authorId:  identityStore.userId,
-      logicalTs: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-    },
+  const now = new Date().toISOString()
+  const mutation = signMutation({
+    id:        crypto.randomUUID(),
+    type:      'device_revoke',
+    targetId:  deviceId,
+    channelId: '',
+    authorId:  identityStore.userId!,
+    logicalTs: now,
+    createdAt: now,
   })
+  useNetworkStore().broadcast({ type: 'mutation', mutation: serializeMutation(mutation) })
 }
 
 function openLinkModal() {

@@ -110,6 +110,8 @@ export interface Mutation {
   logicalTs:       string
   createdAt:       string
   verified:        boolean
+  /** Base64 Ed25519 signature by `authorId` over `mutationSigningPayload()` (spec 08 §5). */
+  sig?:            string
 }
 
 export interface Attachment {
@@ -287,6 +289,7 @@ export interface MutationRow {
   logical_ts:   string
   created_at:   string
   verified:     boolean
+  sig?:         string | null
 }
 
 // ── Device ─────────────────────────────────────────────────────────────────────
