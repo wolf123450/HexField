@@ -159,7 +159,7 @@ and the presence of the optional fields is the signal.
 |---|---|
 | new → new | `attachmentsCipher` + `attachmentKey` → attachments decrypted. |
 | old → new | No `attachmentsCipher` → the receiver reads the legacy plaintext `attachments`. |
-| new → old | The old client ignores the unknown fields. It shows the text but **no attachments** (an image-only message shows as an empty message). Accepted degradation; updating fixes it. |
+| new → old | The old client ignores the unknown fields. It shows the text but **no attachments** (an image-only message shows as an empty message). Accepted degradation. It does not heal later: the old client stores the row without attachments, and sync dedupes by ID. (A message the old client first gets through history sync does have its attachments, because `sync_push` sends stored rows.) |
 | new, both fields present | `attachmentsCipher` wins; plaintext `attachments` is ignored, never merged. |
 
 New senders never send plaintext `attachments`. The envelope's v1 fields and signature
