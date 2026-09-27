@@ -220,25 +220,16 @@ cmd_case() { # see usage
 # name | natA | natB | forward | ice | netem | expected | connection type (checked when it passes) | [route|noroute]
 # Expectations document today's behaviour; flip a row when a fix lands.
 #   cone-nofwd-stun      → rendezvous fallback for invites without a port forward
-#   *-loss / *-lossy     → `any` (step 6a). A webrtc-sctp 0.17.1 bug (`process_selective_ack`
-#                          in association_internal.rs) permanently desyncs the SCTP
-#                          ack point after one bad SACK under loss, stalling the data
-#                          channel forever even though ICE/DTLS stay up. WebRTCManager
-#                          now watches buffered_amount() and forces a reconnect when it
-#                          stops draining for DATA_CHANNEL_STALL_TRIGGER_POLLS polls
-#                          (see webrtc_manager.rs). This must clear webrtc-sctp's
-#                          RTO_MAX (60 s, hardcoded) or it misfires on a link that's
-#                          merely slow (an 8 s version of this watchdog broke a
-#                          passing cone-fwd-stun-slow run). With the ~80 s margin,
-#                          detection + reconnect doesn't finish inside the probe's
-#                          fixed 20-ping/5 s-per-ping window, so the lab cannot show
-#                          the recovery: symA-symB-fwd-relay-loss passed 7/10 with
-#                          the watchdog and 14/20 without it (same rate). Stays `any`.
-#                          cone-fwd-stun-lossy (3% loss, 80±20 ms jitter, direct)
-#                          is unaffected either way (1/5): its failures are single
-#                          pings missing the probe's 5 s deadline during a
-#                          legitimate RTO retransmit (stage "echo", pongs 15-19/20),
-#                          a different failure mode from the permanent stall above.
+#   *-loss / *-lossy     → `any` (step 6a). webrtc-sctp 0.17.1 could desync its ack point
+#                          after one bad SACK and stall the data channel for good; the app
+#                          now builds a patched copy (src-tauri/patches/webrtc-sctp), and a
+#                          buffered_amount() watchdog (~80 s, webrtc_manager.rs) stays as a
+#                          safety net. With an injected clock step (README recipe) the old
+#                          code stalls 10/10 and the patch passes 10/10, but at these rows'
+#                          settings the stall did not reproduce this batch (relay-loss 20/20
+#                          in both builds; earlier batches 14/20, 7/10), so the rows stay
+#                          `any` until CI shows they hold. cone-fwd-stun-lossy's remaining
+#                          failures are connect-stage (`ice`/`sctp`, 3/20).
 #   *-turn (symmetric)   → direct ICE over mixed candidates, connect_ms ≈ 2 s,
 #                          relay_retry false (the selected pair is usually one
 #                          peer's host/srflx candidate to the other's relay)

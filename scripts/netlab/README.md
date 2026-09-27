@@ -50,6 +50,27 @@ Results are written to `/tmp/netlab/results.tsv`, with per-case logs next to it
 (`<case>.host.err`, `<case>.joiner.err`, `<case>.coturn.log`, and `<case>.pcap`
 with `PCAP=1`). Set `OUT=` to change the directory.
 
+Only one lab run can use the namespaces at a time. Wrap runs in
+`flock /tmp/netlab.lock …` when several people or agents share a machine. If
+a run is killed mid-case, its `turnserver` can keep the lock's file
+descriptor open, and the next `flock` waits until that `turnserver` is killed.
+
+### Clock-step recipe (libfaketime)
+
+Steps the joiner's wall clock back while it runs; the monotonic clock (tokio
+timers, SCTP retransmit timers) is untouched. Needs `apt-get install libfaketime`.
+
+```bash
+echo +0 >/tmp/ft
+( sleep 2; for k in $(seq 1 400); do echo "-$k" >/tmp/ft; sleep 0.3; done ) &
+sudo PROBE=… PROBE_ARGS="--pings 60 --ping-interval-ms 500 --verbose"   JOINER_ENV="LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1 DONT_FAKE_MONOTONIC=1 FAKETIME_NO_CACHE=1 FAKETIME_TIMESTAMP_FILE=/tmp/ft"   bash scripts/netlab/netlab.sh case clockstep cone cone yes stun "delay 100ms" any direct
+kill %1
+```
+
+For a longer echo window (for example to see the watchdog reconnect), add
+`--ping-timeout-secs 150` to `PROBE_ARGS`; the result's `reconnects` counts
+reconnects during the echo stage.
+
 ## Reading the matrix
 
 Each row has an expected outcome that matches what the code does **today**. The
@@ -80,50 +101,22 @@ the host's LAN address, just like an invite created behind an unmapped NAT.
 
 - Direct signaling plus srflx hole punching works across cone NATs, including
   with 3% loss (connects in about 9s) and on a 250ms, 512 kbit link (about 12.6s).
-- **Data channels stall under packet loss (plan step 6a).** At 2–3% loss,
-  webrtc-rs's SCTP layer intermittently fails to open the data channel (stage
-  `sctp`, with `unable to be popped from inflight queue TSN` warnings) or
-  delays messages by more than 5s (stage `echo`).
-  - **Root cause of the `inflight queue TSN` failure:** a bug in
-    `process_selective_ack` (`webrtc-sctp-0.17.1/src/association/association_internal.rs`):
-    it pops chunks off `inflight_queue` in a loop before the SACK is fully
-    validated, and only advances `cumulative_tsn_ack_point` if the whole loop
-    succeeds. Under loss, a SACK can reference a TSN a previous (also-failed)
-    SACK already popped; the loop then returns `Err(ErrInflightQueueTsnPop)`,
-    which the caller logs and swallows as non-fatal — but the ack point is
-    never advanced, so every later SACK hits the same already-missing TSN
-    forever. The data channel is then permanently dead (outbound bytes never
-    drain) even though ICE and DTLS stay healthy. Same signature as
-    [pion/webrtc#1270](https://github.com/pion/webrtc/issues/1270) (unfixed
-    upstream there too). webrtc-rs 0.17.1 doesn't expose SCTP RTO/retransmit
-    tuning via `SettingEngine` (`RTO_INITIAL`/`RTO_MIN`/`RTO_MAX`/`MAX_INIT_RETRANS`
-    are `pub(crate)` in `webrtc-sctp`), so this can't be tuned from the app.
-  - **Fix:** `webrtc_manager.rs` now polls each open data channel's
-    `buffered_amount()` every 10s and forces a full reconnect
-    (`start_offer()`, same path `schedule_relay_retry` uses) if outstanding
-    bytes stop draining for 8 consecutive polls (~80s). That margin is
-    deliberate: it must clear webrtc-sctp's `RTO_MAX` (60s, hardcoded) or it
-    misfires on a link that's merely slow, not stalled. An earlier, faster
-    version (~8s total) force-reconnected a **passing** `cone-fwd-stun-slow`
-    run (250ms delay, 512kbit, no loss) mid-test and turned it into a fail —
-    a tiny queued ping can legitimately sit in `buffered_amount()` for
-    several seconds on a link that thin.
-  - **Results after the fix** (`netlab.sh case`, batches of 5 runs):
-    `cone-fwd-stun-slow` **3/3 pass** (confirms the regression above is
-    fixed). `symA-symB-fwd-relay-loss` (2% loss, relay) **7/10 pass** across
-    two batches, against 14/20 before the fix — the same rate, so no
-    measurable change, and not the 5/5 needed to flip `expect=any` to
-    `pass`. The failures are instances of the stall bug where
-    detection-plus-reconnect (~80s+) doesn't finish inside the probe's fixed
-    20-ping/5s-per-ping window; showing the recovery needs a longer window.
-    `cone-fwd-stun-lossy` (3% loss, 80±20ms jitter, direct) is unchanged
-    (1/5; was 3/8) — its failures are a *different* mode (single pings
-    missing the probe's 5s deadline during a legitimate RTO retransmit,
-    stage `echo`, `pongs: 15-19/20`), not the permanent-stall bug the fix
-    targets. Both rows stay `expect=any`; see
-    `docs/network-compatibility-plan.md` step 6a for follow-up ideas
-    (app-level message ack/resend, or loosening the probe's per-ping
-    deadline).
+- **Data channels under packet loss (plan step 6a).** At 2–3% loss,
+  webrtc-rs's SCTP layer sometimes fails to open the data channel (stage
+  `sctp`) or delays messages by more than 5 s (stage `echo`).
+  - A webrtc-sctp 0.17.1 bug could stall a data channel for good: one bad SACK
+    (for example after the wall clock steps back, `Invalid SystemTime`) made
+    `process_selective_ack` pop in-flight chunks without advancing the ack
+    point, and every later SACK failed with `unable to be popped from inflight
+    queue TSN`. The app now builds a patched copy
+    (`src-tauri/patches/webrtc-sctp/PATCHES.md`). A `buffered_amount()`
+    watchdog in `webrtc_manager.rs` (~80 s) stays as a safety net.
+  - With a clock step injected (clock-step recipe above) the unpatched build stalls in
+    10/10 runs and the patched build passes 10/10. At the matrix settings the
+    stall did not reproduce this batch (relay-loss 20/20 in both builds), so
+    the loss rows stay `any`; the remaining `cone-fwd-stun-lossy` failures
+    are connect-stage (`ice`/`sctp`). Numbers: plan step 6a.
+
 - Joins with no port forward fail at the signaling stage, before WebRTC starts.
 - Symmetric NAT on either side fails with STUN only, as expected.
 - TURN works with all candidate types across symmetric NATs: the `turn` rows
