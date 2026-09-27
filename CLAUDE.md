@@ -51,6 +51,7 @@ src-tauri/                    # Rust backend
     main.rs                    # Entry point
     event_sink.rs              # EventSink: webrtc_manager/lan emit via AppHandle or a headless channel
     bin/netprobe.rs            # hexfield-netprobe (--features netprobe): headless LAN/WebRTC probe
+  patches/webrtc-sctp/         # Vendored webrtc-sctp 0.17.1 + SACK-validation fix via [patch.crates-io]; see PATCHES.md
     db/
       mod.rs                   # open() — creates/opens SQLite file
       migrations.rs            # rusqlite_migration runner, includes 001_initial.sql
@@ -440,6 +441,8 @@ Issues that have already been encountered and fixed. **Do not re-introduce these
 | Previews are already base64; once attachment metadata is encrypted (spec 08 §4.1), base64 of the ciphertext inflates them by 4/3 | `MESSAGE_PREVIEW_BUDGET_CHARS` (27 K) / `PREVIEW_TARGET_BYTES` (18 KB) are sized for the *encrypted* frame. `chatWire.test.ts` asserts a full-budget message with 20 envelopes stays < 60 000 bytes — keep it passing when touching previews or envelopes |
 | Signed server blobs sharing one HMAC secret can be confused (serde ignores unknown fields, so a `{sub,nonce,exp}` challenge parsed as session `Claims {sub,exp}`) | `session.rs` MACs challenges under a separate context prefix and both claim structs use `#[serde(deny_unknown_fields)]`. Any new signed token type needs its own context. Also: `/ws` takes the token only from `Authorization: Bearer` (never `?token=`, it leaks into proxy logs) |
 | Mutations were applied from any peer with `verified: true` and no signature or author check | Create every mutation with `signMutation({...})` and send it with `serializeMutation()` (carries `sig` and `emojiId`); persist with `mutationToRow()` (carries `sig`). Receivers run `authorizeMutation()` — a hand-built literal or a wire subset without `sig` is rejected by every peer |
+| `[patch.crates-io]` is silently ignored when the vendored version does not match what `Cargo.lock` resolves (cargo only warns "patch was not used") | After touching `src-tauri/patches/webrtc-sctp` or bumping `webrtc`, confirm with `cargo tree -i webrtc-sctp` that the path copy is used. Run the vendored crate's own tests from its directory with a separate `CARGO_TARGET_DIR`; its 2 `fuzz_artifact_test` failures are upstream (the crates.io package lacks `fuzz/artifacts`) |
+| NAT lab `flock /tmp/netlab.lock` hangs after a case was killed mid-run | The killed case's `turnserver` inherits the lock fd. Kill the leftover `turnserver` before the next run |
 | `handleMutationMessage` in networkStore.ts did not handle `channel_create/update/delete` mutations | Real-time channel mutations (e.g. creating a voice channel) only synced via negentropy, not the real-time broadcast path. Fix: added channel mutation routing in `handleMutationMessage` to call `channelsStore.applyChannelMutation(mutation)`. |
 
 ---
