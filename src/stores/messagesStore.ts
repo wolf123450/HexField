@@ -2,24 +2,12 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
-import type { Message, Mutation, Attachment, ReactionSummary, EncryptedEnvelope } from '@/types/core'
+import type { Message, Mutation, Attachment, ReactionSummary } from '@/types/core'
 import { cryptoService } from '@/services/cryptoService'
 import { fitPreviewsToBudget, sanitizeAttachments } from '@/services/attachmentService'
+import { buildChatEnvelopes, readChatAttachments } from '@/services/chatWire'
+import type { ChatWireMessage, EnvelopeTarget } from '@/services/chatWire'
 import { generateHLC, advanceHLC } from '@/utils/hlc'
-
-// Wire message shape for chat_message payloads sent over the network
-interface ChatWireMessage {
-  type: 'chat_message'
-  messageId: string
-  channelId: string
-  serverId: string
-  authorId: string
-  logicalTs: string
-  createdAt: string
-  contentType: 'text' | 'markdown' | 'system'
-  envelopes: EncryptedEnvelope[]
-  attachments?: Attachment[]
-}
 
 export const useMessagesStore = defineStore('messages', () => {
   // channelId -> messages sorted by logicalTs ascending
@@ -205,35 +193,31 @@ export const useMessagesStore = defineStore('messages', () => {
       const memberMap = serversStore.members[serverId] ?? {}
       const myUserId  = identityStore.userId!
 
-      const envelopes: EncryptedEnvelope[] = []
+      const targets: EnvelopeTarget[] = []
       for (const member of Object.values(memberMap)) {
         // Encrypt to identity key
         if (member.publicDHKey) {
-          envelopes.push(
-            cryptoService.encryptMessage(content, myUserId, member.userId, member.publicDHKey)
-          )
+          targets.push({ recipientId: member.userId, dhKey: member.publicDHKey })
         }
         // Encrypt to each attested device key
         for (const device of devicesStore.getActiveDevices(member.userId)) {
           if (device.publicDHKey && device.publicDHKey !== member.publicDHKey) {
-            envelopes.push(
-              cryptoService.encryptMessage(content, myUserId, member.userId, device.publicDHKey)
-            )
+            targets.push({ recipientId: member.userId, dhKey: device.publicDHKey })
           }
         }
       }
       // Also encrypt for self so own device can verify its own history
       if (!memberMap[myUserId] && identityStore.publicDHKey) {
-        envelopes.push(
-          cryptoService.encryptMessage(content, myUserId, myUserId, identityStore.publicDHKey)
-        )
+        targets.push({ recipientId: myUserId, dhKey: identityStore.publicDHKey })
       }
       // Encrypt for own device DH key if available
       if (devicesStore.deviceDHKey && devicesStore.deviceDHKey !== identityStore.publicDHKey) {
-        envelopes.push(
-          cryptoService.encryptMessage(content, myUserId, myUserId, devicesStore.deviceDHKey)
-        )
+        targets.push({ recipientId: myUserId, dhKey: devicesStore.deviceDHKey })
       }
+
+      // Attachment metadata travels encrypted, never in plaintext (spec 08 §4.1).
+      const { envelopes, attachmentsCipher } =
+        buildChatEnvelopes(cryptoService, content, myUserId, targets, attachments)
 
       if (envelopes.length > 0) {
         const { useNetworkStore } = await import('./networkStore')
@@ -248,9 +232,10 @@ export const useMessagesStore = defineStore('messages', () => {
           createdAt:   now,
           contentType: 'text',
           envelopes,
-          attachments: attachments.length ? attachments : undefined,
+          ...(attachmentsCipher ? { attachmentsCipher } : {}),
         }
-        networkStore.broadcast(wireMsg)
+        // Only members of the server get the message (they are also the only envelope recipients).
+        await networkStore.broadcastToServer(serverId, wireMsg)
       }
     } catch (e) {
       // Encryption/broadcast failure is non-fatal — message is already saved locally
@@ -282,9 +267,24 @@ export const useMessagesStore = defineStore('messages', () => {
     // falling back to device keys if member record not yet populated)
     const { useServersStore } = await import('./serversStore')
     const serversStore = useServersStore()
+    // Members are loaded per server on demand; load them for a server not opened yet.
+    if (!serversStore.members[wire.serverId]) {
+      await serversStore.fetchMembers(wire.serverId)
+    }
     const member = serversStore.members[wire.serverId]?.[wire.authorId]
-    let senderDHKey   = member?.publicDHKey
-    let senderSignKey = member?.publicSignKey
+    if (!member) {
+      // Only members may post to a server. The member_join may still be in
+      // flight via sync, so wait with the same backoff as for missing keys.
+      if (_retryCount < 5) {
+        console.warn('[messages] author', wire.authorId, 'is not a member of', wire.serverId, `— retry ${_retryCount + 1}/5`)
+        setTimeout(() => receiveEncryptedMessage(rawMsg, _retryCount + 1), 2000)
+      } else {
+        console.warn('[messages] dropping message from non-member', wire.authorId, 'for server', wire.serverId)
+      }
+      return
+    }
+    let senderDHKey   = member.publicDHKey
+    let senderSignKey = member.publicSignKey
     if (!senderDHKey || !senderSignKey) {
       // Device keys may have arrived via device_attest before sync delivers
       // member_join with identity keys — try those as a fallback.
@@ -327,7 +327,7 @@ export const useMessagesStore = defineStore('messages', () => {
       authorId:    wire.authorId,
       content:     plaintext,
       contentType: wire.contentType,
-      attachments: sanitizeAttachments(wire.attachments ?? []),
+      attachments: readChatAttachments(cryptoService, wire, envelope, senderDHKey),
       reactions:   [],
       isEdited:    false,
       logicalTs,
@@ -452,7 +452,7 @@ export const useMessagesStore = defineStore('messages', () => {
     await applyMutation(mutation)
 
     const { useNetworkStore } = await import('./networkStore')
-    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: {
+    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: {
       id: mutation.id, type: mutation.type, targetId: mutation.targetId,
       channelId: mutation.channelId, authorId: mutation.authorId,
       emojiId: mutation.emojiId, logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
@@ -479,7 +479,7 @@ export const useMessagesStore = defineStore('messages', () => {
     await applyMutation(mutation)
 
     const { useNetworkStore } = await import('./networkStore')
-    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: {
+    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: {
       id: mutation.id, type: mutation.type, targetId: mutation.targetId,
       channelId: mutation.channelId, authorId: mutation.authorId,
       emojiId: mutation.emojiId, logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
@@ -508,7 +508,7 @@ export const useMessagesStore = defineStore('messages', () => {
     await applyMutation(mutation)
 
     const { useNetworkStore } = await import('./networkStore')
-    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: {
+    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: {
       id: mutation.id, type: mutation.type, targetId: mutation.targetId,
       channelId: mutation.channelId, authorId: mutation.authorId,
       newContent: mutation.newContent, logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
@@ -534,7 +534,7 @@ export const useMessagesStore = defineStore('messages', () => {
     await applyMutation(mutation)
 
     const { useNetworkStore } = await import('./networkStore')
-    useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: {
+    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: {
       id: mutation.id, type: mutation.type, targetId: mutation.targetId,
       channelId: mutation.channelId, authorId: mutation.authorId,
       logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
