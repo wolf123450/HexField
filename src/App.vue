@@ -7,6 +7,7 @@
   <ServerCreateModal />
   <InviteModal />
   <JoinModal />
+  <DirectConnectModal />
   <DeviceLinkModal />
   <UserProfileModal />
   <ServerSettingsModal />
@@ -31,6 +32,7 @@ import ContextMenu from '@/components/ContextMenu.vue'
 import ServerCreateModal from '@/components/modals/ServerCreateModal.vue'
 import InviteModal from '@/components/modals/InviteModal.vue'
 import JoinModal from '@/components/modals/JoinModal.vue'
+import DirectConnectModal from '@/components/modals/DirectConnectModal.vue'
 import DeviceLinkModal from '@/components/modals/DeviceLinkModal.vue'
 import UserProfileModal from '@/components/modals/UserProfileModal.vue'
 import ServerSettingsModal from '@/components/modals/ServerSettingsModal.vue'
