@@ -6,7 +6,7 @@
  */
 
 import _sodium from 'libsodium-wrappers-sumo'
-import type { EncryptedEnvelope } from '@/types/core'
+import type { EncryptedEnvelope, SealedBox } from '@/types/core'
 
 type SodiumType = typeof _sodium
 
@@ -123,6 +123,69 @@ class CryptoService {
       ciphertext,
       nonce:           nonceB64,
       senderSignature: s.to_base64(sig),
+    }
+  }
+
+  /**
+   * Encrypt `plaintext` once under a fresh random key (secretbox), then box that
+   * key for each recipient DH key. `keyBoxes[i]` belongs to `recipientDHKeysB64[i]`.
+   * Each key box also holds a hash of the ciphertext, so a recipient who knows the
+   * key cannot swap in a different blob for another recipient (spec 08 §4.1).
+   */
+  sealForRecipients(
+    plaintext: string,
+    recipientDHKeysB64: string[],
+  ): { sealed: SealedBox; keyBoxes: SealedBox[] } {
+    const s = this.sodium!
+    const key   = s.crypto_secretbox_keygen()
+    const nonce = s.randombytes_buf(s.crypto_secretbox_NONCEBYTES)
+    const ciphertextBytes = s.crypto_secretbox_easy(s.from_string(plaintext), nonce, key)
+    const blobHash = s.crypto_generichash(32, new Uint8Array([...ciphertextBytes, ...nonce]), null)
+    const keyPayload = JSON.stringify({ k: s.to_base64(key), h: s.to_base64(blobHash) })
+
+    const keyBoxes = recipientDHKeysB64.map(dhKey => {
+      const boxNonce = s.randombytes_buf(s.crypto_box_NONCEBYTES)
+      const boxed = s.crypto_box_easy(
+        s.from_string(keyPayload),
+        boxNonce,
+        s.from_base64(dhKey),
+        this.dhKeyPair!.privateKey,
+      )
+      return { ciphertext: s.to_base64(boxed), nonce: s.to_base64(boxNonce) }
+    })
+
+    return {
+      sealed:   { ciphertext: s.to_base64(ciphertextBytes), nonce: s.to_base64(nonce) },
+      keyBoxes,
+    }
+  }
+
+  /**
+   * Open a blob made by `sealForRecipients`. Returns null if the key box does not
+   * open with the sender's DH key, the blob hash does not match, or the blob
+   * fails authentication.
+   */
+  openSealed(sealed: SealedBox, keyBox: SealedBox, senderDHKeyB64: string): string | null {
+    const s = this.sodium!
+    try {
+      const keyJson = s.crypto_box_open_easy(
+        s.from_base64(keyBox.ciphertext),
+        s.from_base64(keyBox.nonce),
+        s.from_base64(senderDHKeyB64),
+        this.dhKeyPair!.privateKey,
+      )
+      const parsed = JSON.parse(s.to_string(keyJson)) as { k?: unknown; h?: unknown }
+      if (typeof parsed.k !== 'string' || typeof parsed.h !== 'string') return null
+
+      const ciphertextBytes = s.from_base64(sealed.ciphertext)
+      const nonce           = s.from_base64(sealed.nonce)
+      const actualHash = s.crypto_generichash(32, new Uint8Array([...ciphertextBytes, ...nonce]), null)
+      if (!s.memcmp(actualHash, s.from_base64(parsed.h))) return null
+
+      const plaintext = s.crypto_secretbox_open_easy(ciphertextBytes, nonce, s.from_base64(parsed.k))
+      return s.to_string(plaintext)
+    } catch {
+      return null
     }
   }
 

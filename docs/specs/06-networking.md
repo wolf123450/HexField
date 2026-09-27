@@ -88,7 +88,7 @@ POST   /voice/:channelId/join  → { peers: string[] }
 DELETE /voice/:channelId/leave → 204
 ```
 
-**WebSocket `/ws?token=...`:**
+**WebSocket `/ws` (session token in the `Authorization: Bearer` header of the upgrade; see `server/README.md`):**
 ```
 signal_offer/answer/ice    { to/from, sdp/candidate }
 chat_message               { channelId, envelopes[] }    ← relay only; server can't decrypt

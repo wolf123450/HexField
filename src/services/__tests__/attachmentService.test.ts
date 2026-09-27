@@ -19,7 +19,10 @@ import {
   receiveChunk,
   setRequestChunksFn,
   makeImagePreview,
+  computePreviewTargetBytes,
   PREVIEW_MAX_CHARS,
+  PREVIEW_TARGET_BYTES,
+  MESSAGE_PREVIEW_BUDGET_CHARS,
 } from '@/services/attachmentService'
 
 const preview = (chars: number) => 'data:image/webp;base64,' + 'A'.repeat(chars - 'data:image/webp;base64,'.length)
@@ -78,6 +81,38 @@ describe('sanitizeAttachments', () => {
 describe('makeImagePreview', () => {
   it('returns null for non-image files', async () => {
     expect(await makeImagePreview(new Blob(['x'], { type: 'application/pdf' }))).toBeNull()
+  })
+})
+
+describe('computePreviewTargetBytes', () => {
+  it('gives a single image the full per-image target', () => {
+    expect(computePreviewTargetBytes(1)).toBe(PREVIEW_TARGET_BYTES)
+    expect(computePreviewTargetBytes(0)).toBe(PREVIEW_TARGET_BYTES)
+  })
+
+  it('shrinks the per-image target as more images share the message budget', () => {
+    const two = computePreviewTargetBytes(2)
+    const four = computePreviewTargetBytes(4)
+    expect(two).toBeLessThan(PREVIEW_TARGET_BYTES)
+    expect(four).toBeLessThan(two)
+  })
+
+  it('never goes below a sane floor even with many images', () => {
+    expect(computePreviewTargetBytes(100)).toBeGreaterThan(0)
+    expect(computePreviewTargetBytes(100)).toBe(computePreviewTargetBytes(1000))
+  })
+
+  it('keeps N previews within the message budget once base64-encoded, above the size floor', () => {
+    // Rough sanity check: N previews at their shared target, base64-encoded
+    // (×4/3) plus a small per-image prefix allowance, should fit the budget —
+    // as long as the per-image share hasn't hit the minimum-size floor (very
+    // many images legitimately can't all fit; fitPreviewsToBudget is the
+    // send-time safety net for that case).
+    for (const n of [2, 3, 4, 5]) {
+      const perImageBytes = computePreviewTargetBytes(n)
+      const perImageChars = perImageBytes * (4 / 3) + 30 // + data-url prefix overhead
+      expect(perImageChars * n).toBeLessThanOrEqual(MESSAGE_PREVIEW_BUDGET_CHARS)
+    }
   })
 })
 

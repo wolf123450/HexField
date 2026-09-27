@@ -39,7 +39,7 @@ export function readFileBytes(file: File): Promise<Uint8Array> {
  * ready to be included in a message. The `transferState` is set to 'complete'
  * since the sender already has all the bytes. Images get an inline preview.
  */
-export async function prepareAttachment(file: File): Promise<Attachment> {
+export async function prepareAttachment(file: File, previewTargetBytes?: number): Promise<Attachment> {
   const bytes = await readFileBytes(file)
   const hash = await hashBytes(bytes)
   const contentHash = `blake3:${hash}`
@@ -49,7 +49,7 @@ export async function prepareAttachment(file: File): Promise<Attachment> {
     data: Array.from(bytes),
   })
 
-  const previewDataUrl = await makeImagePreview(file)
+  const previewDataUrl = await makeImagePreview(file, previewTargetBytes)
   return {
     id:            crypto.randomUUID(),
     name:          file.name,
@@ -71,12 +71,34 @@ export async function prepareAttachment(file: File): Promise<Attachment> {
 /** Longest side of the preview, tried in order until the size target is met. */
 const PREVIEW_MAX_SIDES = [640, 480, 320]
 const PREVIEW_QUALITIES = [0.72, 0.55, 0.4]
-/** Encoded preview size target (bytes); ~32 K chars once base64-encoded. */
-export const PREVIEW_TARGET_BYTES = 24_000
-/** Total preview characters allowed in one message (all attachments). */
-export const MESSAGE_PREVIEW_BUDGET_CHARS = 36_000
-/** Upper bound accepted from peers. */
+/** Encoded preview size target (bytes); ~24 K chars once base64-encoded. */
+export const PREVIEW_TARGET_BYTES = 18_000
+/**
+ * Total preview characters allowed in one message (all attachments).
+ * Attachment metadata is encrypted (spec 08 §4.1), and base64 of the ciphertext
+ * adds a third, so 27 K chars of previews become ~36 K on the wire.
+ */
+export const MESSAGE_PREVIEW_BUDGET_CHARS = 27_000
+/** Upper bound accepted from peers (pre-0.2.14 senders used a 36 K budget). */
 export const PREVIEW_MAX_CHARS = 40_000
+/** Never shrink a per-image target below this, however many images are attached. */
+const PREVIEW_MIN_TARGET_BYTES = 4_000
+/** Base64 inflates raw bytes by ~4/3; leave headroom for the `data:image/...;base64,` prefix. */
+const BASE64_CHAR_PER_BYTE = 0.72
+
+/**
+ * Per-image preview target (bytes) so `imageCount` images sharing one message
+ * still fit MESSAGE_PREVIEW_BUDGET_CHARS between them, instead of the first
+ * preview claiming the whole budget and the rest being dropped.
+ */
+export function computePreviewTargetBytes(
+  imageCount: number,
+  budget = MESSAGE_PREVIEW_BUDGET_CHARS,
+): number {
+  if (imageCount <= 1) return PREVIEW_TARGET_BYTES
+  const share = Math.floor((budget / imageCount) * BASE64_CHAR_PER_BYTE)
+  return Math.max(PREVIEW_MIN_TARGET_BYTES, Math.min(PREVIEW_TARGET_BYTES, share))
+}
 
 const PREVIEWABLE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp', 'image/avif'])
 const PREVIEW_DATA_URL = /^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/
@@ -90,7 +112,10 @@ export function isValidPreviewDataUrl(value: unknown): value is string {
  * Downscaled WebP (JPEG where the WebView can't encode WebP) preview of an image,
  * at most PREVIEW_TARGET_BYTES. Null for non-images or if it can't be made small enough.
  */
-export async function makeImagePreview(file: Blob): Promise<string | null> {
+export async function makeImagePreview(
+  file: Blob,
+  targetBytes: number = PREVIEW_TARGET_BYTES,
+): Promise<string | null> {
   if (!PREVIEWABLE_TYPES.has(file.type) || typeof createImageBitmap !== 'function') return null
   let bitmap: ImageBitmap
   try {
@@ -109,7 +134,7 @@ export async function makeImagePreview(file: Blob): Promise<string | null> {
       ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
       for (const quality of PREVIEW_QUALITIES) {
         const blob = await encodeCanvas(canvas, quality)
-        if (blob && blob.size <= PREVIEW_TARGET_BYTES) return await blobToDataUrl(blob)
+        if (blob && blob.size <= targetBytes) return await blobToDataUrl(blob)
       }
     }
     return null

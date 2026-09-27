@@ -13,14 +13,27 @@ vi.mock('@/stores/identityStore', () => ({
     isRegistered:  true,
   }),
 }))
+const serversMock = vi.hoisted(() => ({
+  members: {} as Record<string, Record<string, Record<string, unknown>>>,
+  fetchMembers: async (serverId: string) => {
+    serversMock.members[serverId] ??= {}
+  },
+}))
 vi.mock('@/stores/serversStore', () => ({
-  useServersStore: () => ({ members: {} }),
+  useServersStore: () => serversMock,
 }))
 vi.mock('@/stores/devicesStore', () => ({
   useDevicesStore: () => ({ getActiveDevices: () => [], deviceDHKey: null }),
 }))
+const networkMock = vi.hoisted(() => ({ broadcast: vi.fn(), broadcastToServer: vi.fn() }))
 vi.mock('@/stores/networkStore', () => ({
-  useNetworkStore: () => ({ broadcast: vi.fn() }),
+  useNetworkStore: () => networkMock,
+}))
+vi.mock('@/stores/notificationStore', () => ({
+  useNotificationStore: () => ({ notify: vi.fn() }),
+}))
+vi.mock('@/stores/channelsStore', () => ({
+  useChannelsStore: () => ({ channels: {} }),
 }))
 vi.mock('@/services/cryptoService', () => ({
   cryptoService: {
@@ -28,6 +41,12 @@ vi.mock('@/services/cryptoService', () => ({
       version: 1, senderId: 'alice', recipientId: 'alice',
       ciphertext: 'enc', nonce: 'nonce', senderSignature: 'sig',
     }),
+    decryptMessage: vi.fn().mockReturnValue('decrypted text'),
+    sealForRecipients: vi.fn((_plain: string, keys: string[]) => ({
+      sealed:   { ciphertext: 'blob', nonce: 'blob-nonce' },
+      keyBoxes: keys.map(k => ({ ciphertext: `key-for-${k}`, nonce: 'n' })),
+    })),
+    openSealed: vi.fn(),
   },
 }))
 
@@ -496,5 +515,129 @@ describe('messagesStore.sendDeleteMutation', () => {
     expect(invoke).toHaveBeenCalledWith('db_save_mutation', expect.objectContaining({
       mutation: expect.objectContaining({ type: 'delete', target_id: 'msg-1' }),
     }))
+  })
+})
+
+// ── Privacy: server-scoped delivery + encrypted attachment metadata ──────────
+
+describe('messagesStore privacy (server members only)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    serversMock.members = {}
+  })
+
+  it('sendMessage sends only to server members and never puts attachments in plaintext', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+    serversMock.members['srv-1'] = {
+      'user-bob': { userId: 'user-bob', publicDHKey: 'pub-dh-bob', publicSignKey: 'sign-bob' },
+    }
+
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    const attachment = {
+      id: 'att-1', name: 'secret-plans.png', size: 10, mimeType: 'image/png',
+      contentHash: 'blake3:abc', transferState: 'complete' as const,
+    }
+    await store.sendMessage('ch-1', 'srv-1', 'see file', [attachment])
+
+    expect(networkMock.broadcast).not.toHaveBeenCalled()
+    expect(networkMock.broadcastToServer).toHaveBeenCalledTimes(1)
+    const [serverId, wire] = networkMock.broadcastToServer.mock.calls[0]
+    expect(serverId).toBe('srv-1')
+    expect(wire.attachments).toBeUndefined()
+    expect(wire.attachmentsCipher).toEqual({ ciphertext: 'blob', nonce: 'blob-nonce' })
+    expect(JSON.stringify(wire)).not.toContain('secret-plans')
+    expect(JSON.stringify(wire)).not.toContain('blake3:abc')
+    for (const env of wire.envelopes) expect(env.attachmentKey).toBeDefined()
+  })
+
+  it('chat mutations (reactions, edit, delete) go only to server members', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    store.messages['ch-1'] = [makeMessage({ id: 'msg-1' })]
+    store.mutations['ch-1'] = []
+
+    await store.addReaction('msg-1', 'ch-1', 'srv-1', 'thumbsup')
+    await store.removeReaction('msg-1', 'ch-1', 'srv-1', 'thumbsup')
+    await store.sendEditMutation('msg-1', 'ch-1', 'srv-1', 'edited')
+    await store.sendDeleteMutation('msg-1', 'ch-1', 'srv-1')
+
+    expect(networkMock.broadcast).not.toHaveBeenCalled()
+    expect(networkMock.broadcastToServer).toHaveBeenCalledTimes(4)
+    for (const [serverId, payload] of networkMock.broadcastToServer.mock.calls) {
+      expect(serverId).toBe('srv-1')
+      expect(payload.type).toBe('mutation')
+    }
+  })
+
+  function wireFrom(authorId: string, extra: Record<string, unknown> = {}) {
+    return {
+      type: 'chat_message', messageId: `m-${authorId}`, channelId: 'ch-1', serverId: 'srv-1',
+      authorId, logicalTs: '1000000000000-000000', createdAt: new Date().toISOString(),
+      contentType: 'text',
+      envelopes: [{ version: 1, senderId: authorId, recipientId: 'user-alice',
+        ciphertext: 'c', nonce: 'n', senderSignature: 's' }],
+      ...extra,
+    }
+  }
+
+  it('accepts a message once the author becomes a member (retry covers member_join race)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      vi.mocked(invoke).mockResolvedValue([])
+      const { useMessagesStore } = await import('@/stores/messagesStore')
+      const store = useMessagesStore()
+      store.setMyUserId('user-alice')
+
+      await store.receiveEncryptedMessage(wireFrom('user-carol'))
+      expect(store.messages['ch-1']).toBeUndefined()
+
+      serversMock.members['srv-1']['user-carol'] = { userId: 'user-carol', publicDHKey: 'dh-carol', publicSignKey: 'sign-carol' }
+      await vi.advanceTimersByTimeAsync(2000)
+
+      expect(store.messages['ch-1']?.map(m => m.id)).toEqual(['m-user-carol'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops a message from a non-member after the retries run out', async () => {
+    vi.useFakeTimers()
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      vi.mocked(invoke).mockResolvedValue([])
+      const { useMessagesStore } = await import('@/stores/messagesStore')
+      const store = useMessagesStore()
+      store.setMyUserId('user-alice')
+
+      await store.receiveEncryptedMessage(wireFrom('user-mallory'))
+      await vi.advanceTimersByTimeAsync(2000 * 6)
+
+      expect(store.messages['ch-1']).toBeUndefined()
+      expect(invoke).not.toHaveBeenCalledWith('db_save_message', expect.anything())
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still accepts plaintext attachments from an old (pre-0.2.14) sender', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValue(undefined)
+    serversMock.members['srv-1'] = {
+      'user-bob': { userId: 'user-bob', publicDHKey: 'dh-bob', publicSignKey: 'sign-bob' },
+    }
+    const { useMessagesStore } = await import('@/stores/messagesStore')
+    const store = useMessagesStore()
+    store.setMyUserId('user-alice')
+
+    const legacy = [{ id: 'att-9', name: 'old.txt', size: 3, mimeType: 'text/plain', transferState: 'complete' }]
+    await store.receiveEncryptedMessage(wireFrom('user-bob', { attachments: legacy }))
+
+    expect(store.messages['ch-1'][0].attachments).toEqual(legacy)
   })
 })

@@ -347,6 +347,14 @@ pub fn run() {
             webrtc_destroy_all,
             #[cfg(feature = "native-media")]
             webrtc_get_connected_peers,
+            #[cfg(feature = "native-media")]
+            webrtc_create_offer_code,
+            #[cfg(feature = "native-media")]
+            webrtc_accept_offer_code,
+            #[cfg(feature = "native-media")]
+            webrtc_apply_answer_code,
+            #[cfg(feature = "native-media")]
+            webrtc_cancel_offer_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running HexField");

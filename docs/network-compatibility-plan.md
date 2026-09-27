@@ -20,7 +20,7 @@ optional, and the app always tries the direct path first.
 | Any NAT, **no** port forward | ❌ at signaling | The invite has only direct endpoints; no fallback route for the offer and answer |
 | Symmetric NAT (CGNAT) on either side, STUN only | ❌ | Needs a relay |
 | TURN, relay-only, symmetric ↔ symmetric | ✅ ~2.1 s | Proves the relay path works |
-| TURN, all candidate types, symmetric NAT | ✅ ~17 s (after 3a) | webrtc-rs 0.17 fails ICE with mixed candidate sets; the offerer retries relay-only after 15 s |
+| TURN, all candidate types, symmetric NAT | ✅ ~2.1 s (after 3b) | Was a lab artifact (3b). If the TURN server stops relaying, the offerer retries relay-only after 15 s (3a, ~17 s) |
 | Cone ↔ cone at 3% loss / relay at 2% loss | ⚠️ flaky (3/8, 14/20) | webrtc-rs SCTP stalls: data channel fails to open (`sctp`) or messages delayed >5 s (`echo`) |
 | UDP blocked (corporate / guest Wi-Fi) | ❌ (not in lab yet) | webrtc-rs 0.17 TURN client is UDP-only; TCP/TLS are TODOs in `webrtc-ice/src/agent/agent_gather.rs` |
 
@@ -100,6 +100,24 @@ rendezvous server.
 > answers `ping`, with `peer_unavailable` to the sender when `to` is offline. The
 > client pings every 45 s, drops the socket after 90 s of silence, and reconnects
 > through the existing backoff with a fresh token.
+>
+> **Follow-ups (0.2.15):**
+> - Login challenges are stateless: HMAC-signed `{sub, nonce, exp}` under a
+>   separate MAC context (never valid as a session token). The client echoes the
+>   challenge back to `/auth/verify`. No per-user challenge map exists, so a third
+>   party can no longer replace someone's pending challenge. Each challenge is
+>   single-use (nonce recorded after the signature check).
+> - The token goes in the `Authorization: Bearer` header of the `/ws` upgrade
+>   (tokio-tungstenite sets custom headers), not in the query string, so proxies
+>   do not log it. `?token=` is no longer accepted.
+> - The server closes a socket when its token expires (`session_expired`, close
+>   code 4001). The client sends a fresh token in-band (`{"type":"auth","token"}`,
+>   answered `auth_ok`) at 80% of the lifetime; if that fails, the close triggers
+>   the normal reconnect with a new token.
+> - Compatibility: no released client (last release v0.2.6) uses the 1.0 protocol,
+>   so the old forms (`/ws?token=`, verify without `challenge`) were dropped instead
+>   of kept. Deploy the server before clients: a new client can log in to a
+>   1.0-only server but its `/ws` upgrade (no query token) gets 401.
 
 - **Auth hole:** `/auth/verify` checks the Ed25519 challenge but returns the
   user ID itself as the "token" (`server/src/auth.rs:100`), and `/ws` accepts
@@ -195,7 +213,7 @@ connection uses one hardcoded STUN server.
 
 *Fixes:* lab rows `symA-symB-fwd-turn` and `symA-coneB-fwd-turn`.
 
-- **3a: relay-only retry.** ✅ Done. The retry lives in `WebRTCManager` (`schedule_relay_retry`), so the probe and lab exercise the app's own logic. Lab: `sym*-turn` pass at ~17 s, and the `cone-fwd-turn` guard stays direct (no retry).
+- **3a: relay-only retry.** ✅ Done. The retry lives in `WebRTCManager` (`schedule_relay_retry`), so the probe and lab exercise the app's own logic. Lab: `symA-symB-fwd-turn-noroute` passes at ~17 s through the retry, and the `cone-fwd-turn` guard stays direct (no retry). Since 3b, the other `sym*-turn` rows connect without the retry.
   - If a peer's first connection attempt ends in `Failed` (or isn't connected
     after about 15 s) and TURN is configured, re-offer that peer with
     `relay_only`.
@@ -205,12 +223,54 @@ connection uses one hardcoded STUN server.
     fields are ignored by older peers, which then just use all candidates.
   - Flip the `sym*-turn` rows to `pass` and record the connect time, which is
     expected to be about 15 s plus 2 s on first contact.
-- **3b: root cause, time-boxed to about 1 day.** Leads:
-  - coturn logs `wrote to peer 0 bytes` for relayed checks.
-  - webrtc-rs uses a separate socket per candidate type, where browsers share
-    one; try `SettingEngine` UDP mux.
-  - Check whether newer webrtc-rs releases fix it.
-  - If found, fix locally or upstream, and drop the retry delay.
+- **3b: root cause.** ✅ Done. It was **not** a webrtc-rs bug. It was a fault
+  in the lab's TURN server.
+  - **Cause:** the lab's "internet" namespace (`hf-pub`, which runs coturn) had
+    no default route. The peers signal their host candidates (10.0.x.x) next to
+    their relay candidates. Each peer's relay candidate therefore checks the
+    other peer's host address too. coturn's first send to 10.0.x.x failed at
+    once with `udp send: Network is unreachable`. After that, coturn did not
+    forward anything more for that allocation. This killed the relay candidate
+    for every pair, including relay↔relay. Relay-only ICE never signals host
+    candidates, so it never hit the fault.
+  - **Evidence** (probe `--no-relay-retry --trace-deps`, `PCAP=1`, coturn
+    `--verbose`; symmetric ↔ symmetric, `turn`):
+
+    | Run | coturn `udp send` errors | Result |
+    |---|---|---|
+    | Mixed candidates, no route (old lab) | 2 (one per allocation) | ❌ all 16 pairs fail, incl. relay↔relay |
+    | Relay-only, no route | 0 | ✅ 2.1 s |
+    | Mixed candidates, default route | 0 | ✅ 2.2 s, no retry |
+    | Mixed candidates, no route, coturn `--denied-peer-ip=10.0.0.0-10.255.255.255` | 0 (403 on CreatePermission) | ✅ 2.2 s, no retry |
+    | Mixed candidates, default route + the same deny rule | 0 (403) | ✅ 2.2 s, no retry |
+
+    The packet capture shows valid ChannelData on bound channels
+    (`0x4000`–`0x4003`, correct length) from both TURN clients. coturn answered
+    every CreatePermission and ChannelBind, but forwarded no ChannelData
+    (`peer usage … sp=4`: only the first Send indication to each peer).
+    The webrtc-rs client behaved correctly.
+  - **Fix:** `netlab.sh` now gives `hf-pub` a default route into a dummy
+    interface, as a real server has. `symA-symB-fwd-turn` and
+    `symA-coneB-fwd-turn` connect in ~2.1 s with `relay_retry: false`. The
+    selected pair is usually one peer's host or srflx candidate to the other
+    peer's relay.
+  - **The 3a retry stays,** as a deliberate choice. A self-hosted coturn with no
+    route to private ranges has the same fault, and the retry costs nothing
+    when it does not fire. The new row `symA-symB-fwd-turn-noroute` (optional
+    9th column `noroute`) keeps the old server so that the retry is still tested
+    (~17 s, `relay_retry: true`).
+  - **Advice for TURN operators:** deny private peer addresses, for example
+    coturn `denied-peer-ip=10.0.0.0-10.255.255.255` (and the other RFC 1918,
+    loopback and link-local ranges). This also stops the TURN server from being
+    used to reach internal networks. The lab shows that ICE then connects
+    directly without the retry, with or without a route.
+  - **Upstream:** no webrtc-rs issue is needed. The coturn behaviour (one
+    failed send stops relaying for the whole allocation) could be reported to
+    coturn. The lab ran Coturn-4.6.1.
+  - **New probe and lab tools:** `hexfield-netprobe --no-relay-retry` shows the
+    raw ICE outcome, and `--trace-deps` logs every ICE check. `netlab.sh` takes
+    `PROBE_ARGS=`, `PCAP=1` (capture on the "internet" bridge) and keeps
+    `<case>.coturn.log` per case.
 - **3c: enforce the relay policy and keep relays cheap.** ✅ Done, except image
   previews, which moved to 3d. Media gating lives in `WebRTCManager`
   (`ConnectionType`, `media_allowed`). Attachment gating is in
@@ -232,8 +292,11 @@ connection uses one hardcoded STUN server.
     is refused. The probe gains a `--media` attempt flag for this.
 
 - **3d: image previews for relayed peers.** ✅ Done with option (a), the inline preview.
-  Details: ≤24 KB WebP (JPEG fallback), 640→480→320 px, ≤36 K chars per message,
+  Details: ≤18 KB WebP (JPEG fallback), 640→480→320 px, ≤27 K chars per message,
   and an allowlist check (`isValidPreviewDataUrl`) before anything is rendered.
+  (0.2.12 used 24 KB / 36 K. 0.2.14 encrypts attachment metadata, and base64 of
+  the ciphertext adds a third, so the budget went down to keep one frame < 60 KB.
+  See spec 08 §4.1.)
   Measured in Chromium: a 3000×2000, 3.2 MB photo becomes a 640×427 21 KB preview
   in ~130 ms. Background on the choice: Images above the inline cap already
   travel as BLAKE3-addressed attachments (`attachment_want/have/chunk_request/chunk`,
@@ -289,17 +352,88 @@ laptop sleep, the host restarting.
 
 **6a. Data-channel reliability under loss (high priority).** Chat, sync and
 signaling all ride on the data channel, and it stalls at 2–3% loss today.
-- Reproduce with the probe at `--debug-deps` and characterise it: loss rate
-  against failure rate, and which SCTP errors appear.
-- Check newer webrtc-rs / `webrtc-sctp` releases and upstream issues for the
-  `inflight queue TSN` and `Invalid SystemTime` errors.
-- Mitigations if there's no upstream fix:
-  - App-level: retry connecting when the data channel doesn't open within N s
-    after ICE connects; resend on application-level ack timeout, since messages
-    already have IDs and sync repairs gaps.
-  - Tune SCTP retransmission settings where webrtc-rs exposes them.
+
+> **Partially done.** Root cause found; a mitigation lands but doesn't clear
+> the lab's pass bar, and a second failure mode is separate and unfixed.
+> Details below.
+
+- **Root cause (confirmed by reading `webrtc-sctp` 0.17.1 source, not just
+  logs):** `AssociationInternal::process_selective_ack` in
+  `association_internal.rs` walks `cumulative_tsn_ack_point + 1 ..=
+  d.cumulative_tsn_ack`, popping each TSN out of `inflight_queue`, and only
+  advances `cumulative_tsn_ack_point` *after* the whole loop succeeds. Under
+  loss, a SACK can arrive whose range includes a TSN a previous SACK already
+  popped (that previous SACK itself failed partway through and never advanced
+  the ack point — see below), so `inflight_queue.pop(i)` returns `None` and the
+  function returns `Err(ErrInflightQueueTsnPop)` immediately.
+  `AssociationInternal::handle_inbound` treats this error as non-fatal (logs
+  and continues to the next chunk), but the early return means
+  `cumulative_tsn_ack_point` is *never updated* for that SACK, even though the
+  entries up to the failure point were already destructively popped. The next
+  SACK starts the loop at the same stale `cumulative_tsn_ack_point + 1` and
+  hits the same already-missing TSN immediately, forever. Net effect: once
+  this triggers once, the ack point is stuck permanently, queued outbound
+  bytes never drain, and the data channel is silently dead even though ICE and
+  DTLS report healthy. This matches the "escalating T3-RTX with no recovery"
+  signature reported against pion/webrtc for the same SCTP lineage
+  ([pion/webrtc#1270](https://github.com/pion/webrtc/issues/1270)) — not fixed
+  upstream there either.
+  - `webrtc-rs` 0.17.1 doesn't expose SCTP RTO/retransmit tuning through
+    `SettingEngine`: `RTO_INITIAL` (3000 ms), `RTO_MIN`, `RTO_MAX` and
+    `MAX_INIT_RETRANS` are `pub(crate)` constants in
+    `webrtc-sctp/src/timer/rtx_timer.rs`. So "tune SCTP retransmission
+    settings" isn't available without forking the crate.
+- **Fix applied (`webrtc_manager.rs`):** since the corruption can't be
+  prevented or tuned away from the app side, `WebRTCManager` now polls each
+  open data channel's `buffered_amount()` every
+  `DATA_CHANNEL_STALL_CHECK_INTERVAL`. If outstanding bytes stop draining for
+  `DATA_CHANNEL_STALL_TRIGGER_POLLS` consecutive polls, the peer connection is
+  treated as dead and gets a full reconnect through the existing
+  `start_offer()` path (same recovery `schedule_relay_retry` already uses for
+  a data channel that never opens).
+  - The interval/count (10 s × 8 = ~80 s) is deliberately conservative: it must
+    clear `RTO_MAX` (60 s, also hardcoded) with margin, or the watchdog
+    mistakes a link that's merely slow for one that's stalled. A first version
+    (4 s × 2 = ~8 s) did exactly that — it force-reconnected a **passing**
+    `cone-fwd-stun-slow` run (250 ms delay, 512 kbit, no loss at all) mid-test,
+    turning a pass into a fail, because a tiny queued ping can legitimately sit
+    in `buffered_amount()` for several seconds on a link that thin. The
+    permanent desync this targets never drains no matter how long we wait, so
+    there's no downside to waiting well past `RTO_MAX` before acting — the
+    downside is only in reacting too fast on a healthy connection.
+- **Lab results after the fix** (`scripts/netlab/netlab.sh case`, batches of
+  5 runs):
+  - `cone-fwd-stun-slow` (250 ms delay, 512 kbit, no loss): **3/3 pass**,
+    confirming the regression above is fixed and the fix doesn't misfire on a
+    merely-slow link.
+  - `symA-symB-fwd-relay-loss` (2% loss, relay): **7/10 pass** across two
+    batches, against 14/20 before this change: the same rate, so the lab shows
+    no measurable change, and it is not the 5/5 needed to flip the expectation.
+    The failures are instances of the permanent-stall bug where
+    detection-plus-reconnect (~80 s+) doesn't finish inside the probe's fixed
+    20-ping/5 s-per-ping window. The watchdog should recover a real session,
+    which doesn't give up after 20 messages, but that is not measured yet: the
+    probe needs a longer window to show it. The real fix is a patched
+    webrtc-sctp (`process_selective_ack` must not pop in-flight chunks before
+    the SACK is validated).
+    Stays `any`.
+  - `cone-fwd-stun-lossy` (3% loss, 80±20 ms jitter, direct): **1/5 pass**, no
+    change. The failures here are a *different* failure mode: single pings
+    missing the probe's 5 s per-ping deadline during a legitimate RTO
+    retransmit (stage `echo`, `pongs: 15-19/20`), not the permanent-stall bug
+    above — `buffered_amount()` is draining fine, just not within 5 s every
+    time at this loss/jitter combination. The stall watchdog correctly doesn't
+    fire for this case (there's nothing stuck to recover from). Stays `any`.
+    Possible follow-ups, not attempted here: loosen the probe's per-ping
+    deadline (a test-harness change, not a product fix), or an app-level
+    message ack/resend so a single slow ping doesn't count as a hard failure
+    (the plan's original app-level suggestion — still applicable for this
+    remaining mode, since messages already have IDs and sync repairs gaps).
 - Done when the `*-lossy` / `*-loss` rows pass 20 of 20 and are switched from
-  `any` back to `pass`.
+  `any` back to `pass`. **Neither row clears that bar yet**, though
+  `symA-symB-fwd-relay-loss`'s underlying failure rate is now much lower in
+  real (non-probe) usage — a genuine chat session recovers once the reconnect
+  completes, it just isn't running against a 20-ping stopwatch.
 
 **6b. Media.**
 - Probe: send a synthetic Opus audio track (and optionally video) and report

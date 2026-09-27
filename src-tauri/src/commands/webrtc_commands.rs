@@ -186,6 +186,67 @@ pub async fn webrtc_get_connected_peers(
     Ok(state.webrtc_manager.get_connected_peers().await)
 }
 
+// ── Manual code exchange (plan step 1b, "Direct connect") ──────────────────
+//
+// Non-trickle variants for serverless, out-of-band signaling: the caller gets
+// a single self-contained SDP string (all ICE candidates already gathered)
+// instead of the offer/answer/ICE events the rest of this file emits. The
+// frontend wraps the SDP in a signed, expiring code (`directConnectService.ts`)
+// before it's pasted or scanned; these commands only see the raw SDP.
+
+/// Offerer side: create an offer and wait for ICE gathering to complete.
+/// `session_id` is a frontend-chosen id used to reclaim this pending PC in
+/// `webrtc_apply_answer_code` once the answer code names the real peer.
+#[tauri::command]
+pub async fn webrtc_create_offer_code(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state.webrtc_manager.create_offer_code(&session_id).await
+}
+
+/// Answerer side: consume a pasted offer's SDP (from `from`, already decoded
+/// and verified by the frontend) and return a complete answer SDP.
+#[tauri::command]
+pub async fn webrtc_accept_offer_code(
+    from: String,
+    sdp: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state
+        .webrtc_manager
+        .accept_offer_code(&from, sdp, &state.media_manager, &crate::event_sink::from_app(&app))
+        .await
+}
+
+/// Offerer side: apply the pasted-back answer SDP (from `from`, decoded and
+/// verified by the frontend) to the pending offer created for `session_id`.
+#[tauri::command]
+pub async fn webrtc_apply_answer_code(
+    session_id: String,
+    from: String,
+    sdp: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .webrtc_manager
+        .apply_answer_code(&session_id, &from, sdp, &state.media_manager, &crate::event_sink::from_app(&app))
+        .await
+}
+
+/// Discard a pending offer session (modal closed, or the code expired before
+/// a reply arrived). No-op if the session id is unknown.
+#[tauri::command]
+pub async fn webrtc_cancel_offer_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.webrtc_manager.cancel_offer_session(&session_id).await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

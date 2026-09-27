@@ -88,11 +88,12 @@ docker run -p 7700:7700 -v hexfield-data:/data \
 
 ### Authentication
 
-Flow: `POST /auth/challenge` → sign the nonce with the Ed25519 identity key → `POST /auth/verify` → session token. Use the token as `Authorization: Bearer <token>` on authenticated routes and as the `token` query value on `/ws`.
+Flow: `POST /auth/challenge` → sign the challenge string with the Ed25519 identity key → `POST /auth/verify` with the signature and the challenge → session token. Use the token as `Authorization: Bearer <token>` on authenticated routes and on the `/ws` upgrade request. Tokens are never read from a URL, so they do not end up in proxy access logs.
 
 - The token is `base64url(claims).base64url(mac)`: claims `{"sub": user_id, "exp": unix_seconds}`, MAC = HMAC-SHA256 with `HEXFIELD_SESSION_SECRET`. The server checks it in constant time and rejects expired tokens.
 - A user ID is bound to the first sign key that authenticates for it. A later `/auth/verify` for the same user ID with a different key returns `401`.
 - Authenticated routes return `401` for a missing, forged or expired token. Clients re-authenticate and retry.
+- Challenges are stateless: `base64url(claims).base64url(mac)` with claims `{"sub": user_id, "nonce", "exp"}` (5 minutes), MAC'd with the same secret under a separate context, so a challenge is never a valid session token. The server stores no per-user challenge, so a third party who requests a challenge for your user ID cannot invalidate yours. Each challenge works once: its nonce is recorded after a successful signature check.
 
 #### `POST /auth/challenge`
 Request a challenge nonce for Ed25519 authentication.
@@ -106,7 +107,7 @@ Request a challenge nonce for Ed25519 authentication.
 }
 ```
 
-**Response:** `{ "challenge": "uuid-nonce" }`
+**Response:** `{ "challenge": "<opaque signed challenge>" }`. Sign its UTF-8 bytes and send it back unchanged to `/auth/verify`.
 
 #### `POST /auth/verify`
 Verify the signed challenge and receive a session token.
@@ -117,11 +118,12 @@ Verify the signed challenge and receive a session token.
   "public_sign_key": "base64url",
   "public_dh_key": "base64url",
   "display_name": "Alice",
-  "signature": "base64url-encoded-ed25519-signature-of-challenge"
+  "signature": "base64url-encoded-ed25519-signature-of-challenge",
+  "challenge": "<the challenge string from /auth/challenge>"
 }
 ```
 
-**Response:** `{ "token": "<session token>" }`. `401` if the challenge is missing or expired, the signature is wrong, or the user ID is already bound to another key.
+**Response:** `{ "token": "<session token>", "expires_at": <unix seconds> }`. `401` if the challenge is missing, forged, expired, already used or issued for another user ID, the signature is wrong, or the user ID is already bound to another key.
 
 ### Users
 
@@ -194,16 +196,19 @@ Clients refresh credentials at 80% of `ttl`. The HexField client (webrtc-rs 0.17
 
 ### WebSocket
 
-#### `GET /ws?token=<session token>`
+#### `GET /ws` with `Authorization: Bearer <session token>`
 
-Connect for signal relay. The upgrade is rejected with `401` unless `token` is a valid session token. The connection's user ID comes from the token; query values such as `public_sign_key` are ignored. A new connection for the same user replaces the old one.
+Connect for signal relay. The upgrade is rejected with `401` unless the `Authorization` header carries a valid session token. A `token` query value is not accepted (it would leak into proxy logs). The connection's user ID comes from the token. A new connection for the same user replaces the old one.
+
+When the token expires, the server sends `{"type":"session_expired"}` and closes the socket with close code `4001`. To keep the socket open, send a fresh token before then (see `auth` below); otherwise re-authenticate and reconnect.
 
 **Inbound message types:**
 - `signal_offer`, `signal_answer`, `signal_ice` — forwarded to the connected user named in `to`. The server sets `from` to the authenticated sender.
 - `ping` — answered with `{"type":"pong"}`. Clients send one about every 45 s as a keepalive and reconnect if nothing arrives for two intervals.
+- `{"type":"auth","token":"<session token>"}` — a fresh token for the same user extends the connection to the new token's expiry. Answered with `{"type":"auth_ok","expires_at":<unix seconds>}`, or `{"type":"auth_failed"}` (invalid token or another user's; the old expiry stays). The HexField client sends this at 80% of the token lifetime.
 - Anything else (including `presence_update`, `typing_start`, `typing_stop`) is dropped.
 
 **Outbound messages:**
 - Forwarded `signal_*` messages, with `from` injected by the server.
 - `{"type":"peer_unavailable","to":"<userId>"}` — sent only to the sender when the `to` user of a `signal_*` message is not connected. The server never broadcasts: there are no presence or typing events, so no one learns who is online without addressing them directly.
-- `pong`.
+- `pong`, `auth_ok`, `auth_failed`, `session_expired`.

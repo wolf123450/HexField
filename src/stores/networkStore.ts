@@ -51,8 +51,19 @@ export const useNetworkStore = defineStore('network', () => {
 
   /** Rendezvous session token from /auth/verify (signed, expires server-side). */
   let _rendezvousToken: string | null = null
+  /** Expiry of `_rendezvousToken` (unix seconds), from /auth/verify `expires_at`. */
+  let _rendezvousTokenExpiresAt: number | null = null
+  /** Sends a fresh token over the open /ws before the current one expires. */
+  let sessionRefreshTimer: ReturnType<typeof setTimeout> | null = null
   /** Set while we want a rendezvous connection; reconnects re-authenticate as this user. */
   let _rendezvousUserId: string | null = null
+  /**
+   * One-off rendezvous URL used when joining via an invite that carries its
+   * own `rendezvous` field and no local rendezvousServerUrl is configured
+   * (network-compatibility-plan step 1.1). Falls back to settingsStore's URL
+   * whenever that is set.
+   */
+  let _rendezvousUrlOverride: string | null = null
   /** TURN credentials obtained from rendezvous server. */
   let _turnCredentials: { urls: string[]; username: string; credential: string } | null = null
   /** Re-fetches TURN credentials before they expire. */
@@ -65,6 +76,14 @@ export const useNetworkStore = defineStore('network', () => {
   const RATE_LIMIT = 100          // max messages per window
   const RATE_WINDOW_MS = 1000     // 1-second sliding window
   const peerMessageCounts = new Map<string, { count: number; windowStart: number }>()
+
+  /**
+   * Timestamps of `peer_unavailable` replies from the rendezvous server, keyed
+   * by the target userId. Lets `waitForPeer` reject early with a clear message
+   * instead of waiting out the full timeout when the rendezvous server has
+   * already told us the peer isn't connected.
+   */
+  const _peerUnavailableAt = new Map<string, number>()
 
   function isRateLimited(userId: string): boolean {
     const now = Date.now()
@@ -391,18 +410,20 @@ export const useNetworkStore = defineStore('network', () => {
   async function connectToRendezvous(localUserId: string) {
     const { useSettingsStore } = await import('./settingsStore')
     const settingsStore = useSettingsStore()
-    const rendezvousUrl = settingsStore.settings.rendezvousServerUrl
+    const rendezvousUrl = settingsStore.settings.rendezvousServerUrl || _rendezvousUrlOverride
     if (!rendezvousUrl) return
     _rendezvousUserId = localUserId
 
     const token = await authenticateRendezvous(rendezvousUrl, localUserId)
 
-    // Connect WebSocket through the WS signaling relay. The server takes the
-    // user ID from the token.
+    // Connect WebSocket through the WS signaling relay. The token goes in the
+    // Authorization header of the upgrade (never the URL); the server takes
+    // the user ID from it.
     const wsScheme = rendezvousUrl.startsWith('https') ? 'wss' : 'ws'
     const wsBase = rendezvousUrl.replace(/^https?/, wsScheme)
-    await signalingService.connect(`${wsBase}/ws?token=${encodeURIComponent(token)}`)
+    await signalingService.connect(`${wsBase}/ws`, token)
     logger.info('network', 'Connected to rendezvous WS')
+    scheduleSessionRefresh(rendezvousUrl, localUserId)
 
     // Fetch TURN credentials (non-fatal)
     await fetchTurnCredentials(rendezvousUrl, localUserId)
@@ -443,14 +464,44 @@ export const useNetworkStore = defineStore('network', () => {
         public_dh_key: identityStore.publicDHKey ?? '',
         display_name: identityStore.displayName,
         signature,
+        // The server keeps no challenge state: echo the signed challenge back.
+        challenge,
       }),
     })
     if (!verifyResp.ok) throw new Error('Auth verify failed')
-    const { token } = await verifyResp.json()
+    const { token, expires_at } = await verifyResp.json()
     if (typeof token !== 'string' || !token) throw new Error('Auth verify returned no token')
     _rendezvousToken = token
+    _rendezvousTokenExpiresAt = typeof expires_at === 'number' ? expires_at : null
     logger.info('network', 'Authenticated with rendezvous server')
     return token
+  }
+
+  /**
+   * The server closes /ws when the session token expires. Before that, at
+   * 80% of the token's lifetime, re-authenticate and send the new token over
+   * the open socket (`{ type: 'auth', token }`), which extends the session
+   * without a reconnect. If this fails, the server's close still triggers the
+   * normal reconnect with a fresh token.
+   */
+  function scheduleSessionRefresh(rendezvousUrl: string, localUserId: string, retry = false) {
+    if (sessionRefreshTimer) { clearTimeout(sessionRefreshTimer); sessionRefreshTimer = null }
+    if (_rendezvousTokenExpiresAt === null) return
+    const remainingSecs = _rendezvousTokenExpiresAt - Date.now() / 1000
+    const delaySecs = retry ? 60 : Math.max(30, remainingSecs * 0.8)
+    if (delaySecs >= remainingSecs) return // expires first; the reconnect path takes over
+    sessionRefreshTimer = setTimeout(async () => {
+      sessionRefreshTimer = null
+      if (_rendezvousUserId !== localUserId) return
+      try {
+        const token = await authenticateRendezvous(rendezvousUrl, localUserId)
+        await signalingService.send({ type: 'auth', token })
+        scheduleSessionRefresh(rendezvousUrl, localUserId)
+      } catch (e) {
+        logger.warn('network', 'Rendezvous session refresh failed:', e)
+        scheduleSessionRefresh(rendezvousUrl, localUserId, true)
+      }
+    }, delaySecs * 1000)
   }
 
   /**
@@ -491,6 +542,35 @@ export const useNetworkStore = defineStore('network', () => {
   }
 
   /**
+   * Join-time signaling fallback (network-compatibility-plan step 1.1): used
+   * by JoinView/JoinModal when none of an invite's LAN/direct endpoints could
+   * be reached. Ensures a rendezvous WebSocket is connected so `signal_send`
+   * on the Rust side can route the offer/answer/ICE exchange through it
+   * instead of a direct LAN connection.
+   *
+   * A no-op if signaling is already connected (e.g. this app already has its
+   * own rendezvous server configured and connected at startup). Otherwise
+   * connects using `url` — normally the invite's `rendezvous` field — falling
+   * back to the locally configured rendezvousServerUrl if `url` is empty.
+   * Throws if neither is available, or if the connection can't be confirmed
+   * within `timeoutMs`.
+   */
+  async function connectRendezvousForJoin(localUserId: string, url: string | undefined, timeoutMs = 8000): Promise<void> {
+    if (signalingState.value === 'connected') return
+
+    let target = url
+    if (!target) {
+      const { useSettingsStore } = await import('./settingsStore')
+      target = useSettingsStore().settings.rendezvousServerUrl
+    }
+    if (!target) throw new Error('No rendezvous server is available for this invite.')
+
+    _rendezvousUrlOverride = target
+    await connectToRendezvous(localUserId)
+    await waitForConnected(timeoutMs)
+  }
+
+  /**
    * ICE servers for every new peer connection, pushed to the Rust WebRTCManager.
    * Order: public STUN → custom TURN → rendezvous TURN.
    *
@@ -526,22 +606,18 @@ export const useNetworkStore = defineStore('network', () => {
   }
 
   /**
-   * Connect to a rendezvous signaling server.
-   */
-  async function connect(url: string) {
-    if (!url) return
-    serverUrl.value = url
-    reconnectAttempt.value = 0
-    await signalingService.connect(url)
-  }
-
-  /**
    * Disconnect from the signaling server and tear down all peers.
    */
   async function disconnect() {
     // Clear reconnect targets first: the WS task reports "disconnected".
     _rendezvousUserId = null
     _rendezvousToken = null
+    _rendezvousTokenExpiresAt = null
+    if (sessionRefreshTimer) {
+      clearTimeout(sessionRefreshTimer)
+      sessionRefreshTimer = null
+    }
+    _rendezvousUrlOverride = null
     serverUrl.value = ''
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
@@ -580,6 +656,19 @@ export const useNetworkStore = defineStore('network', () => {
    */
   function broadcast(data: unknown) {
     webrtcService.broadcast(data)
+  }
+
+  /**
+   * Send data only to connected peers that are members of `serverId`.
+   * Chat messages, chat mutations and attachment requests go through this,
+   * so peers outside the server never see them.
+   */
+  async function broadcastToServer(serverId: string, data: unknown) {
+    const { useServersStore } = await import('./serversStore')
+    const serversStore = useServersStore()
+    if (!serversStore.members[serverId]) await serversStore.fetchMembers(serverId)
+    const members = serversStore.members[serverId] ?? {}
+    webrtcService.broadcastWhere(userId => userId in members, data)
   }
 
   /**
@@ -641,9 +730,18 @@ export const useNetworkStore = defineStore('network', () => {
 
   function handleSignalMessage(payload: SignalPayload) {
     // The rendezvous server's reply when the addressee of our signal isn't
-    // connected. It has no `from`. Callers may fall back later (step 1.1).
+    // connected. It has no `from`. Recorded so waitForPeer can fail fast with
+    // a clear "offline" message instead of waiting out the full timeout.
     if (payload.type === 'peer_unavailable') {
       logger.info('network', 'rendezvous: peer unavailable:', payload.to)
+      const to = payload.to as string | undefined
+      if (to) _peerUnavailableAt.set(to, Date.now())
+      return
+    }
+    // Rendezvous session control replies. After `session_expired` the server
+    // closes the socket and the reconnect path re-authenticates.
+    if (payload.type === 'auth_ok' || payload.type === 'auth_failed' || payload.type === 'session_expired') {
+      logger.info('network', `rendezvous: ${payload.type}`)
       return
     }
 
@@ -1228,11 +1326,32 @@ export const useNetworkStore = defineStore('network', () => {
   // ── Attachment gossip (Phase 5b) ───────────────────────────────────────────
 
   /**
-   * Broadcast to all connected peers that we want to download `contentHash`.
+   * Tell peers that we want to download `contentHash`.
    * Any peer who has the file will reply with `attachment_have`.
+   * A chat attachment's hash goes only to members of the message's server;
+   * avatars and emoji (no `messageId`) still go to every connected peer.
    */
   function broadcastAttachmentWant(contentHash: string, messageId: string) {
-    broadcast({ type: 'attachment_want', contentHash, messageId })
+    const payload = { type: 'attachment_want', contentHash, messageId }
+    if (!messageId) {
+      broadcast(payload)
+      return
+    }
+    findMessageServerId(messageId)
+      .then(serverId => {
+        if (serverId) return broadcastToServer(serverId, payload)
+        logger.warn('network', 'attachment_want: message', messageId, 'is not loaded, request not sent')
+      })
+      .catch(e => logger.warn('network', 'attachment_want error:', e))
+  }
+
+  async function findMessageServerId(messageId: string): Promise<string | null> {
+    const { useMessagesStore } = await import('./messagesStore')
+    for (const msgs of Object.values(useMessagesStore().messages)) {
+      const found = msgs.find(m => m.id === messageId)
+      if (found) return found.serverId
+    }
+    return null
   }
 
   /**
@@ -1477,13 +1596,25 @@ export const useNetworkStore = defineStore('network', () => {
 
   /**
    * Resolves when a specific peer appears in `connectedPeers` (WebRTC connected).
+   * Rejects early — instead of waiting out the full timeout — if the
+   * rendezvous server reports `peer_unavailable` for this userId while we
+   * wait (join fallback, network-compatibility-plan step 1.1). That rejection
+   * carries the message `peer_unavailable:<userId>` so callers can show a
+   * distinct "they're offline" message.
    */
   function waitForPeer(userId: string, timeoutMs = 15000): Promise<void> {
     if (connectedPeers.value.includes(userId)) return Promise.resolve()
+    const start = Date.now()
+    // Ignore any stale peer_unavailable report from before this wait started.
+    const staleAt = _peerUnavailableAt.get(userId)
+    if (staleAt !== undefined && staleAt < start) _peerUnavailableAt.delete(userId)
     return new Promise((resolve, reject) => {
-      const start = Date.now()
       const check = () => {
         if (connectedPeers.value.includes(userId)) return resolve()
+        const unavailableAt = _peerUnavailableAt.get(userId)
+        if (unavailableAt !== undefined && unavailableAt >= start) {
+          return reject(new Error(`peer_unavailable:${userId}`))
+        }
         if (Date.now() - start >= timeoutMs) return reject(new Error('Peer connection timed out'))
         setTimeout(check, 200)
       }
@@ -1732,15 +1863,16 @@ export const useNetworkStore = defineStore('network', () => {
     isRelayed,
     typingUsers,
     init,
-    connect,
     disconnect,
     waitForConnected,
     waitForPeer,
+    connectRendezvousForJoin,
     connectViaDirect,
     requestServerManifest,
     sendSignal,
     sendToPeer,
     broadcast,
+    broadcastToServer,
     connectToPeer,
     sendTypingStart,
     sendTypingStop,
