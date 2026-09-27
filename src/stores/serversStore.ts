@@ -163,6 +163,24 @@ export const useServersStore = defineStore('servers', () => {
     members.value[serverId] = map
   }
 
+  /** Members of `serverId`, loaded from the DB the first time they are needed. */
+  async function ensureMembers(serverId: string): Promise<Record<string, ServerMember>> {
+    if (!members.value[serverId]) await fetchMembers(serverId)
+    return members.value[serverId] ?? {}
+  }
+
+  /**
+   * True when we have joined `serverId` and `userId` is one of its members.
+   * The in-memory map can be partial (gossip adds single entries), so a miss
+   * reloads the members from the DB once before answering no.
+   */
+  async function isServerMember(serverId: string, userId: string): Promise<boolean> {
+    if (!serverId || !userId || !servers.value[serverId]) return false
+    if ((await ensureMembers(serverId))[userId]) return true
+    await fetchMembers(serverId)
+    return Boolean(members.value[serverId]?.[userId])
+  }
+
   function setActiveServer(serverId: string | null) {
     activeServerId.value = serverId
   }
@@ -1347,6 +1365,8 @@ export const useServersStore = defineStore('servers', () => {
     loadServers,
     createServer,
     fetchMembers,
+    ensureMembers,
+    isServerMember,
     upsertMember,
     setActiveServer,
     updateMemberStatus,

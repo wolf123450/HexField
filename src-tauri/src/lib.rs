@@ -293,6 +293,8 @@ pub fn run() {
             sync_save_messages,
             sync_save_mutations,
             sync_list_channels,
+            sync_scope_messages,
+            sync_scope_mutations,
             // Media (Rust-native audio) — excluded when native-media feature is off
             #[cfg(feature = "native-media")]
             media_reset_all,

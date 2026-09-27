@@ -149,6 +149,8 @@ export const useEmojiStore = defineStore('emoji', () => {
       targetId:   emojiId,
       channelId:  '__server__',
       authorId:   identityStore.userId!,
+      // serverId lets history sync scope this row to its server
+      newContent: JSON.stringify({ serverId }),
       logicalTs:  generateHLC(),
       createdAt:  new Date().toISOString(),
       verified:   true,

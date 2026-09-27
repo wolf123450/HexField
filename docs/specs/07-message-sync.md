@@ -88,6 +88,8 @@ Pass 3: reconcile mutations table (per server — server_update, role_assign,
 
 Channels prioritised by: currently open > recently active > others.
 
+**Scope**: sync only covers servers where both peers are members. Every frame (`sync_neg_init`, `sync_push`, `sync_want`) carries `serverId`. Each side checks that the peer shares that server before it reconciles, serves or accepts rows. The Rust `sync_*` commands check that the channel belongs to `serverId` and only return or accept rows of that channel and server. Pass 3 runs once per shared server. A `__server__` mutation belongs to the server in its `target_id` (`server_update`, `access_mode_update`, `server_rebaseline`, `governance_*`) or else in `newContent.serverId`. Rows with neither never sync.
+
 ---
 
 ## 5. Mutations Sync

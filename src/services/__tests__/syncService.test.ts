@@ -4,6 +4,9 @@
  * The service owns the P2P negentropy sync protocol — initiator and responder
  * sides, push/want content exchange. It relies on Tauri `invoke` for Rust-side
  * negentropy computation; all invoke calls are mocked here.
+ *
+ * Sync is scoped to servers that both we and the peer are members of: a peer
+ * that shares no server with us gets nothing and can push nothing.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -21,12 +24,24 @@ vi.mock('@/stores/messagesStore', () => ({
   }),
 }))
 
+const MY_ID = 'user-me'
+vi.mock('@/stores/identityStore', () => ({
+  useIdentityStore: () => ({ userId: MY_ID }),
+}))
+
+// Servers we have joined, and `${serverId}:${userId}` membership pairs
+const mockServers: Record<string, unknown> = {}
+const membership = new Set<string>()
 const mockMembers: Record<string, Record<string, unknown>> = {}
 const mockUpdateMemberProfile = vi.fn()
+const mockIsServerMember = vi.fn(async (serverId: string, userId: string) =>
+  Boolean(mockServers[serverId]) && membership.has(`${serverId}:${userId}`))
 vi.mock('@/stores/serversStore', () => ({
   useServersStore: () => ({
-    members: mockMembers,
+    servers:             mockServers,
+    members:             mockMembers,
     updateMemberProfile: mockUpdateMemberProfile,
+    isServerMember:      mockIsServerMember,
   }),
 }))
 
@@ -57,11 +72,43 @@ vi.mock('@/stores/governanceStore', () => ({
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-function makeMessageRow(id: string) {
+/** We join `serverId`; the listed users are members of it too. */
+function share(serverId: string, ...userIds: string[]) {
+  mockServers[serverId] = { id: serverId }
+  membership.add(`${serverId}:${MY_ID}`)
+  for (const u of userIds) membership.add(`${serverId}:${u}`)
+}
+
+function resetMembership() {
+  for (const k of Object.keys(mockServers)) delete mockServers[k]
+  membership.clear()
+  // srv-1 is shared with the usual test peers; peer-eve shares nothing
+  share('srv-1', 'peer-alice', 'peer-bob', 'peer-a')
+}
+
+type InvokeArgs = Record<string, unknown> | undefined
+
+/**
+ * invoke mock: the Rust `sync_scope_*` gate passes rows through unchanged
+ * (the Rust side is covered by its own tests); `handler` answers the rest.
+ */
+function invokeWith(handler: (cmd: string, args: InvokeArgs) => unknown = () => undefined) {
+  return async (cmd: string, args: InvokeArgs) => {
+    if (cmd === 'sync_scope_messages')  return args?.messages
+    if (cmd === 'sync_scope_mutations') return args?.mutations
+    return handler(cmd, args)
+  }
+}
+
+function invokedCommands(): string[] {
+  return mockInvoke.mock.calls.map((c) => c[0] as string)
+}
+
+function makeMessageRow(id: string, channelId = 'chan-1', serverId = 'srv-1') {
   return {
     id,
-    channel_id:      'chan-1',
-    server_id:       'srv-1',
+    channel_id:      channelId,
+    server_id:       serverId,
     author_id:       'user-a',
     content:         'hello',
     content_type:    'text',
@@ -88,19 +135,25 @@ function makeMutationRow(id: string) {
   }
 }
 
+beforeEach(() => {
+  vi.clearAllMocks()
+  resetMembership()
+})
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 describe('syncService.startSync', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  it('sends sync_neg_init for each channel × table plus server-level mutations', async () => {
-    mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === 'sync_list_channels') return ['chan-1', 'chan-2']
-      if (cmd === 'sync_initiate')      return 'base64-neg-msg'
+  it('sends sync_neg_init for server-level mutations plus each shared channel × table', async () => {
+    mockInvoke.mockImplementation(invokeWith((cmd) => {
+      if (cmd === 'sync_list_channels') {
+        return [
+          { channel_id: 'chan-1', server_id: 'srv-1' },
+          { channel_id: 'chan-2', server_id: 'srv-1' },
+        ]
+      }
+      if (cmd === 'sync_initiate') return 'base64-neg-msg'
       return null
-    })
+    }))
 
     const { setSendFn, startSync } = await import('@/services/syncService')
     const sendFn = vi.fn()
@@ -108,23 +161,68 @@ describe('syncService.startSync', () => {
 
     await startSync('peer-bob')
 
+    expect(mockInvoke).toHaveBeenCalledWith('sync_list_channels', { serverIds: ['srv-1'] })
+    expect(mockInvoke).toHaveBeenCalledWith('sync_initiate', { serverId: 'srv-1', channelId: '__server__', table: 'mutations' })
+
     // 1 server-level mutations + 2 channels × 2 tables = 5 sessions
     const negInits = sendFn.mock.calls.filter((c) => c[1]?.type === 'sync_neg_init')
     expect(negInits).toHaveLength(5)
     expect(negInits[0][0]).toBe('peer-bob')
     // Server-level mutations come FIRST
-    expect(negInits[0][1]).toMatchObject({ type: 'sync_neg_init', channelId: '__server__', table: 'mutations' })
-    expect(negInits[1][1]).toMatchObject({ type: 'sync_neg_init', channelId: 'chan-1', table: 'messages' })
-    expect(negInits[2][1]).toMatchObject({ type: 'sync_neg_init', channelId: 'chan-1', table: 'mutations' })
-    expect(negInits[3][1]).toMatchObject({ type: 'sync_neg_init', channelId: 'chan-2', table: 'messages' })
-    expect(negInits[4][1]).toMatchObject({ type: 'sync_neg_init', channelId: 'chan-2', table: 'mutations' })
+    expect(negInits[0][1]).toMatchObject({ type: 'sync_neg_init', serverId: 'srv-1', channelId: '__server__', table: 'mutations' })
+    expect(negInits[1][1]).toMatchObject({ type: 'sync_neg_init', serverId: 'srv-1', channelId: 'chan-1', table: 'messages' })
+    expect(negInits[2][1]).toMatchObject({ type: 'sync_neg_init', serverId: 'srv-1', channelId: 'chan-1', table: 'mutations' })
+    expect(negInits[3][1]).toMatchObject({ type: 'sync_neg_init', serverId: 'srv-1', channelId: 'chan-2', table: 'messages' })
+    expect(negInits[4][1]).toMatchObject({ type: 'sync_neg_init', serverId: 'srv-1', channelId: 'chan-2', table: 'mutations' })
+  })
+
+  it('only offers servers the peer is a member of', async () => {
+    share('srv-2', 'peer-carol') // we are in srv-2, peer-bob is not
+    mockInvoke.mockImplementation(invokeWith((cmd) => {
+      if (cmd === 'sync_list_channels') return []
+      if (cmd === 'sync_initiate') return 'neg'
+      return null
+    }))
+
+    const { setSendFn, startSync } = await import('@/services/syncService')
+    const sendFn = vi.fn()
+    setSendFn(sendFn)
+
+    await startSync('peer-bob')
+
+    expect(mockInvoke).toHaveBeenCalledWith('sync_list_channels', { serverIds: ['srv-1'] })
+    const serverIds = sendFn.mock.calls.map((c) => c[1]?.serverId)
+    expect(serverIds).not.toContain('srv-2')
+  })
+
+  it('does not offer a server the peer is in but we are not', async () => {
+    mockServers['srv-3'] = { id: 'srv-3' }
+    membership.add('srv-3:peer-bob') // no `srv-3:${MY_ID}`
+    mockInvoke.mockImplementation(invokeWith((cmd) => (cmd === 'sync_list_channels' ? [] : 'neg')))
+
+    const { setSendFn, startSync } = await import('@/services/syncService')
+    setSendFn(vi.fn())
+
+    await startSync('peer-bob')
+
+    expect(mockInvoke).toHaveBeenCalledWith('sync_list_channels', { serverIds: ['srv-1'] })
+  })
+
+  it('a peer that shares no server gets nothing', async () => {
+    mockInvoke.mockImplementation(invokeWith(() => 'neg'))
+
+    const { setSendFn, startSync } = await import('@/services/syncService')
+    const sendFn = vi.fn()
+    setSendFn(sendFn)
+
+    await startSync('peer-eve')
+
+    expect(sendFn).not.toHaveBeenCalled()
+    expect(mockInvoke).not.toHaveBeenCalled()
   })
 
   it('does not throw when sync_list_channels returns empty list', async () => {
-    mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === 'sync_list_channels') return []
-      return null
-    })
+    mockInvoke.mockImplementation(invokeWith((cmd) => (cmd === 'sync_list_channels' ? [] : null)))
 
     const { setSendFn, startSync } = await import('@/services/syncService')
     setSendFn(vi.fn())
@@ -143,10 +241,6 @@ describe('syncService.startSync', () => {
 // ── Responder path ─────────────────────────────────────────────────────────────
 
 describe('syncService.handleSyncMessage — sync_neg_init (responder)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
   it('calls sync_respond and sends sync_neg_reply back', async () => {
     mockInvoke.mockResolvedValue('reply-base64')
 
@@ -157,12 +251,14 @@ describe('syncService.handleSyncMessage — sync_neg_init (responder)', () => {
     await handleSyncMessage('peer-alice', {
       type:      'sync_neg_init',
       sessionId: 'sess-1',
+      serverId:  'srv-1',
       channelId: 'chan-1',
       table:     'messages',
       msg:       'init-base64',
     })
 
     expect(mockInvoke).toHaveBeenCalledWith('sync_respond', {
+      serverId:  'srv-1',
       channelId: 'chan-1',
       table:     'messages',
       msg:       'init-base64',
@@ -173,6 +269,37 @@ describe('syncService.handleSyncMessage — sync_neg_init (responder)', () => {
     )
   })
 
+  it('ignores a neg_init from a peer that is not a member of the server', async () => {
+    mockInvoke.mockResolvedValue('reply-base64')
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    const sendFn = vi.fn()
+    setSendFn(sendFn)
+
+    await handleSyncMessage('peer-eve', {
+      type: 'sync_neg_init', sessionId: 's', serverId: 'srv-1', channelId: 'chan-1', table: 'messages', msg: 'm',
+    })
+
+    expect(mockInvoke).not.toHaveBeenCalled()
+    expect(sendFn).not.toHaveBeenCalled()
+  })
+
+  it('ignores a neg_init for another server of ours that the peer is not in', async () => {
+    share('srv-2', 'peer-carol')
+    mockInvoke.mockResolvedValue('reply-base64')
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    const sendFn = vi.fn()
+    setSendFn(sendFn)
+
+    await handleSyncMessage('peer-alice', {
+      type: 'sync_neg_init', sessionId: 's', serverId: 'srv-2', channelId: 'chan-9', table: 'messages', msg: 'm',
+    })
+
+    expect(mockInvoke).not.toHaveBeenCalled()
+    expect(sendFn).not.toHaveBeenCalled()
+  })
+
   it('does not throw when sync_respond rejects', async () => {
     mockInvoke.mockRejectedValue(new Error('backend unavailable'))
 
@@ -181,7 +308,7 @@ describe('syncService.handleSyncMessage — sync_neg_init (responder)', () => {
 
     await expect(
       handleSyncMessage('peer-alice', {
-        type: 'sync_neg_init', sessionId: 's', channelId: 'c', table: 'messages', msg: 'm',
+        type: 'sync_neg_init', sessionId: 's', serverId: 'srv-1', channelId: 'c', table: 'messages', msg: 'm',
       }),
     ).resolves.not.toThrow()
   })
@@ -190,55 +317,65 @@ describe('syncService.handleSyncMessage — sync_neg_init (responder)', () => {
 // ── Initiator path: handle reply ───────────────────────────────────────────────
 
 describe('syncService.handleSyncMessage — sync_neg_reply (initiator)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  it('pushes items the peer needs and requests items we need', async () => {
-    mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === 'sync_list_channels') return ['chan-1']
+  async function startAndGetSessionId(peerId: string) {
+    mockInvoke.mockImplementation(invokeWith((cmd) => {
+      if (cmd === 'sync_list_channels') return [{ channel_id: 'chan-1', server_id: 'srv-1' }]
       if (cmd === 'sync_initiate')      return 'neg-msg'
-      if (cmd === 'sync_process_response') return { have_ids: ['msg-a'], need_ids: ['msg-b'] }
-      if (cmd === 'sync_get_messages')  return [makeMessageRow('msg-a')]
       return null
-    })
-
-    const { setSendFn, startSync, handleSyncMessage } = await import('@/services/syncService')
+    }))
+    const { setSendFn, startSync } = await import('@/services/syncService')
     const sendFn = vi.fn()
     setSendFn(sendFn)
-
-    // Trigger startSync so that a pending session is registered
-    await startSync('peer-bob')
-    // Capture the sessionId for the chan-1/messages init (not __server__/mutations which comes first)
+    await startSync(peerId)
+    // The chan-1/messages init (not __server__/mutations which comes first)
     const initCall = sendFn.mock.calls.find(
       (c) => c[1]?.type === 'sync_neg_init' && c[1]?.channelId === 'chan-1' && c[1]?.table === 'messages',
     )
     expect(initCall).toBeDefined()
-    const sessionId = initCall![1].sessionId as string
+    return { sendFn, sessionId: initCall![1].sessionId as string }
+  }
+
+  it('pushes items the peer needs and requests items we need', async () => {
+    const { sendFn, sessionId } = await startAndGetSessionId('peer-bob')
 
     sendFn.mockClear()
     mockInvoke.mockClear()
-    mockInvoke.mockImplementation(async (cmd: string) => {
+    mockInvoke.mockImplementation(invokeWith((cmd) => {
       if (cmd === 'sync_process_response') return { have_ids: ['msg-a'], need_ids: ['msg-b'] }
       if (cmd === 'sync_get_messages')     return [makeMessageRow('msg-a')]
       return null
-    })
+    }))
 
+    const { handleSyncMessage } = await import('@/services/syncService')
     await handleSyncMessage('peer-bob', {
       type:      'sync_neg_reply',
       sessionId,
       msg:       'reply-msg',
     })
 
+    expect(mockInvoke).toHaveBeenCalledWith('sync_get_messages', { serverId: 'srv-1', channelId: 'chan-1', ids: ['msg-a'] })
+
     // Should push content (sync_push with messages for msg-a)
     const pushCall = sendFn.mock.calls.find((c) => c[1]?.type === 'sync_push')
     expect(pushCall).toBeDefined()
-    expect(pushCall![1]).toMatchObject({ type: 'sync_push', table: 'messages', channelId: 'chan-1' })
+    expect(pushCall![1]).toMatchObject({ type: 'sync_push', table: 'messages', serverId: 'srv-1', channelId: 'chan-1' })
 
     // Should send a want request for msg-b
     const wantCall = sendFn.mock.calls.find((c) => c[1]?.type === 'sync_want')
     expect(wantCall).toBeDefined()
-    expect(wantCall![1]).toMatchObject({ type: 'sync_want', ids: ['msg-b'] })
+    expect(wantCall![1]).toMatchObject({ type: 'sync_want', serverId: 'srv-1', ids: ['msg-b'] })
+  })
+
+  it('ignores a reply to another peer\'s session', async () => {
+    const { sendFn, sessionId } = await startAndGetSessionId('peer-bob')
+    sendFn.mockClear()
+    mockInvoke.mockClear()
+
+    const { handleSyncMessage } = await import('@/services/syncService')
+    await handleSyncMessage('peer-alice', { type: 'sync_neg_reply', sessionId, msg: 'reply-msg' })
+
+    expect(mockInvoke).not.toHaveBeenCalled()
+    expect(sendFn).not.toHaveBeenCalled()
   })
 
   it('ignores sync_neg_reply for unknown sessionId without throwing', async () => {
@@ -255,12 +392,8 @@ describe('syncService.handleSyncMessage — sync_neg_reply (initiator)', () => {
 // ── Push path (receive content from peer) ──────────────────────────────────────
 
 describe('syncService.handleSyncMessage — sync_push', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
   it('saves received messages and triggers loadMessages', async () => {
-    mockInvoke.mockResolvedValue(undefined)
+    mockInvoke.mockImplementation(invokeWith())
 
     const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
     setSendFn(vi.fn())
@@ -270,16 +403,18 @@ describe('syncService.handleSyncMessage — sync_push', () => {
       type:      'sync_push',
       sessionId: 'sess-3',
       table:     'messages',
+      serverId:  'srv-1',
       channelId: 'chan-1',
       messages,
     })
 
+    expect(mockInvoke).toHaveBeenCalledWith('sync_scope_messages', { serverId: 'srv-1', channelId: 'chan-1', messages })
     expect(mockInvoke).toHaveBeenCalledWith('sync_save_messages', { messages })
     expect(mockLoadMessages).toHaveBeenCalledWith('chan-1')
   })
 
   it('saves received mutations and triggers loadMutationsForChannel', async () => {
-    mockInvoke.mockResolvedValue(undefined)
+    mockInvoke.mockImplementation(invokeWith())
 
     const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
     setSendFn(vi.fn())
@@ -289,16 +424,18 @@ describe('syncService.handleSyncMessage — sync_push', () => {
       type:      'sync_push',
       sessionId: 'sess-4',
       table:     'mutations',
+      serverId:  'srv-1',
       channelId: 'chan-1',
       mutations,
     })
 
+    expect(mockInvoke).toHaveBeenCalledWith('sync_scope_mutations', { serverId: 'srv-1', channelId: 'chan-1', mutations })
     expect(mockInvoke).toHaveBeenCalledWith('sync_save_mutations', { mutations })
     expect(mockLoadMutationsForChannel).toHaveBeenCalledWith('chan-1')
   })
 
   it('does NOT call loadMutationsForChannel for server-level mutations', async () => {
-    mockInvoke.mockResolvedValue(undefined)
+    mockInvoke.mockImplementation(invokeWith())
 
     const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
     setSendFn(vi.fn())
@@ -307,6 +444,7 @@ describe('syncService.handleSyncMessage — sync_push', () => {
       type:      'sync_push',
       sessionId: 'sess-5',
       table:     'mutations',
+      serverId:  'srv-1',
       channelId: '__server__',
       mutations: [makeMutationRow('mut-s')],
     })
@@ -319,26 +457,90 @@ describe('syncService.handleSyncMessage — sync_push', () => {
     setSendFn(vi.fn())
 
     await handleSyncMessage('peer-alice', {
-      type: 'sync_push', sessionId: 's', table: 'messages', channelId: 'c', messages: [],
+      type: 'sync_push', sessionId: 's', table: 'messages', serverId: 'srv-1', channelId: 'c', messages: [],
     })
 
     expect(mockInvoke).not.toHaveBeenCalled()
+  })
+
+  it('drops a push from a peer that is not a member of the server', async () => {
+    mockInvoke.mockImplementation(invokeWith())
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    setSendFn(vi.fn())
+
+    await handleSyncMessage('peer-eve', {
+      type: 'sync_push', sessionId: 's', table: 'messages', serverId: 'srv-1', channelId: 'chan-1',
+      messages: [makeMessageRow('msg-evil')],
+    })
+    await handleSyncMessage('peer-eve', {
+      type: 'sync_push', sessionId: 's', table: 'mutations', serverId: 'srv-1', channelId: '__server__',
+      mutations: [makeMutationRow('mut-evil')],
+    })
+
+    expect(mockInvoke).not.toHaveBeenCalled()
+    expect(mockLoadMessages).not.toHaveBeenCalled()
+    expect(mockApplyChannelMutation).not.toHaveBeenCalled()
+  })
+
+  it('drops a push for a server we are not in', async () => {
+    mockInvoke.mockImplementation(invokeWith())
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    setSendFn(vi.fn())
+
+    await handleSyncMessage('peer-alice', {
+      type: 'sync_push', sessionId: 's', table: 'messages', serverId: 'srv-foreign', channelId: 'chan-f',
+      messages: [makeMessageRow('msg-f', 'chan-f', 'srv-foreign')],
+    })
+
+    expect(mockInvoke).not.toHaveBeenCalled()
+  })
+
+  it('saves only the rows the scope gate keeps', async () => {
+    // Rust drops the row whose channel/server does not match the frame
+    mockInvoke.mockImplementation(async (cmd: string, args: InvokeArgs) => {
+      if (cmd === 'sync_scope_messages') {
+        return (args?.messages as Array<{ channel_id: string }>).filter((m) => m.channel_id === 'chan-1')
+      }
+      return undefined
+    })
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    setSendFn(vi.fn())
+
+    const good = makeMessageRow('msg-good')
+    const foreign = makeMessageRow('msg-foreign', 'chan-other', 'srv-other')
+    await handleSyncMessage('peer-alice', {
+      type: 'sync_push', sessionId: 's', table: 'messages', serverId: 'srv-1', channelId: 'chan-1',
+      messages: [good, foreign],
+    })
+
+    expect(mockInvoke).toHaveBeenCalledWith('sync_save_messages', { messages: [good] })
+  })
+
+  it('saves nothing when the scope gate keeps no rows', async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => (cmd.startsWith('sync_scope_') ? [] : undefined))
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    setSendFn(vi.fn())
+
+    await handleSyncMessage('peer-alice', {
+      type: 'sync_push', sessionId: 's', table: 'mutations', serverId: 'srv-1', channelId: '__server__',
+      mutations: [makeMutationRow('mut-foreign')],
+    })
+
+    expect(invokedCommands()).toEqual(['sync_scope_mutations'])
+    expect(mockApplyChannelMutation).not.toHaveBeenCalled()
   })
 })
 
 // ── Want path (peer requests content we have) ──────────────────────────────────
 
 describe('syncService.handleSyncMessage — sync_want', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
   it('fetches requested messages and sends sync_push', async () => {
     const messages = [makeMessageRow('msg-y')]
-    mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === 'sync_get_messages') return messages
-      return null
-    })
+    mockInvoke.mockImplementation(invokeWith((cmd) => (cmd === 'sync_get_messages' ? messages : null)))
 
     const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
     const sendFn = vi.fn()
@@ -348,23 +550,21 @@ describe('syncService.handleSyncMessage — sync_want', () => {
       type:      'sync_want',
       sessionId: 'sess-6',
       table:     'messages',
+      serverId:  'srv-1',
       channelId: 'chan-1',
       ids:       ['msg-y'],
     })
 
-    expect(mockInvoke).toHaveBeenCalledWith('sync_get_messages', { ids: ['msg-y'] })
+    expect(mockInvoke).toHaveBeenCalledWith('sync_get_messages', { serverId: 'srv-1', channelId: 'chan-1', ids: ['msg-y'] })
     expect(sendFn).toHaveBeenCalledWith(
       'peer-alice',
-      expect.objectContaining({ type: 'sync_push', table: 'messages', channelId: 'chan-1', messages }),
+      expect.objectContaining({ type: 'sync_push', table: 'messages', serverId: 'srv-1', channelId: 'chan-1', messages }),
     )
   })
 
   it('fetches requested mutations and sends sync_push', async () => {
     const mutations = [makeMutationRow('mut-y')]
-    mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === 'sync_get_mutations') return mutations
-      return null
-    })
+    mockInvoke.mockImplementation(invokeWith((cmd) => (cmd === 'sync_get_mutations' ? mutations : null)))
 
     const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
     const sendFn = vi.fn()
@@ -374,55 +574,83 @@ describe('syncService.handleSyncMessage — sync_want', () => {
       type:      'sync_want',
       sessionId: 'sess-7',
       table:     'mutations',
+      serverId:  'srv-1',
       channelId: 'chan-1',
       ids:       ['mut-y'],
     })
 
-    expect(mockInvoke).toHaveBeenCalledWith('sync_get_mutations', { ids: ['mut-y'] })
+    expect(mockInvoke).toHaveBeenCalledWith('sync_get_mutations', { serverId: 'srv-1', channelId: 'chan-1', ids: ['mut-y'] })
     expect(sendFn).toHaveBeenCalledWith(
       'peer-alice',
-      expect.objectContaining({ type: 'sync_push', table: 'mutations', channelId: 'chan-1', mutations }),
+      expect.objectContaining({ type: 'sync_push', table: 'mutations', serverId: 'srv-1', channelId: 'chan-1', mutations }),
     )
+  })
+
+  it('serves nothing to a peer that is not a member of the server', async () => {
+    mockInvoke.mockImplementation(invokeWith(() => [makeMessageRow('msg-secret')]))
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    const sendFn = vi.fn()
+    setSendFn(sendFn)
+
+    await handleSyncMessage('peer-eve', {
+      type: 'sync_want', sessionId: 's', table: 'messages', serverId: 'srv-1', channelId: 'chan-1', ids: ['msg-secret'],
+    })
+
+    expect(mockInvoke).not.toHaveBeenCalled()
+    expect(sendFn).not.toHaveBeenCalled()
+  })
+
+  it('serves nothing from our other server that the peer is not in', async () => {
+    share('srv-2', 'peer-carol')
+    mockInvoke.mockImplementation(invokeWith(() => [makeMessageRow('msg-secret', 'chan-9', 'srv-2')]))
+
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    const sendFn = vi.fn()
+    setSendFn(sendFn)
+
+    await handleSyncMessage('peer-alice', {
+      type: 'sync_want', sessionId: 's', table: 'messages', serverId: 'srv-2', channelId: 'chan-9', ids: ['msg-secret'],
+    })
+
+    expect(mockInvoke).not.toHaveBeenCalled()
+    expect(sendFn).not.toHaveBeenCalled()
   })
 })
 
 // ── SCTP size enforcement ──────────────────────────────────────────────────────
 
-// The sync_push wire frame has a fixed ~160-byte envelope overhead on top of
+// The sync_push wire frame has a fixed ~200-byte envelope overhead on top of
 // the serialised items.  _pushItems must account for this so the full JSON
 // string passed to webrtcService.sendToPeer never exceeds SCTP_SAFE_BYTES.
 
 const SCTP_SAFE_BYTES = 60_000   // must match the constant in syncService.ts
 const SESSION_ID      = '01234567-89ab-cdef-0123-456789abcdef'
 const CHANNEL_ID      = '01234567-89ab-cdef-0123-456789abcdef'
+const SERVER_ID       = 'srv-1'
 
 /** Returns the byte length of the full sync_push frame for a single message row. */
 function envelopeLen(row: ReturnType<typeof makeMessageRow>): number {
   return JSON.stringify({
-    type: 'sync_push', sessionId: SESSION_ID, table: 'messages', channelId: CHANNEL_ID,
+    type: 'sync_push', sessionId: SESSION_ID, table: 'messages', serverId: SERVER_ID, channelId: CHANNEL_ID,
     messages: [row],
   }).length
 }
 
 describe('syncService SCTP envelope size enforcement', () => {
-  beforeEach(() => { vi.clearAllMocks() })
-
   it('strips inlineData from raw_attachments when item exceeds SCTP budget', async () => {
     // A message with a 100 KB image (~133 KB base64).
     // Without stripping the full envelope would be ~133 KB — well above the 65 KB SCTP limit.
     const inlineData = 'A'.repeat(133_000)
     const row = {
-      ...makeMessageRow('img-msg'),
+      ...makeMessageRow('img-msg', CHANNEL_ID),
       raw_attachments: JSON.stringify([
         { id: 'att-1', name: 'photo.jpg', size: 100_000, mimeType: 'image/jpeg',
           inlineData, transferState: 'inline' },
       ]),
     }
 
-    mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === 'sync_get_messages') return [row]
-      return null
-    })
+    mockInvoke.mockImplementation(invokeWith((cmd) => (cmd === 'sync_get_messages' ? [row] : null)))
 
     const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
     const sends: unknown[] = []
@@ -430,7 +658,7 @@ describe('syncService SCTP envelope size enforcement', () => {
 
     await handleSyncMessage('peer-a', {
       type: 'sync_want', sessionId: SESSION_ID, table: 'messages',
-      channelId: CHANNEL_ID, ids: ['img-msg'],
+      serverId: SERVER_ID, channelId: CHANNEL_ID, ids: ['img-msg'],
     })
 
     // After stripping, one frame should have been sent.
@@ -447,7 +675,7 @@ describe('syncService SCTP envelope size enforcement', () => {
     // (so it is NOT stripped by the strip check), but whose full envelope—including
     // the sync_push wrapper—exceeds SCTP_SAFE_BYTES.
     // This demonstrates the envelope-overhead accounting gap.
-    const base = makeMessageRow('padded-msg')
+    const base = makeMessageRow('padded-msg', CHANNEL_ID)
     const baseLen = JSON.stringify(base).length
     // 'hello' (5 chars) is already counted in baseLen; pad so total = SCTP_SAFE_BYTES - 1.
     const pad = 'P'.repeat(SCTP_SAFE_BYTES - 1 - baseLen + 'hello'.length)
@@ -458,10 +686,7 @@ describe('syncService SCTP envelope size enforcement', () => {
     // …but its full envelope would exceed SCTP_SAFE_BYTES:
     expect(envelopeLen(row)).toBeGreaterThan(SCTP_SAFE_BYTES) // proves the bug exists pre-fix
 
-    mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === 'sync_get_messages') return [row]
-      return null
-    })
+    mockInvoke.mockImplementation(invokeWith((cmd) => (cmd === 'sync_get_messages' ? [row] : null)))
 
     const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
     const sends: unknown[] = []
@@ -469,7 +694,7 @@ describe('syncService SCTP envelope size enforcement', () => {
 
     await handleSyncMessage('peer-a', {
       type: 'sync_want', sessionId: SESSION_ID, table: 'messages',
-      channelId: CHANNEL_ID, ids: ['padded-msg'],
+      serverId: SERVER_ID, channelId: CHANNEL_ID, ids: ['padded-msg'],
     })
 
     // Every payload sent must be within the SCTP budget.
@@ -489,13 +714,12 @@ describe('syncService SCTP envelope size enforcement', () => {
 
 describe('syncService._onPush — member_join persistence', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
     // Reset the shared members map between tests
     for (const key of Object.keys(mockMembers)) delete mockMembers[key]
   })
 
   it('calls db_upsert_member when a member_join mutation arrives via sync_push', async () => {
-    mockInvoke.mockResolvedValue(undefined)
+    mockInvoke.mockImplementation(invokeWith())
 
     const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
     setSendFn(vi.fn())
@@ -514,6 +738,7 @@ describe('syncService._onPush — member_join persistence', () => {
       type:      'sync_push',
       sessionId: 'sess-member',
       table:     'mutations',
+      serverId:  'srv-1',
       channelId: '__server__',
       mutations: [{
         id:          'mut-join-c',
@@ -546,13 +771,9 @@ describe('syncService._onPush — member_join persistence', () => {
 
 // -- Governance mutation routing via negentropy ---------------------------------
 
-describe('syncService._onPush � governance mutation routing', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
+describe('syncService._onPush — governance mutation routing', () => {
   it('routes governance_motion_update mutations via applyGovernanceMutation', async () => {
-    mockInvoke.mockResolvedValue(undefined)
+    mockInvoke.mockImplementation(invokeWith())
 
     const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
     setSendFn(vi.fn())
@@ -563,6 +784,7 @@ describe('syncService._onPush � governance mutation routing', () => {
       type:      'sync_push',
       sessionId: 'sess-gov',
       table:     'mutations',
+      serverId:  'srv-1',
       channelId: '__server__',
       mutations: [{
         id:          'mut-gov-1',
@@ -587,7 +809,7 @@ describe('syncService._onPush � governance mutation routing', () => {
   })
 
   it('does not call applyGovernanceMutation for non-governance mutations', async () => {
-    mockInvoke.mockResolvedValue(undefined)
+    mockInvoke.mockImplementation(invokeWith())
 
     const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
     setSendFn(vi.fn())
@@ -596,6 +818,7 @@ describe('syncService._onPush � governance mutation routing', () => {
       type:      'sync_push',
       sessionId: 'sess-nogov',
       table:     'mutations',
+      serverId:  'srv-1',
       channelId: '__server__',
       mutations: [{
         id:          'mut-emoji-1',
@@ -603,7 +826,7 @@ describe('syncService._onPush � governance mutation routing', () => {
         target_id:   'emoji-1',
         channel_id:  '__server__',
         author_id:   'user-a',
-        new_content: JSON.stringify({ shortcode: 'smile' }),
+        new_content: JSON.stringify({ shortcode: 'smile', serverId: 'srv-1' }),
         emoji_id:    null,
         created_at:  '2025-06-01T00:00:00.000Z',
         logical_ts:  '1750000000000-000002',
