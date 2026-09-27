@@ -28,6 +28,9 @@ pub struct MutationRow {
     pub logical_ts: String,
     pub created_at: String,
     pub verified: bool,
+    /// Base64 Ed25519 signature by the author (spec 08 §5). `None` only for pre-014 rows.
+    #[serde(default)]
+    pub sig: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

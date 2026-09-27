@@ -36,6 +36,7 @@ src/                          # Vue frontend
     settingsStore.ts           # User preferences persistence
   services/
     cryptoService.ts           # libsodium WASM — ALL crypto ops; private keys held here only
+    mutationAuth.ts            # signMutation / authorizeMutation — mutation signing + receive checks (spec 08 §5)
   components/
     layout/                    # 4-column grid: ServerRail, ChannelSidebar, MainPane, MemberList
     chat/                      # MessageHistory, MessageBubble, MessageInput, TypingIndicator
@@ -438,6 +439,7 @@ Issues that have already been encountered and fixed. **Do not re-introduce these
 | `hexfield-server` used the raw Bearer / `/ws` `token` string as the user ID, and `/auth/verify` let any key overwrite a user's stored key | Fixed in step 1.0: routes take `middleware::AuthUser` (or `optional_user`) which verifies the HMAC session token from `session.rs`; `/auth/verify` rejects a different key for an existing user ID. Never read a user ID from a client-supplied field on the server |
 | Previews are already base64; once attachment metadata is encrypted (spec 08 §4.1), base64 of the ciphertext inflates them by 4/3 | `MESSAGE_PREVIEW_BUDGET_CHARS` (27 K) / `PREVIEW_TARGET_BYTES` (18 KB) are sized for the *encrypted* frame. `chatWire.test.ts` asserts a full-budget message with 20 envelopes stays < 60 000 bytes — keep it passing when touching previews or envelopes |
 | Signed server blobs sharing one HMAC secret can be confused (serde ignores unknown fields, so a `{sub,nonce,exp}` challenge parsed as session `Claims {sub,exp}`) | `session.rs` MACs challenges under a separate context prefix and both claim structs use `#[serde(deny_unknown_fields)]`. Any new signed token type needs its own context. Also: `/ws` takes the token only from `Authorization: Bearer` (never `?token=`, it leaks into proxy logs) |
+| Mutations were applied from any peer with `verified: true` and no signature or author check | Create every mutation with `signMutation({...})` and send it with `serializeMutation()` (carries `sig` and `emojiId`); persist with `mutationToRow()` (carries `sig`). Receivers run `authorizeMutation()` — a hand-built literal or a wire subset without `sig` is rejected by every peer |
 | `handleMutationMessage` in networkStore.ts did not handle `channel_create/update/delete` mutations | Real-time channel mutations (e.g. creating a voice channel) only synced via negentropy, not the real-time broadcast path. Fix: added channel mutation routing in `handleMutationMessage` to call `channelsStore.applyChannelMutation(mutation)`. |
 
 ---

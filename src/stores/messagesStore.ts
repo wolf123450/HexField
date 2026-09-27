@@ -8,6 +8,7 @@ import { fitPreviewsToBudget, sanitizeAttachments } from '@/services/attachmentS
 import { buildChatEnvelopes, readChatAttachments } from '@/services/chatWire'
 import type { ChatWireMessage, EnvelopeTarget } from '@/services/chatWire'
 import { generateHLC, advanceHLC } from '@/utils/hlc'
+import { signMutation, serializeMutation, mutationToRow, defaultDeps as mutationAuthDeps } from '@/services/mutationAuth'
 
 export const useMessagesStore = defineStore('messages', () => {
   // channelId -> messages sorted by logicalTs ascending
@@ -263,6 +264,18 @@ export const useMessagesStore = defineStore('messages', () => {
     const envelope = wire.envelopes.find(e => e.recipientId === myUserId)
     if (!envelope) return
 
+    // The channel must be a channel of the stated server. An unknown channel may
+    // still be in flight (channel_create via sync), so retry; a mismatch is dropped.
+    const channelServer = await mutationAuthDeps.channelServerId(wire.channelId)
+    if (channelServer !== wire.serverId) {
+      if (channelServer === null && _retryCount < 5) {
+        setTimeout(() => receiveEncryptedMessage(rawMsg, _retryCount + 1), 2000)
+      } else {
+        console.warn('[messages] dropping message: channel', wire.channelId, 'is not in server', wire.serverId)
+      }
+      return
+    }
+
     // Look up sender's public keys (identity keys from member record,
     // falling back to device keys if member record not yet populated)
     const { useServersStore } = await import('./serversStore')
@@ -386,20 +399,7 @@ export const useMessagesStore = defineStore('messages', () => {
   // ── Mutations ──────────────────────────────────────────────────────────────
 
   async function applyMutation(mutation: Mutation) {
-    await invoke('db_save_mutation', {
-      mutation: {
-        id:           mutation.id,
-        type:         mutation.type,
-        target_id:    mutation.targetId,
-        channel_id:   mutation.channelId,
-        author_id:    mutation.authorId,
-        new_content:  mutation.newContent ?? null,
-        emoji_id:     mutation.emojiId ?? null,
-        logical_ts:   mutation.logicalTs,
-        created_at:   mutation.createdAt,
-        verified:     mutation.verified,
-      },
-    })
+    await invoke('db_save_mutation', { mutation: mutationToRow(mutation) })
 
     const channelId = mutation.channelId
     if (!mutations.value[channelId]) mutations.value[channelId] = []
@@ -437,8 +437,8 @@ export const useMessagesStore = defineStore('messages', () => {
     if (alreadyReacted) return
     if (existing.filter(r => r.count > 0).length >= 20 && !existing.some(r => r.emojiId === emojiId)) return
 
-    const mutation: import('@/types/core').Mutation = {
-      id:        (await import('uuid')).v7(),
+    const mutation = signMutation({
+      id:        uuidv7(),
       type:      'reaction_add',
       targetId:  messageId,
       channelId,
@@ -446,17 +446,12 @@ export const useMessagesStore = defineStore('messages', () => {
       emojiId,
       logicalTs: generateHLC(),
       createdAt: new Date().toISOString(),
-      verified:  true,
-    }
+    })
 
     await applyMutation(mutation)
 
     const { useNetworkStore } = await import('./networkStore')
-    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: {
-      id: mutation.id, type: mutation.type, targetId: mutation.targetId,
-      channelId: mutation.channelId, authorId: mutation.authorId,
-      emojiId: mutation.emojiId, logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
-    }})
+    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: serializeMutation(mutation) })
   }
 
   async function removeReaction(messageId: string, channelId: string, serverId: string, emojiId: string) {
@@ -464,8 +459,8 @@ export const useMessagesStore = defineStore('messages', () => {
     const identityStore = useIdentityStore()
     const myId = identityStore.userId!
 
-    const mutation: import('@/types/core').Mutation = {
-      id:        (await import('uuid')).v7(),
+    const mutation = signMutation({
+      id:        uuidv7(),
       type:      'reaction_remove',
       targetId:  messageId,
       channelId,
@@ -473,17 +468,12 @@ export const useMessagesStore = defineStore('messages', () => {
       emojiId,
       logicalTs: generateHLC(),
       createdAt: new Date().toISOString(),
-      verified:  true,
-    }
+    })
 
     await applyMutation(mutation)
 
     const { useNetworkStore } = await import('./networkStore')
-    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: {
-      id: mutation.id, type: mutation.type, targetId: mutation.targetId,
-      channelId: mutation.channelId, authorId: mutation.authorId,
-      emojiId: mutation.emojiId, logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
-    }})
+    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: serializeMutation(mutation) })
   }
 
   // ── Edit & Delete ──────────────────────────────────────────────────────────
@@ -493,7 +483,7 @@ export const useMessagesStore = defineStore('messages', () => {
     const identityStore = useIdentityStore()
     const myId = identityStore.userId!
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:        uuidv7(),
       type:      'edit',
       targetId:  messageId,
@@ -502,17 +492,12 @@ export const useMessagesStore = defineStore('messages', () => {
       newContent,
       logicalTs: generateHLC(),
       createdAt: new Date().toISOString(),
-      verified:  true,
-    }
+    })
 
     await applyMutation(mutation)
 
     const { useNetworkStore } = await import('./networkStore')
-    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: {
-      id: mutation.id, type: mutation.type, targetId: mutation.targetId,
-      channelId: mutation.channelId, authorId: mutation.authorId,
-      newContent: mutation.newContent, logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
-    }})
+    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: serializeMutation(mutation) })
   }
 
   async function sendDeleteMutation(messageId: string, channelId: string, serverId: string) {
@@ -520,7 +505,7 @@ export const useMessagesStore = defineStore('messages', () => {
     const identityStore = useIdentityStore()
     const myId = identityStore.userId!
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:        uuidv7(),
       type:      'delete',
       targetId:  messageId,
@@ -528,17 +513,12 @@ export const useMessagesStore = defineStore('messages', () => {
       authorId:  myId,
       logicalTs: generateHLC(),
       createdAt: new Date().toISOString(),
-      verified:  true,
-    }
+    })
 
     await applyMutation(mutation)
 
     const { useNetworkStore } = await import('./networkStore')
-    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: {
-      id: mutation.id, type: mutation.type, targetId: mutation.targetId,
-      channelId: mutation.channelId, authorId: mutation.authorId,
-      logicalTs: mutation.logicalTs, createdAt: mutation.createdAt,
-    }})
+    await useNetworkStore().broadcastToServer(serverId, { type: 'mutation', serverId, mutation: serializeMutation(mutation) })
   }
 
   // ── Unread / read tracking ─────────────────────────────────────────────────
@@ -607,5 +587,6 @@ function rowToMutation(r: any): Mutation {
     logicalTs:  r.logical_ts,
     createdAt:  r.created_at,
     verified:   Boolean(r.verified),
+    sig:        r.sig ?? undefined,
   }
 }

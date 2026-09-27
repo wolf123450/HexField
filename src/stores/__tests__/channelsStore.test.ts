@@ -3,6 +3,13 @@ import { createPinia, setActivePinia } from 'pinia'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
+// Mutations are signed at creation (spec 08 §5) — stub the signer.
+vi.mock('@/services/cryptoService', () => ({
+  cryptoService: {
+    signJson: vi.fn((p: Record<string, unknown>) => ({ ...p, __sig: 'test-sig', __pub: 'test-pub' })),
+  },
+}))
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 describe('channelsStore', () => {
