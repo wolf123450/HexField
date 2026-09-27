@@ -90,12 +90,14 @@ import QRCode from 'qrcode'
 import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
 import { useIdentityStore } from '@/stores/identityStore'
+import { useSettingsStore } from '@/stores/settingsStore'
 import type { InviteCode } from '@/stores/serversStore'
 import type { PeerInvite, PeerEndpoint } from '@/types/core'
 
 const uiStore        = useUIStore()
 const serversStore   = useServersStore()
 const identityStore  = useIdentityStore()
+const settingsStore  = useSettingsStore()
 
 const qrSvg       = ref<string>('')
 const copied      = ref(false)
@@ -132,6 +134,9 @@ const inviteLink = computed((): string => {
     serverId:      server.value.id,
     serverName:    server.value.name,
     inviteToken:   inviteToken.value,
+    // Lets the joiner fall back to rendezvous signaling if no direct/LAN
+    // endpoint connects (network-compatibility-plan step 1.1).
+    rendezvous:    settingsStore.settings.rendezvousServerUrl || undefined,
   }
   const encoded = btoa(JSON.stringify(invite))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')

@@ -44,12 +44,14 @@ import { useUIStore } from '@/stores/uiStore'
 import { useServersStore } from '@/stores/serversStore'
 import { useChannelsStore } from '@/stores/channelsStore'
 import { useNetworkStore } from '@/stores/networkStore'
+import { useIdentityStore } from '@/stores/identityStore'
 import type { PeerInvite } from '@/types/core'
 
 const uiStore        = useUIStore()
 const serversStore   = useServersStore()
 const channelsStore  = useChannelsStore()
 const networkStore   = useNetworkStore()
+const identityStore  = useIdentityStore()
 
 const code         = ref('')
 const joining      = ref(false)
@@ -110,11 +112,19 @@ async function join() {
       }
     }
 
-    if (!connected && invite.endpoints.length > 0) {
-      throw new Error(`Could not reach ${invite.displayName}'s device. Make sure you're on the same network and the invite is still open.`)
-    }
-    if (invite.endpoints.length === 0) {
-      throw new Error('Invite has no endpoints. Ask the server owner to regenerate the invite while their app is open.')
+    // No direct/LAN endpoint worked — fall back to rendezvous signaling
+    // (network-compatibility-plan step 1.1) before giving up.
+    if (!connected) {
+      joiningLabel.value = 'Falling back to rendezvous signaling…'
+      try {
+        await networkStore.connectRendezvousForJoin(identityStore.userId ?? '', invite.rendezvous)
+      } catch (e: unknown) {
+        throw new Error(
+          e instanceof Error && e.message
+            ? `Could not reach ${invite.displayName}: ${e.message}`
+            : `Could not reach ${invite.displayName}'s device. Make sure you're on the same network and the invite is still open.`,
+        )
+      }
     }
 
     // -- 3. WebRTC offer (skip if already connected — avoids disrupting mDNS connection)
@@ -122,7 +132,14 @@ async function join() {
     if (!networkStore.connectedPeers.includes(invite.userId)) {
       await networkStore.connectToPeer(invite.userId)
     }
-    await networkStore.waitForPeer(invite.userId, 15000)
+    try {
+      await networkStore.waitForPeer(invite.userId, 15000)
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.startsWith('peer_unavailable:')) {
+        throw new Error(`${invite.displayName} is not online right now. Try again once they're connected.`)
+      }
+      throw new Error(`Could not establish a connection to ${invite.displayName}. They may be offline or unreachable.`)
+    }
 
     // -- 4. Request the full server manifest over the data channel
     joiningLabel.value = 'Requesting server data…'

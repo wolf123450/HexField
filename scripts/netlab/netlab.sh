@@ -11,6 +11,13 @@
 # to the interface of its relay IP, so with a routed, multi-interface "internet"
 # it cannot relay between the two sides ("udp send: Network is unreachable").
 #
+# hf-pub also has a default route into a dummy interface, like a real server
+# has a default route to the internet. Without it, coturn's first send to a
+# peer's private host candidate (10.0.x.x) fails with "udp send: Network is
+# unreachable", and coturn then stops forwarding anything for that allocation,
+# which breaks ICE whenever host candidates are signalled next to relay ones
+# (plan step 3b). The optional `noroute` case column recreates that server.
+#
 # peerA runs the probe as HOST (the server owner who made the invite);
 # peerB runs it as JOINER. NAT types per router:
 #   cone       MASQUERADE — port-preserving, endpoint-independent mapping,
@@ -21,14 +28,16 @@
 # standing in for a successful UPnP mapping or a manual port forward.
 #
 # Usage (needs root, iproute2, iptables, coturn):
-#   netlab.sh up [--nat-a cone|symmetric] [--nat-b cone|symmetric] [--forward-host] [--netem "<args>"]
+#   netlab.sh up [--nat-a cone|symmetric] [--nat-b cone|symmetric] [--forward-host] [--netem "<args>"] [--no-pub-route]
 #   netlab.sh down
-#   netlab.sh case <name> <nat-a> <nat-b> <forward:yes|no> <ice:stun|turn|relay> <netem|-> <expect:pass|fail|any> [type:lan|direct|relay|-]
+#   netlab.sh case <name> <nat-a> <nat-b> <forward:yes|no> <ice:stun|turn|relay> <netem|-> <expect:pass|fail|any> [type:lan|direct|relay|-] [route|noroute]
 #   netlab.sh matrix            # run the built-in case list, compare against expectations
 #
 # Env: PROBE=path to hexfield-netprobe (default src-tauri/target/debug/hexfield-netprobe)
 #      OUT=directory for logs and results (default /tmp/netlab)
 #      COTURN_ARGS=extra turnserver flags (e.g. --verbose)
+#      PROBE_ARGS=extra flags for both probes (e.g. "--no-relay-retry --trace-deps")
+#      PCAP=1 captures the "internet" bridge to $OUT/<case>.pcap (needs tcpdump)
 
 set -euo pipefail
 
@@ -79,13 +88,14 @@ cmd_down() {
 }
 
 cmd_up() {
-  local nat_a=cone nat_b=cone forward=no netem=""
+  local nat_a=cone nat_b=cone forward=no netem="" pub_route=yes
   while [[ $# -gt 0 ]]; do
     case $1 in
       --nat-a) nat_a=$2; shift 2 ;;
       --nat-b) nat_b=$2; shift 2 ;;
       --forward-host) forward=yes; shift ;;
       --netem) netem=$2; shift 2 ;;
+      --no-pub-route) pub_route=no; shift ;;
       *) log "unknown option: $1"; exit 2 ;;
     esac
   done
@@ -104,6 +114,11 @@ cmd_up() {
   link hf-pub  pubB -           hf-natB  wan 198.51.100.3/24
   nsx hf-pub ip link set pubA master inet
   nsx hf-pub ip link set pubB master inet
+  if [[ $pub_route == yes ]]; then
+    nsx hf-pub ip link add void type dummy
+    nsx hf-pub ip link set void up
+    nsx hf-pub ip route add default dev void
+  fi
   link hf-natA lan  10.0.1.1/24 hf-peerA eth0 10.0.1.2/24
   link hf-natB lan  10.0.2.1/24 hf-peerB eth0 10.0.2.2/24
 
@@ -135,13 +150,14 @@ cmd_up() {
     --lt-cred-mech --user="$TURN_USER:$TURN_PASS" --realm=netlab \
     --min-port=49152 --max-port=49400 ${COTURN_ARGS:-} >"$OUT/coturn.log" 2>&1 &
   sleep 1
-  log "up: natA=$nat_a natB=$nat_b forward-host=$forward netem='${netem:-none}'"
+  log "up: natA=$nat_a natB=$nat_b forward-host=$forward netem='${netem:-none}' pub-route=$pub_route"
 }
 
 cmd_case() { # see usage
-  local name=$1 nat_a=$2 nat_b=$3 forward=$4 ice=$5 netem=$6 expect=$7 want_type=${8:--}
+  local name=$1 nat_a=$2 nat_b=$3 forward=$4 ice=$5 netem=$6 expect=$7 want_type=${8:--} route=${9:-route}
   local up_args=(--nat-a "$nat_a" --nat-b "$nat_b")
   [[ $forward == yes ]] && up_args+=(--forward-host)
+  [[ $route == noroute ]] && up_args+=(--no-pub-route)
   [[ $netem != - ]] && up_args+=(--netem "$netem")
   cmd_up "${up_args[@]}"
 
@@ -162,14 +178,25 @@ cmd_case() { # see usage
   local endpoint="10.0.1.2:$SIGNAL_PORT"
   [[ $forward == yes ]] && endpoint="198.51.100.2:$SIGNAL_PORT"
 
-  nsx hf-peerA "$PROBE" --id host --listen-port "$SIGNAL_PORT" "${ice_args[@]}" \
+  local pcap_pid=""
+  if [[ ${PCAP:-0} == 1 ]]; then
+    nsx hf-pub tcpdump -i inet -n -U -w "$OUT/$name.pcap" udp 2>/dev/null &
+    pcap_pid=$!
+  fi
+  local extra_args=()
+  # shellcheck disable=SC2206
+  [[ -n ${PROBE_ARGS:-} ]] && extra_args=($PROBE_ARGS)
+
+  nsx hf-peerA "$PROBE" --id host --listen-port "$SIGNAL_PORT" "${ice_args[@]}" "${extra_args[@]}" \
     >"$OUT/$name.host.out" 2>"$OUT/$name.host.err" &
   sleep 1
   local type_args=()
   [[ $want_type != - ]] && type_args=(--expect-type "$want_type")
   local result code=0
   result=$(nsx hf-peerB "$PROBE" --id joiner --connect "$endpoint" --peer host \
-    --pings 20 --timeout-secs 30 "${ice_args[@]}" "${type_args[@]}" 2>"$OUT/$name.joiner.err") || code=$?
+    --pings 20 --timeout-secs 30 "${ice_args[@]}" "${type_args[@]}" "${extra_args[@]}" 2>"$OUT/$name.joiner.err") || code=$?
+  [[ -z $pcap_pid ]] || { kill "$pcap_pid" 2>/dev/null; wait "$pcap_pid" 2>/dev/null || true; }
+  cp "$OUT/coturn.log" "$OUT/$name.coturn.log" 2>/dev/null || true
   cmd_down
 
   local got=pass
@@ -184,16 +211,36 @@ cmd_case() { # see usage
   [[ $verdict == OK ]]
 }
 
-# name | natA | natB | forward | ice | netem | expected | connection type (checked when it passes)
+# name | natA | natB | forward | ice | netem | expected | connection type (checked when it passes) | [route|noroute]
 # Expectations document today's behaviour; flip a row when a fix lands.
 #   cone-nofwd-stun      → rendezvous fallback for invites without a port forward
-#   *-lossy / *-loss     → `any`: webrtc-rs SCTP data channels stall intermittently
-#                          at 2–3% loss (stage "sctp"/"echo"); make these `pass`
-#                          once data channels are reliable under loss
-#   *-turn (symmetric)   → pass via the relay-only retry (webrtc_manager.rs,
-#                          RELAY_RETRY_AFTER = 15 s): webrtc-rs 0.17 fails ICE across
-#                          symmetric NAT with host/srflx candidates present, so the
-#                          offerer re-offers relay-only; expect connect_ms ≈ 17 s
+#   *-loss / *-lossy     → `any` (step 6a). A webrtc-sctp 0.17.1 bug (`process_selective_ack`
+#                          in association_internal.rs) permanently desyncs the SCTP
+#                          ack point after one bad SACK under loss, stalling the data
+#                          channel forever even though ICE/DTLS stay up. WebRTCManager
+#                          now watches buffered_amount() and forces a reconnect when it
+#                          stops draining for DATA_CHANNEL_STALL_TRIGGER_POLLS polls
+#                          (see webrtc_manager.rs). This must clear webrtc-sctp's
+#                          RTO_MAX (60 s, hardcoded) or it misfires on a link that's
+#                          merely slow (an 8 s version of this watchdog broke a
+#                          passing cone-fwd-stun-slow run). With the ~80 s margin,
+#                          detection + reconnect doesn't finish inside the probe's
+#                          fixed 20-ping/5 s-per-ping window, so the lab cannot show
+#                          the recovery: symA-symB-fwd-relay-loss passed 7/10 with
+#                          the watchdog and 14/20 without it (same rate). Stays `any`.
+#                          cone-fwd-stun-lossy (3% loss, 80±20 ms jitter, direct)
+#                          is unaffected either way (1/5): its failures are single
+#                          pings missing the probe's 5 s deadline during a
+#                          legitimate RTO retransmit (stage "echo", pongs 15-19/20),
+#                          a different failure mode from the permanent stall above.
+#   *-turn (symmetric)   → direct ICE over mixed candidates, connect_ms ≈ 2 s,
+#                          relay_retry false (the selected pair is usually one
+#                          peer's host/srflx candidate to the other's relay)
+#   *-turn-noroute       → the TURN server has no route to private addresses and
+#                          coturn stops forwarding for an allocation after its
+#                          first failed send (plan step 3b). Passes only through
+#                          the relay-only retry (webrtc_manager.rs,
+#                          RELAY_RETRY_AFTER = 15 s); expect connect_ms ≈ 17 s
 CASES=(
   "cone-fwd-stun             cone      cone      yes stun  -                         pass direct"
   "cone-nofwd-stun           cone      cone      no  stun  -                         fail -"
@@ -207,6 +254,7 @@ CASES=(
   "cone-fwd-turn             cone      cone      yes turn  -                         pass direct"
   "symA-symB-fwd-turn        symmetric symmetric yes turn  -                         pass relay"
   "symA-coneB-fwd-turn       symmetric cone      yes turn  -                         pass relay"
+  "symA-symB-fwd-turn-noroute symmetric symmetric yes turn -                         pass relay noroute"
 )
 
 cmd_matrix() {
@@ -216,7 +264,7 @@ cmd_matrix() {
   for row in "${CASES[@]}"; do
     # shellcheck disable=SC2086
     set -- $row
-    cmd_case "$1" "$2" "$3" "$4" "$5" "${6//_/ }" "$7" "$8" || failures=$((failures + 1))
+    cmd_case "$1" "$2" "$3" "$4" "$5" "${6//_/ }" "$7" "$8" "${9:-route}" || failures=$((failures + 1))
   done
   write_summary
   log "$failures unexpected result(s)"
@@ -248,5 +296,5 @@ case "${1:-}" in
   down) cmd_down ;;
   case) shift; cmd_case "$@" ;;
   matrix) cmd_matrix ;;
-  *) sed -n '2,27p' "$0"; exit 2 ;;
+  *) sed -n '2,40p' "$0"; exit 2 ;;
 esac

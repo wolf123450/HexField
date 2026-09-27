@@ -1,6 +1,8 @@
 /**
  * Tests for the rendezvous server client in networkStore:
- *  - session token from /auth/verify is used for /ws and as Bearer on /turn/credentials
+ *  - session token from /auth/verify is passed for the /ws upgrade header (not the URL)
+ *    and sent as Bearer on /turn/credentials; the challenge is echoed back to verify
+ *  - the token is refreshed over the open socket before it expires
  *  - an expired token (401) triggers one re-authentication
  *  - reconnect after "disconnected"/"error" re-authenticates with a fresh token
  *  - disconnect() stops reconnecting
@@ -67,11 +69,14 @@ vi.mock('@/utils/natDetection', () => ({
 
 let verifyCount = 0
 let turnStatuses: number[] = []
+let tokenTtlSecs = 86400
 const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
   const json = (status: number, body: unknown) =>
     ({ ok: status >= 200 && status < 300, status, json: async () => body }) as Response
   if (url.endsWith('/auth/challenge')) return json(200, { challenge: 'nonce' })
-  if (url.endsWith('/auth/verify')) return json(200, { token: `tok-${++verifyCount}` })
+  if (url.endsWith('/auth/verify')) {
+    return json(200, { token: `tok-${++verifyCount}`, expires_at: Math.floor(Date.now() / 1000) + tokenTtlSecs })
+  }
   if (url.endsWith('/turn/credentials')) {
     const status = turnStatuses.shift() ?? 200
     return json(status, { urls: ['turn:t.example:3478'], username: 'u', credential: 'c', ttl: 3600 })
@@ -108,6 +113,7 @@ describe('networkStore rendezvous client', () => {
     invokeImpl.mockResolvedValue(undefined)
     verifyCount = 0
     turnStatuses = []
+    tokenTtlSecs = 86400
   })
 
   afterEach(() => {
@@ -118,7 +124,8 @@ describe('networkStore rendezvous client', () => {
     const { store, signalingService } = await setupStore()
 
     expect(store.getRendezvousToken()).toBe('tok-1')
-    expect(signalingService.connect).toHaveBeenCalledWith('wss://rdv.example/ws?token=tok-1')
+    // Token travels separately (Authorization header in Rust), never in the URL.
+    expect(signalingService.connect).toHaveBeenCalledWith('wss://rdv.example/ws', 'tok-1')
 
     const [turnCall] = callsTo('/turn/credentials')
     const headers = (turnCall[1] as RequestInit).headers as Record<string, string>
@@ -144,7 +151,7 @@ describe('networkStore rendezvous client', () => {
 
     // First backoff step is 1 s.
     await vi.waitFor(
-      () => expect(signalingService.connect).toHaveBeenCalledWith('wss://rdv.example/ws?token=tok-2'),
+      () => expect(signalingService.connect).toHaveBeenCalledWith('wss://rdv.example/ws', 'tok-2'),
       { timeout: 3000 },
     )
     expect(callsTo('/auth/verify')).toHaveLength(2)
@@ -168,7 +175,7 @@ describe('networkStore rendezvous client', () => {
     const { signalingService } = await import('@/services/signalingService')
 
     await vi.waitFor(
-      () => expect(signalingService.connect).toHaveBeenCalledWith('wss://rdv.example/ws?token=tok-1'),
+      () => expect(signalingService.connect).toHaveBeenCalledWith('wss://rdv.example/ws', 'tok-1'),
       { timeout: 3000 },
     )
   })
@@ -185,6 +192,52 @@ describe('networkStore rendezvous client', () => {
     expect(store.getRendezvousToken()).toBeNull()
   })
 
+  it('echoes the signed challenge back to /auth/verify', async () => {
+    await setupStore()
+    const [verifyCall] = callsTo('/auth/verify')
+    const body = JSON.parse((verifyCall[1] as RequestInit).body as string)
+    expect(body.challenge).toBe('nonce')
+    expect(body.signature).toBe('sig')
+  })
+
+  it('sends a fresh token over the open socket before the session expires', async () => {
+    // 40 s lifetime: the refresh fires at max(30 s, 80%) = 32 s.
+    tokenTtlSecs = 40
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const { store, signalingService } = await setupStore()
+      expect(signalingService.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'auth' }))
+
+      await vi.advanceTimersByTimeAsync(33_000)
+
+      await vi.waitFor(() =>
+        expect(signalingService.send).toHaveBeenCalledWith({ type: 'auth', token: store.getRendezvousToken() }))
+      expect(store.getRendezvousToken()).not.toBe('tok-1')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not refresh the session after disconnect()', async () => {
+    tokenTtlSecs = 40
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const { store, signalingService } = await setupStore()
+      await store.disconnect()
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(signalingService.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'auth' }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('handles session control replies without dispatching them', async () => {
+    const { onMessage } = await setupStore()
+    const { webrtcService } = await import('@/services/webrtcService')
+    for (const type of ['auth_ok', 'auth_failed', 'session_expired']) onMessage({ type })
+    expect(webrtcService.handleOffer).not.toHaveBeenCalled()
+  })
+
   it('logs peer_unavailable and does not dispatch it', async () => {
     const { logger } = await import('@/utils/logger')
     const infoSpy = vi.spyOn(logger, 'info')
@@ -195,5 +248,86 @@ describe('networkStore rendezvous client', () => {
 
     expect(infoSpy).toHaveBeenCalledWith('network', expect.stringContaining('peer unavailable'), 'user-bob')
     expect(webrtcService.handleOffer).not.toHaveBeenCalled()
+  })
+
+  // ── Join fallback (network-compatibility-plan step 1.1) ─────────────────
+
+  describe('connectRendezvousForJoin', () => {
+    it('is a no-op once signaling is already connected', async () => {
+      const { store, onState, signalingService } = await setupStore()
+      onState('connected')
+      vi.mocked(signalingService.connect).mockClear()
+      fetchMock.mockClear()
+
+      await store.connectRendezvousForJoin('user-alice', 'https://other-rdv.example')
+
+      expect(signalingService.connect).not.toHaveBeenCalled()
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('connects using the invite-supplied URL when nothing is configured locally', async () => {
+      setActivePinia(createPinia())
+      const { useSettingsStore } = await import('@/stores/settingsStore')
+      useSettingsStore().settings.rendezvousServerUrl = '' // nothing configured
+      const { useNetworkStore } = await import('@/stores/networkStore')
+      const store = useNetworkStore()
+      await store.init('user-alice')
+      const { signalingService } = await import('@/services/signalingService')
+      const [, onState] = vi.mocked(signalingService.init).mock.calls[0] as unknown as [
+        unknown, (s: string) => void,
+      ]
+
+      const joinPromise = store.connectRendezvousForJoin('user-alice', 'https://invite-rdv.example')
+      // The real Rust WS actor emits "connected" once the socket opens; simulate that
+      // so waitForConnected() inside connectRendezvousForJoin resolves.
+      await vi.waitFor(() => expect(signalingService.connect).toHaveBeenCalled())
+      onState('connected')
+      await joinPromise
+
+      expect(callsTo('/auth/challenge').some(([url]) => url.startsWith('https://invite-rdv.example'))).toBe(true)
+      expect(signalingService.connect).toHaveBeenCalledWith('wss://invite-rdv.example/ws', expect.any(String))
+    })
+
+    it('throws when neither the invite nor local settings provide a rendezvous URL', async () => {
+      setActivePinia(createPinia())
+      const { useSettingsStore } = await import('@/stores/settingsStore')
+      useSettingsStore().settings.rendezvousServerUrl = ''
+      const { useNetworkStore } = await import('@/stores/networkStore')
+      const store = useNetworkStore()
+      await store.init('user-alice')
+
+      await expect(store.connectRendezvousForJoin('user-alice', undefined))
+        .rejects.toThrow('No rendezvous server is available for this invite.')
+    })
+  })
+
+  describe('waitForPeer', () => {
+    it('rejects early with a distinct message when the peer is reported unavailable', async () => {
+      const { store, onMessage } = await setupStore()
+
+      const wait = store.waitForPeer('user-bob', 5000)
+      onMessage({ type: 'peer_unavailable', to: 'user-bob' })
+
+      await expect(wait).rejects.toThrow('peer_unavailable:user-bob')
+    })
+
+    it('ignores a stale peer_unavailable report from before the wait started', async () => {
+      const { store, onMessage } = await setupStore()
+
+      onMessage({ type: 'peer_unavailable', to: 'user-bob' })
+      vi.useFakeTimers()
+      try {
+        // Ensure the wait's start timestamp is unambiguously after the stale report.
+        await vi.advanceTimersByTimeAsync(10)
+        const wait = store.waitForPeer('user-bob', 300)
+        wait.catch(() => {}) // avoid unhandled rejection while advancing timers below
+
+        await vi.advanceTimersByTimeAsync(400)
+
+        await expect(wait).rejects.toThrow('Peer connection timed out')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 })

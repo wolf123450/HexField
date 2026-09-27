@@ -179,6 +179,11 @@ export interface PeerInvite {
   serverId:     string
   serverName:   string          // display-only, for join confirmation UI
   inviteToken:  string          // random nonce validated on the owner side
+  // Optional rendezvous server URL the inviter is reachable through, used by
+  // the joiner as a signaling fallback when no direct/LAN endpoint connects
+  // (network-compatibility-plan step 1.1). Unset on older invites — older
+  // clients ignore this field, so v stays 2.
+  rendezvous?:  string
 }
 
 /**
@@ -206,6 +211,16 @@ export interface EncryptedEnvelope {
   ciphertext:      string        // base64 XSalsa20-Poly1305
   nonce:           string        // base64 24-byte nonce
   senderSignature: string        // base64 Ed25519 over (ciphertext + nonce)
+  /** Optional (0.2.14+): the message's attachment key, boxed for this recipient.
+   *  Present only when the chat message carries `attachmentsCipher` (spec 08 §4.1).
+   *  Older clients ignore it. */
+  attachmentKey?:  SealedBox
+}
+
+/** Base64 ciphertext + nonce pair (crypto_box or crypto_secretbox output). */
+export interface SealedBox {
+  ciphertext: string
+  nonce:      string
 }
 
 // ── Peer / WebRTC ──────────────────────────────────────────────────────────────

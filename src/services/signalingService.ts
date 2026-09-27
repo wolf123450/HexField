@@ -45,10 +45,12 @@ class SignalingService {
   }
 
   /**
-   * Connect to a signaling server via WebSocket (Rust backend).
+   * Connect to a signaling server via WebSocket (Rust backend). `token`, if
+   * given, is sent as `Authorization: Bearer` on the upgrade request, so it
+   * never appears in the URL.
    */
-  async connect(url: string): Promise<void> {
-    await invoke('signal_connect', { url })
+  async connect(url: string, token?: string): Promise<void> {
+    await invoke('signal_connect', { url, token: token ?? null })
   }
 
   /**
