@@ -28,6 +28,7 @@ use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -253,6 +254,48 @@ pub struct WebRTCManager {
 /// plan step 3b).
 const RELAY_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// How often an open data channel's `buffered_amount()` is polled for signs
+/// that the SCTP association has stalled (plan step 6a).
+///
+/// webrtc-sctp 0.17.1 has a bug in `process_selective_ack`
+/// (`association_internal.rs`): the function pops acknowledged chunks off
+/// `inflight_queue` in a loop *before* it has fully validated the SACK, and
+/// only advances `cumulative_tsn_ack_point` if the whole loop succeeds. Under
+/// packet loss, a SACK can reference a TSN that a previous (also-failed) SACK
+/// already popped, so the loop returns `Err(ErrInflightQueueTsnPop)` — logged
+/// and swallowed by the caller (`handle_inbound` treats it as non-fatal) —
+/// but `cumulative_tsn_ack_point` is never advanced. Every later SACK then
+/// retries popping the *same* already-removed TSN and hits the same error, so
+/// the ack point is permanently stuck: queued outbound data never drains and
+/// the data channel is silently dead even though ICE and DTLS stay up. This
+/// matches the escalating-T3-RTX-with-no-recovery signature reported against
+/// pion/webrtc (pion/webrtc#1270) for the same SCTP lineage.
+///
+/// webrtc-rs 0.17.1 doesn't expose SCTP RTO/retransmit tuning through
+/// `SettingEngine` (`RTO_INITIAL`/`RTO_MIN`/`RTO_MAX`/`MAX_INIT_RETRANS` are
+/// `pub(crate)` constants in `webrtc-sctp`), so this can't be tuned from here
+/// and isn't fixable without patching the dependency. The mitigation is a
+/// full reconnect: once outstanding bytes stop draining for
+/// `DATA_CHANNEL_STALL_TRIGGER_POLLS` consecutive polls, tear down the
+/// PeerConnection and re-offer, exactly like `schedule_relay_retry` already
+/// does for a data channel that never opens at all.
+///
+/// This must stay well above `RTO_MAX` (60 s, also hardcoded): a slow but
+/// *working* link (e.g. a tight bandwidth cap plus real RTT) can legitimately
+/// leave a few bytes queued for many seconds while SCTP paces sends or backs
+/// off a retransmission, and a first version of this watchdog (8 s total)
+/// mistook that for a stall and force-reconnected a passing
+/// `cone-fwd-stun-slow` (250 ms delay, 512 kbit) lab run, turning a pass into
+/// a fail. The permanent desync this targets never drains no matter how long
+/// we wait, so there's no cost to waiting well past `RTO_MAX` before acting.
+const DATA_CHANNEL_STALL_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Consecutive non-draining polls (with `buffered_amount() > 0`) before a
+/// data channel is treated as stalled. 8 polls (~80 s) clears `RTO_MAX`
+/// (60 s) with margin, so it can't fire while a legitimate single
+/// retransmission backoff is still in flight.
+const DATA_CHANNEL_STALL_TRIGGER_POLLS: u32 = 8;
+
 /// Default ICE configuration: two of Google's public STUN servers, so one
 /// being unreachable doesn't cost us server-reflexive candidates.
 pub fn default_ice_servers() -> Vec<RTCIceServer> {
@@ -403,6 +446,7 @@ impl WebRTCManager {
         being_replaced: Arc<AtomicBool>,
         media_manager: Arc<MediaManager>,
         app: SharedSink,
+        manager: std::sync::Weak<Self>,
     ) {
         // ICE candidate → relay through frontend to remote peer
         let app_ice = app.clone();
@@ -456,13 +500,17 @@ impl WebRTCManager {
         let pid_dc = peer_id.clone();
         let dc_slot2 = dc_slot.clone();
         let pc_dc = Arc::downgrade(&pc);
+        let media_dc = media_manager.clone();
+        let manager_dc = manager.clone();
         pc.on_data_channel(Box::new(move |d| {
             let app2 = app_dc.clone();
             let pid2 = pid_dc.clone();
             let slot = dc_slot2.clone();
             let pc2 = pc_dc.clone();
+            let media2 = media_dc.clone();
+            let manager2 = manager_dc.clone();
             Box::pin(async move {
-                Self::wire_data_channel(d, pid2, slot, pc2, app2);
+                Self::wire_data_channel(d, pid2, slot, pc2, app2, media2, manager2);
             })
         }));
 
@@ -607,11 +655,17 @@ impl WebRTCManager {
         slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
         pc: std::sync::Weak<RTCPeerConnection>,
         app: SharedSink,
+        media_manager: Arc<MediaManager>,
+        manager: std::sync::Weak<Self>,
     ) {
         let slot_open = slot.clone();
         let dc_open = dc.clone();
         let pid_open = peer_id.clone();
         let app_open = app.clone();
+        let slot_watchdog = slot.clone();
+        let dc_watchdog = dc.clone();
+        let pid_watchdog = peer_id.clone();
+        let app_watchdog = app.clone();
 
         dc.on_open(Box::new(move || {
             let slot2 = slot_open.clone();
@@ -619,6 +673,12 @@ impl WebRTCManager {
             let pid2 = pid_open.clone();
             let app2 = app_open.clone();
             let pc2 = pc.clone();
+            let media2 = media_manager.clone();
+            let manager2 = manager.clone();
+            let slot_wd = slot_watchdog.clone();
+            let dc_wd = dc_watchdog.clone();
+            let pid_wd = pid_watchdog.clone();
+            let app_wd = app_watchdog.clone();
             Box::pin(async move {
                 *slot2.lock().await = Some(dc2);
                 let connection_type = match pc2.upgrade() {
@@ -630,6 +690,7 @@ impl WebRTCManager {
                     "webrtc_connected",
                     ConnectedEvent { user_id: pid2, connection_type: connection_type.map(ConnectionType::as_str) },
                 );
+                Self::spawn_stall_watchdog(manager2, pid_wd, dc_wd, slot_wd, media2, app_wd);
             })
         }));
 
@@ -644,6 +705,70 @@ impl WebRTCManager {
                 }
             })
         }));
+    }
+
+    /// Poll an open data channel's `buffered_amount()` for a stalled SCTP
+    /// association (see `DATA_CHANNEL_STALL_CHECK_INTERVAL`) and force a full
+    /// reconnect if outstanding bytes stop draining. Stops on its own once the
+    /// channel closes, is replaced by a newer connection, or the manager is
+    /// dropped.
+    fn spawn_stall_watchdog(
+        manager: std::sync::Weak<Self>,
+        peer_id: String,
+        dc: Arc<RTCDataChannel>,
+        dc_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+        media_manager: Arc<MediaManager>,
+        app: SharedSink,
+    ) {
+        tokio::spawn(async move {
+            let mut last_buffered: Option<usize> = None;
+            let mut stalled_polls: u32 = 0;
+
+            loop {
+                tokio::time::sleep(DATA_CHANNEL_STALL_CHECK_INTERVAL).await;
+
+                let Some(mgr) = manager.upgrade() else { break };
+
+                // Stop watching once this channel is no longer the peer's current one
+                // (replaced by a reconnect, relay retry, or renegotiation).
+                {
+                    let current = dc_slot.lock().await;
+                    match current.as_ref() {
+                        Some(cur) if Arc::ptr_eq(cur, &dc) => {}
+                        _ => break,
+                    }
+                }
+                if dc.ready_state() != RTCDataChannelState::Open {
+                    break;
+                }
+
+                let buffered = dc.buffered_amount().await;
+                if buffered == 0 {
+                    stalled_polls = 0;
+                    last_buffered = Some(0);
+                    continue;
+                }
+                let draining = matches!(last_buffered, Some(prev) if buffered < prev);
+                last_buffered = Some(buffered);
+                if draining {
+                    stalled_polls = 0;
+                    continue;
+                }
+                stalled_polls += 1;
+
+                if stalled_polls >= DATA_CHANNEL_STALL_TRIGGER_POLLS {
+                    let stuck_for = DATA_CHANNEL_STALL_CHECK_INTERVAL * stalled_polls;
+                    log::warn!(
+                        "[webrtc] {peer_id}: data channel stalled ({buffered} bytes not draining for {stuck_for:?}), forcing reconnect"
+                    );
+                    let _ = app.emit("webrtc_stall_recovery", serde_json::json!({ "userId": peer_id }));
+                    if let Err(e) = Box::pin(mgr.start_offer(&peer_id, &media_manager, &app, false)).await {
+                        log::warn!("[webrtc] stall-recovery re-offer for {peer_id} failed: {e}");
+                    }
+                    break;
+                }
+            }
+        });
     }
 
     // ── Public API ──────────────────────────────────────────────────────────
@@ -711,14 +836,14 @@ impl WebRTCManager {
             });
         }
 
-        Self::wire_callbacks(pc.clone(), peer_id.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone());
+        Self::wire_callbacks(pc.clone(), peer_id.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone(), Arc::downgrade(self));
 
         // Caller creates the data channel; callee receives it via on_data_channel
         let dc = pc
             .create_data_channel("hexfield", None)
             .await
             .map_err(|e| e.to_string())?;
-        Self::wire_data_channel(dc, peer_id.to_string(), dc_slot.clone(), Arc::downgrade(&pc), app.clone());
+        Self::wire_data_channel(dc, peer_id.to_string(), dc_slot.clone(), Arc::downgrade(&pc), app.clone(), media_manager.clone(), Arc::downgrade(self));
 
         let offer = pc.create_offer(None).await.map_err(|e| e.to_string())?;
         pc.set_local_description(offer.clone())
@@ -791,7 +916,7 @@ impl WebRTCManager {
     /// Callee side: consume an offer, emit `webrtc_answer` event.
     /// `relay_only` mirrors the offerer's ICE policy for a new connection.
     pub async fn handle_offer(
-        &self,
+        self: &Arc<Self>,
         from: &str,
         sdp: String,
         relay_only: bool,
@@ -895,7 +1020,7 @@ impl WebRTCManager {
             });
         }
 
-        Self::wire_callbacks(pc.clone(), from.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone());
+        Self::wire_callbacks(pc.clone(), from.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone(), Arc::downgrade(self));
 
         // Insert the peer entry early so add_ice_candidate buffers rather than
         // errors with "no peer entry".  remote_desc_ready stays false until
@@ -1002,7 +1127,7 @@ impl WebRTCManager {
     /// (ICE gathering finished, non-trickle). `from` is the offerer's real
     /// userId, decoded from the offer code by the frontend before this call.
     pub async fn accept_offer_code(
-        &self,
+        self: &Arc<Self>,
         from: &str,
         sdp: String,
         media_manager: &Arc<MediaManager>,
@@ -1028,7 +1153,7 @@ impl WebRTCManager {
             });
         }
 
-        Self::wire_callbacks(pc.clone(), from.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone());
+        Self::wire_callbacks(pc.clone(), from.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone(), Arc::downgrade(self));
 
         self.peers.lock().await.insert(
             from.to_string(),
@@ -1068,7 +1193,7 @@ impl WebRTCManager {
     /// `create_offer_code`, now that `remote_user_id` (decoded from the answer
     /// code) is known. Wires the callbacks and moves the entry into `peers`.
     pub async fn apply_answer_code(
-        &self,
+        self: &Arc<Self>,
         session_id: &str,
         remote_user_id: &str,
         sdp: String,
@@ -1100,8 +1225,8 @@ impl WebRTCManager {
             });
         }
 
-        Self::wire_callbacks(pc.clone(), remote_user_id.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone());
-        Self::wire_data_channel(dc, remote_user_id.to_string(), dc_slot.clone(), Arc::downgrade(&pc), app.clone());
+        Self::wire_callbacks(pc.clone(), remote_user_id.to_string(), dc_slot.clone(), being_replaced.clone(), media_manager.clone(), app.clone(), Arc::downgrade(self));
+        Self::wire_data_channel(dc, remote_user_id.to_string(), dc_slot.clone(), Arc::downgrade(&pc), app.clone(), media_manager.clone(), Arc::downgrade(self));
 
         let answer = RTCSessionDescription::answer(sdp).map_err(|e| e.to_string())?;
         pc.set_remote_description(answer)
@@ -1624,8 +1749,8 @@ mod tests {
     /// A manager with no ICE servers configured — gathering completes almost
     /// immediately (host candidates only, no STUN round trip to wait on),
     /// which keeps these tests fast and independent of real network access.
-    fn test_manager() -> WebRTCManager {
-        let mgr = WebRTCManager::new();
+    fn test_manager() -> Arc<WebRTCManager> {
+        let mgr = Arc::new(WebRTCManager::new());
         mgr.set_ice_servers(vec![]);
         mgr
     }
