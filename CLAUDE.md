@@ -147,7 +147,7 @@ Use this to know which spec to read before touching an area:
 
 Follow this loop for every change:
 
-**Repo workflow preference:** Do **not** use git worktrees for this repository. Work on a normal feature branch in the primary workspace. Worktrees add more complexity than they provide via parallelism — this is an explicit project policy.
+**Repo workflow preference:** Default to a normal feature branch in the primary workspace. Git worktrees are allowed for genuinely parallel work (e.g. a subagent on a separate branch), **as long as the code compiles in every worktree**. Each worktree needs its own `npm ci`, and a separate `CARGO_TARGET_DIR` for WSL builds. Parallel branches that each bump the patch version must pick distinct versions up front (e.g. 0.2.10 / 0.2.11).
 
 1. **Check docs** — read `TODO.md` and the relevant spec(s) before writing any code
 2. **Look up library APIs** — use Context7 for any library API you're about to use, especially if it's the first time in this project or you're unsure of the exact signature
