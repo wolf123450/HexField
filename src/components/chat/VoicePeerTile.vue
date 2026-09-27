@@ -5,8 +5,9 @@
       speaking: isSpeaking,
       muted: !peer.audioEnabled,
       'screen-sharing': peer.screenSharing,
+      relayed: isRelayed,
     }"
-    :title="displayName"
+    :title="isRelayed ? `${displayName}: No direct connection (relayed): voice and screen share are unavailable with this person` : displayName"
   >
     <div class="avatar-wrap">
       <div class="speaking-ring" />
@@ -23,6 +24,9 @@
       <div v-if="peer.screenSharing" class="screen-indicator">
         <AppIcon :path="mdiMonitorShare" :size="10" />
       </div>
+      <div v-if="isRelayed" class="relayed-indicator">
+        <AppIcon :path="mdiLanDisconnect" :size="10" />
+      </div>
     </div>
     <div class="peer-name">{{ displayName }}</div>
   </div>
@@ -30,11 +34,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { mdiMicrophoneOff, mdiMonitorShare, mdiVolumeMute } from '@mdi/js'
+import { mdiLanDisconnect, mdiMicrophoneOff, mdiMonitorShare, mdiVolumeMute } from '@mdi/js'
 import type { Peer } from '@/types/core'
 import { useServersStore } from '@/stores/serversStore'
 import { useVoiceStore } from '@/stores/voiceStore'
 import { usePersonalBlocksStore } from '@/stores/personalBlocksStore'
+import { useNetworkStore } from '@/stores/networkStore'
 
 const props = defineProps<{
   peer:     Peer
@@ -44,9 +49,12 @@ const props = defineProps<{
 const serversStore          = useServersStore()
 const voiceStore            = useVoiceStore()
 const personalBlocksStore   = usePersonalBlocksStore()
+const networkStore          = useNetworkStore()
 
 const isSpeaking     = computed(() => voiceStore.speakingPeers.has(props.peer.userId))
 const isPersonalMuted = computed(() => personalBlocksStore.isMuted(props.peer.userId))
+// Relay policy: no media over a TURN relay, so this peer can't be heard.
+const isRelayed      = computed(() => networkStore.isRelayed(props.peer.userId))
 
 const member = computed(() => serversStore.members[props.serverId]?.[props.peer.userId])
 
@@ -147,6 +155,25 @@ const displayName = computed(() => member.value?.displayName ?? props.peer.userI
 .screen-indicator {
   background: var(--accent-color);
   color: white;
+}
+
+.relayed-indicator {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--bg-secondary);
+  background: var(--bg-tertiary, #4f545c);
+  color: white;
+}
+
+.peer-tile.relayed .avatar {
+  opacity: 0.5;
 }
 
 .peer-name {

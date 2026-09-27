@@ -25,6 +25,7 @@ use crate::event_sink::SharedSink;
 use tokio::sync::Mutex;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
@@ -83,7 +84,66 @@ struct IceEvent {
 #[serde(rename_all = "camelCase")]
 struct ConnectedEvent {
     user_id: String,
+    /// `lan` | `direct` | `relay`; absent if no candidate pair was selected yet.
+    connection_type: Option<&'static str>,
 }
+
+// ── Connection type (relay policy) ───────────────────────────────────────────
+
+/// How a peer connection reaches the other side. Relayed connections carry
+/// only lightweight data — no voice, video or screen share
+/// (see "Relay policy" in docs/network-compatibility-plan.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionType {
+    /// Both ends use host candidates (same network, or public addresses).
+    Lan,
+    /// Direct path through NAT (server-/peer-reflexive candidates).
+    Direct,
+    /// Traffic goes through a TURN relay.
+    Relay,
+}
+
+impl ConnectionType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConnectionType::Lan => "lan",
+            ConnectionType::Direct => "direct",
+            ConnectionType::Relay => "relay",
+        }
+    }
+
+    /// Classify a selected ICE pair from its candidate types (`host`, `srflx`, `prflx`, `relay`).
+    pub fn from_candidate_types(local: &str, remote: &str) -> Self {
+        if local == "relay" || remote == "relay" {
+            ConnectionType::Relay
+        } else if local == "host" && remote == "host" {
+            ConnectionType::Lan
+        } else {
+            ConnectionType::Direct
+        }
+    }
+}
+
+/// Connection type of a peer connection, from its selected candidate pair.
+async fn connection_type_of(pc: &RTCPeerConnection) -> Option<ConnectionType> {
+    let pair = pc
+        .sctp()
+        .transport()
+        .ice_transport()
+        .get_selected_candidate_pair()
+        .await?;
+    Some(ConnectionType::from_candidate_types(
+        &pair.local.typ.to_string(),
+        &pair.remote.typ.to_string(),
+    ))
+}
+
+/// Relay-only connections: fewer ICE keepalives (default 2 s), since each one
+/// costs relay bandwidth. The disconnect/failure timeouts must exceed the
+/// keepalive interval or idle connections would flap.
+const RELAY_ICE_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(10);
+const RELAY_ICE_DISCONNECTED: std::time::Duration = std::time::Duration::from_secs(25);
+const RELAY_ICE_FAILED: std::time::Duration = std::time::Duration::from_secs(45);
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -228,15 +288,26 @@ impl WebRTCManager {
         registry = register_default_interceptors(registry, &mut media_engine)
             .map_err(|e| e.to_string())?;
 
+        let relay_only = relay_only || self.relay_only.load(Ordering::Relaxed);
+        let mut setting_engine = SettingEngine::default();
+        if relay_only {
+            setting_engine.set_ice_timeouts(
+                Some(RELAY_ICE_DISCONNECTED),
+                Some(RELAY_ICE_FAILED),
+                Some(RELAY_ICE_KEEPALIVE),
+            );
+        }
+
         let api = APIBuilder::new()
             .with_media_engine(media_engine)
             .with_interceptor_registry(registry)
+            .with_setting_engine(setting_engine)
             .build();
 
         let config = RTCConfiguration {
             ice_servers,
             bundle_policy: RTCBundlePolicy::MaxBundle,
-            ice_transport_policy: if relay_only || self.relay_only.load(Ordering::Relaxed) {
+            ice_transport_policy: if relay_only {
                 RTCIceTransportPolicy::Relay
             } else {
                 RTCIceTransportPolicy::default()
@@ -343,12 +414,14 @@ impl WebRTCManager {
         let app_dc = app.clone();
         let pid_dc = peer_id.clone();
         let dc_slot2 = dc_slot.clone();
+        let pc_dc = Arc::downgrade(&pc);
         pc.on_data_channel(Box::new(move |d| {
             let app2 = app_dc.clone();
             let pid2 = pid_dc.clone();
             let slot = dc_slot2.clone();
+            let pc2 = pc_dc.clone();
             Box::pin(async move {
-                Self::wire_data_channel(d, pid2, slot, app2);
+                Self::wire_data_channel(d, pid2, slot, pc2, app2);
             })
         }));
 
@@ -486,10 +559,12 @@ impl WebRTCManager {
 
     // ── Internal: wire on_open + on_message on a data channel ─────────────
 
+    /// `pc` is weak: the PC owns this callback, so a strong ref would leak it.
     fn wire_data_channel(
         dc: Arc<RTCDataChannel>,
         peer_id: String,
         slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+        pc: std::sync::Weak<RTCPeerConnection>,
         app: SharedSink,
     ) {
         let slot_open = slot.clone();
@@ -502,10 +577,18 @@ impl WebRTCManager {
             let dc2 = dc_open.clone();
             let pid2 = pid_open.clone();
             let app2 = app_open.clone();
+            let pc2 = pc.clone();
             Box::pin(async move {
                 *slot2.lock().await = Some(dc2);
-                log::debug!("[webrtc] DC opened for {pid2}");
-                let _ = app2.emit("webrtc_connected", ConnectedEvent { user_id: pid2 });
+                let connection_type = match pc2.upgrade() {
+                    Some(pc) => connection_type_of(&pc).await,
+                    None => None,
+                };
+                log::debug!("[webrtc] DC opened for {pid2} ({connection_type:?})");
+                let _ = app2.emit(
+                    "webrtc_connected",
+                    ConnectedEvent { user_id: pid2, connection_type: connection_type.map(ConnectionType::as_str) },
+                );
             })
         }));
 
@@ -594,7 +677,7 @@ impl WebRTCManager {
             .create_data_channel("hexfield", None)
             .await
             .map_err(|e| e.to_string())?;
-        Self::wire_data_channel(dc, peer_id.to_string(), dc_slot.clone(), app.clone());
+        Self::wire_data_channel(dc, peer_id.to_string(), dc_slot.clone(), Arc::downgrade(&pc), app.clone());
 
         let offer = pc.create_offer(None).await.map_err(|e| e.to_string())?;
         pc.set_local_description(offer.clone())
@@ -924,6 +1007,17 @@ impl WebRTCManager {
         Some((pair.local.typ.to_string(), pair.remote.typ.to_string()))
     }
 
+    /// How the connection to `peer_id` reaches the other side, once ICE has selected a pair.
+    pub async fn connection_type(&self, peer_id: &str) -> Option<ConnectionType> {
+        let pc = self.peers.lock().await.get(peer_id)?.pc.clone();
+        connection_type_of(&pc).await
+    }
+
+    /// Relay policy: no voice, video or screen share over relayed connections.
+    pub async fn media_allowed(&self, peer_id: &str) -> bool {
+        self.connection_type(peer_id).await != Some(ConnectionType::Relay)
+    }
+
     /// Returns user IDs of peers whose data channel is open.
     pub async fn get_connected_peers(&self) -> Vec<String> {
         let peers = self.peers.lock().await;
@@ -958,6 +1052,10 @@ impl WebRTCManager {
 
         let peers = self.peers.lock().await;
         for (peer_id, entry) in peers.iter() {
+            if connection_type_of(&entry.pc).await == Some(ConnectionType::Relay) {
+                log::info!("[webrtc] add_audio: skipping relayed peer {peer_id} (relay policy)");
+                continue;
+            }
             // Add the track to this peer connection
             let track_local: Arc<dyn TrackLocal + Send + Sync> = track.clone();
             entry
@@ -1036,6 +1134,10 @@ impl WebRTCManager {
             Some(e) => e,
             None => return Ok(()),
         };
+        if connection_type_of(&entry.pc).await == Some(ConnectionType::Relay) {
+            log::info!("[webrtc] ensure_tracks: {peer_id} is relayed, no media (relay policy)");
+            return Ok(());
+        }
 
         let mut needs_reneg = false;
 
@@ -1094,6 +1196,10 @@ impl WebRTCManager {
 
         let peers = self.peers.lock().await;
         for (peer_id, entry) in peers.iter() {
+            if connection_type_of(&entry.pc).await == Some(ConnectionType::Relay) {
+                log::info!("[webrtc] add_video: skipping relayed peer {peer_id} (relay policy)");
+                continue;
+            }
             let track_local: Arc<dyn TrackLocal + Send + Sync> = track.clone();
             entry
                 .pc
@@ -1139,6 +1245,10 @@ impl WebRTCManager {
         // Add low track to all peers by default
         let peers = self.peers.lock().await;
         for (peer_id, entry) in peers.iter() {
+            if connection_type_of(&entry.pc).await == Some(ConnectionType::Relay) {
+                log::info!("[webrtc] add_video_dual: skipping relayed peer {peer_id} (relay policy)");
+                continue;
+            }
             let track_local: Arc<dyn TrackLocal + Send + Sync> = track_low.clone();
             entry.pc.add_track(track_local).await
                 .map_err(|e| format!("add_video_track_low to {peer_id}: {e}"))?;
@@ -1244,5 +1354,19 @@ impl WebRTCManager {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConnectionType;
+
+    #[test]
+    fn classifies_selected_pairs() {
+        assert_eq!(ConnectionType::from_candidate_types("host", "host"), ConnectionType::Lan);
+        assert_eq!(ConnectionType::from_candidate_types("srflx", "srflx"), ConnectionType::Direct);
+        assert_eq!(ConnectionType::from_candidate_types("host", "prflx"), ConnectionType::Direct);
+        assert_eq!(ConnectionType::from_candidate_types("relay", "srflx"), ConnectionType::Relay);
+        assert_eq!(ConnectionType::from_candidate_types("host", "relay"), ConnectionType::Relay);
     }
 }

@@ -39,6 +39,7 @@ Usage: hexfield-netprobe --id <userId> [options]
   --turn-user <user>     Username for turn: URLs
   --turn-pass <pass>     Credential for turn: URLs
   --relay-only           Only use TURN relay candidates (needs a turn: --ice URL)
+  --expect-type <t>      Joiner: fail unless the connection type is lan|direct|relay
   --pings <n>            Data-channel echo round trips after connecting (default 10)
   --timeout-secs <n>     Joiner: give up connecting after n s (default 30).
                          Host: exit after n s (default 0 = run until killed)
@@ -56,6 +57,7 @@ struct Args {
     pings: u32,
     timeout_secs: Option<u64>,
     relay_only: bool,
+    expect_type: Option<String>,
     verbose: bool,
     debug_deps: bool,
 }
@@ -72,6 +74,7 @@ fn parse_args() -> Result<Args, String> {
         pings: 10,
         timeout_secs: None,
         relay_only: false,
+        expect_type: None,
         verbose: false,
         debug_deps: false,
     };
@@ -98,6 +101,13 @@ fn parse_args() -> Result<Args, String> {
                 args.timeout_secs = Some(value("--timeout-secs")?.parse().map_err(|e| format!("--timeout-secs: {e}"))?)
             }
             "--relay-only" => args.relay_only = true,
+            "--expect-type" => {
+                let t = value("--expect-type")?;
+                if !matches!(t.as_str(), "lan" | "direct" | "relay") {
+                    return Err(format!("--expect-type must be lan, direct or relay, not {t}"));
+                }
+                args.expect_type = Some(t);
+            }
             "--verbose" => args.verbose = true,
             "--debug-deps" => {
                 args.verbose = true;
@@ -291,7 +301,11 @@ async fn run_host(mut probe: Probe, timeout: Option<Duration>) -> i32 {
         match probe.next(deadline).await {
             Some(ProbeEvent::Connected(peer)) => {
                 let types = probe.mgr.selected_candidate_types(&peer).await;
-                println!("{}", json!({ "event": "connected", "peer": peer, "candidates": types }));
+                let connection_type = probe.mgr.connection_type(&peer).await.map(|t| t.as_str());
+                println!(
+                    "{}",
+                    json!({ "event": "connected", "peer": peer, "candidates": types, "connection_type": connection_type })
+                );
             }
             Some(ProbeEvent::Disconnected(peer)) => {
                 println!("{}", json!({ "event": "disconnected", "peer": peer }));
@@ -303,7 +317,15 @@ async fn run_host(mut probe: Probe, timeout: Option<Duration>) -> i32 {
     0
 }
 
-async fn run_joiner(mut probe: Probe, addr: String, port: u16, peer: String, pings: u32, timeout: Duration) -> i32 {
+async fn run_joiner(
+    mut probe: Probe,
+    addr: String,
+    port: u16,
+    peer: String,
+    pings: u32,
+    timeout: Duration,
+    expect_type: Option<String>,
+) -> i32 {
     let started = Instant::now();
     let deadline = started + timeout;
     let mut result = json!({ "ok": false, "peer": peer, "endpoint": format!("{addr}:{port}") });
@@ -366,6 +388,9 @@ async fn run_joiner(mut probe: Probe, addr: String, port: u16, peer: String, pin
     }
     result["connect_ms"] = json!(started.elapsed().as_millis() as u64);
     result["relay_retry"] = json!(probe.relay_retried);
+    let connection_type = probe.mgr.connection_type(&peer).await.map(|t| t.as_str());
+    result["connection_type"] = json!(connection_type);
+    result["media_allowed"] = json!(probe.mgr.media_allowed(&peer).await);
     if let Some((local, remote)) = probe.mgr.selected_candidate_types(&peer).await {
         result["local_candidate"] = json!(local);
         result["remote_candidate"] = json!(remote);
@@ -401,9 +426,11 @@ async fn run_joiner(mut probe: Probe, addr: String, port: u16, peer: String, pin
         result["rtt_ms_avg"] = json!((avg * 10.0).round() / 10.0);
         result["rtt_ms_max"] = json!((max * 10.0).round() / 10.0);
     }
-    let ok = rtts.len() == pings as usize;
+    let echoes_ok = rtts.len() == pings as usize;
+    let type_ok = expect_type.as_deref().map_or(true, |t| connection_type == Some(t));
+    let ok = echoes_ok && type_ok;
     result["ok"] = json!(ok);
-    result["stage"] = json!(if ok { "done" } else { "echo" });
+    result["stage"] = json!(if !echoes_ok { "echo" } else if !type_ok { "type" } else { "done" });
     println!("{result}");
     let _ = probe.mgr.destroy_all().await;
     if ok { 0 } else { 1 }
@@ -463,7 +490,7 @@ async fn main() {
     let code = match (args.connect, args.peer) {
         (Some((addr, port)), Some(peer)) => {
             let timeout = Duration::from_secs(args.timeout_secs.unwrap_or(30));
-            run_joiner(probe, addr, port, peer, args.pings, timeout).await
+            run_joiner(probe, addr, port, peer, args.pings, timeout, args.expect_type).await
         }
         _ => run_host(probe, args.timeout_secs.map(Duration::from_secs)).await,
     };

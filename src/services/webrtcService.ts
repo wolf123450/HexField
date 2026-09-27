@@ -15,12 +15,15 @@ import { logger } from '@/utils/logger'
 
 export type DataChannelMessageHandler = (userId: string, data: unknown) => void
 
-interface WebRtcConnEvent    { userId: string }
+/** How a peer connection reaches the other side (see webrtc_manager.rs `ConnectionType`). */
+export type ConnectionType = 'lan' | 'direct' | 'relay'
+
+interface WebRtcConnEvent    { userId: string; connectionType?: ConnectionType | null }
 interface WebRtcDataEvent    { from: string; payload: string }
 
 export class WebRTCService {
   private _onDataMessage: DataChannelMessageHandler | null = null
-  private _onPeerConnected: ((userId: string) => void) | null = null
+  private _onPeerConnected: ((userId: string, connectionType: ConnectionType | null) => void) | null = null
   private _onPeerDisconnected: ((userId: string) => void) | null = null
   private _unlisteners: UnlistenFn[] = []
   /** Cache of connected peer IDs, kept in sync via events. */
@@ -38,7 +41,7 @@ export class WebRTCService {
   init(
     localUserId: string,
     onDataMessage: DataChannelMessageHandler,
-    onPeerConnected?: (userId: string) => void,
+    onPeerConnected?: (userId: string, connectionType: ConnectionType | null) => void,
     onPeerDisconnected?: (userId: string) => void,
   ): void {
     this._onDataMessage = onDataMessage
@@ -59,7 +62,7 @@ export class WebRTCService {
     this._unlisteners.push(
       await listen<WebRtcConnEvent>('webrtc_connected', ({ payload }) => {
         this._connected.add(payload.userId)
-        this._onPeerConnected?.(payload.userId)
+        this._onPeerConnected?.(payload.userId, payload.connectionType ?? null)
       }),
     )
 
