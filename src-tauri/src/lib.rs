@@ -174,6 +174,8 @@ pub fn run() {
             // Mutations
             db_save_mutation,
             db_load_mutations,
+            db_get_member_sign_keys,
+            db_get_channel_server,
             // Servers & channels
             db_load_servers,
             db_save_server,

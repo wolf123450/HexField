@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
 import type { Channel, ChannelACL, ChannelType, Mutation } from '@/types/core'
 import { generateHLC } from '@/utils/hlc'
+import { signMutation } from '@/services/mutationAuth'
 
 export const useChannelsStore = defineStore('channels', () => {
   const channels        = ref<Record<string, Channel[]>>({})  // keyed by serverId
@@ -113,7 +114,7 @@ export const useChannelsStore = defineStore('channels', () => {
       position: existing.length,
     }
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'channel_create',
       targetId:   channel.id,
@@ -122,8 +123,7 @@ export const useChannelsStore = defineStore('channels', () => {
       newContent: JSON.stringify(channel),
       logicalTs:  generateHLC(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     // Persist mutation (Rust side effects create the channel row)
     await messagesStore.applyMutation(mutation)
@@ -151,7 +151,7 @@ export const useChannelsStore = defineStore('channels', () => {
       if (list.find(c => c.id === channelId)) { serverId = sid; break }
     }
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'channel_delete',
       targetId:   channelId,
@@ -161,8 +161,7 @@ export const useChannelsStore = defineStore('channels', () => {
       newContent: JSON.stringify({ serverId }),
       logicalTs:  generateHLC(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     await messagesStore.applyMutation(mutation)
 
@@ -191,7 +190,7 @@ export const useChannelsStore = defineStore('channels', () => {
       if (ch) { serverId = sid; ch.name = newName; break }
     }
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'channel_update',
       targetId:   channelId,
@@ -200,8 +199,7 @@ export const useChannelsStore = defineStore('channels', () => {
       newContent: JSON.stringify({ serverId, name: newName }),
       logicalTs:  generateHLC(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     await messagesStore.applyMutation(mutation)
 

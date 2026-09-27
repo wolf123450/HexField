@@ -118,7 +118,7 @@ pub fn db_export_archive(
         for cid in &channel_ids {
             let rows = if hist_filter.is_empty() {
                 let sql = "SELECT id, type, target_id, channel_id, author_id, new_content,
-                           emoji_id, logical_ts, created_at, verified
+                           emoji_id, logical_ts, created_at, verified, sig
                            FROM mutations WHERE channel_id = ?1 ORDER BY logical_ts ASC";
                 let mut s = conn.prepare(sql).map_err(|e| e.to_string())?;
                 let rows = s.query_map([cid], row_to_mut)
@@ -128,7 +128,7 @@ pub fn db_export_archive(
                 rows
             } else {
                 let sql = "SELECT id, type, target_id, channel_id, author_id, new_content,
-                           emoji_id, logical_ts, created_at, verified
+                           emoji_id, logical_ts, created_at, verified, sig
                            FROM mutations WHERE channel_id = ?1 AND logical_ts >= ?2
                            ORDER BY logical_ts ASC";
                 let mut s = conn.prepare(sql).map_err(|e| e.to_string())?;
@@ -264,11 +264,12 @@ pub fn db_import_archive(
         conn.execute(
             "INSERT OR IGNORE INTO mutations
              (id, type, target_id, channel_id, author_id, new_content,
-              emoji_id, logical_ts, created_at, verified)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+              emoji_id, logical_ts, created_at, verified, sig)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             rusqlite::params![
                 m.id, m.mutation_type, m.target_id, m.channel_id, m.author_id,
                 m.new_content, m.emoji_id, m.logical_ts, m.created_at, m.verified as i64,
+                m.sig,
             ],
         ).map_err(|e| e.to_string())?;
     }
@@ -338,6 +339,7 @@ fn row_to_mut(r: &rusqlite::Row) -> rusqlite::Result<MutationRow> {
         logical_ts:    r.get(7)?,
         created_at:    r.get(8)?,
         verified:      r.get::<_, i64>(9)? != 0,
+        sig:           r.get(10)?,
     })
 }
 

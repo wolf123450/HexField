@@ -363,7 +363,8 @@ function _rowToMutation(r: MutationRow): Mutation {
     emojiId:    r.emoji_id ?? undefined,
     logicalTs:  r.logical_ts,
     createdAt:  r.created_at,
-    verified:   Boolean(r.verified),
+    verified:   false, // set only by authorizeMutation, never taken from the peer
+    sig:        r.sig ?? undefined,
   }
 }
 
@@ -407,26 +408,42 @@ async function _onPush(peerId: string, pushed: SyncPush): Promise<void> {
       const messagesStore = useMessagesStore()
       await messagesStore.loadMessages(wire.channelId)
     } else if (wire.table === 'mutations' && wire.mutations && wire.mutations.length > 0) {
-      await invoke('sync_save_mutations', { mutations: wire.mutations })
-      // Refresh mutations for the affected channel
+      // Every row is checked like a live mutation (spec 08 §5): signature by the
+      // author's known key plus authorship. Rejected rows are not stored, so
+      // negentropy offers them again next session (e.g. once the target message
+      // has arrived). member_join rows go first: they introduce the keys the
+      // other rows are verified against, so each is stored before the next check.
+      const { authorizeMutation, mutationToRow } = await import('./mutationAuth')
+      const ordered = [
+        ...wire.mutations.filter(r => r.type === 'member_join'),
+        ...wire.mutations.filter(r => r.type !== 'member_join'),
+      ]
       const { useMessagesStore } = await import('@/stores/messagesStore')
       const messagesStore = useMessagesStore()
-      if (wire.channelId !== '__server__') {
-        await messagesStore.loadMutationsForChannel(wire.channelId)
-      }
+      const { useChannelsStore } = await import('@/stores/channelsStore')
+      const channelsStore = useChannelsStore()
+      const { useServersStore } = await import('@/stores/serversStore')
+      const serversStore = useServersStore()
+      const { useEmojiStore } = await import('@/stores/emojiStore')
+      const emojiStore = useEmojiStore()
 
-      // Hydrate channels, members, emoji from server-level mutations
-      if (wire.channelId === '__server__') {
-        const { useChannelsStore } = await import('@/stores/channelsStore')
-        const channelsStore = useChannelsStore()
-        const { useServersStore } = await import('@/stores/serversStore')
-        const serversStore = useServersStore()
-        const { useEmojiStore } = await import('@/stores/emojiStore')
-        const emojiStore = useEmojiStore()
+      let accepted = 0
+      for (const row of ordered) {
+        if (row.channel_id !== wire.channelId) {
+          logger.warn('sync', 'mutation', row.id, 'rejected: not in pushed channel', wire.channelId)
+          continue
+        }
+        const auth = await authorizeMutation(_rowToMutation(row))
+        if (!auth.ok) {
+          logger.warn('sync', 'mutation', row.id, 'rejected:', auth.reason)
+          continue
+        }
+        const mutation = auth.mutation
+        await invoke('sync_save_mutations', { mutations: [mutationToRow(mutation)] })
+        accepted++
 
-        for (const row of wire.mutations) {
-          const mutation = _rowToMutation(row)
-
+        // Hydrate channels, members, emoji from server-level mutations
+        if (wire.channelId === '__server__') {
           if (['channel_create', 'channel_update', 'channel_delete'].includes(mutation.type)) {
             await channelsStore.applyChannelMutation(mutation)
           }
@@ -485,6 +502,11 @@ async function _onPush(peerId: string, pushed: SyncPush): Promise<void> {
             }
           }
         }
+      }
+
+      // Refresh mutations for the affected channel
+      if (accepted > 0 && wire.channelId !== '__server__') {
+        await messagesStore.loadMutationsForChannel(wire.channelId)
       }
     }
   } catch (e) {

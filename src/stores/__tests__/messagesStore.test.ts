@@ -33,7 +33,7 @@ vi.mock('@/stores/notificationStore', () => ({
   useNotificationStore: () => ({ notify: vi.fn() }),
 }))
 vi.mock('@/stores/channelsStore', () => ({
-  useChannelsStore: () => ({ channels: {} }),
+  useChannelsStore: () => ({ channels: { 'srv-1': [{ id: 'ch-1' }] } }),
 }))
 vi.mock('@/services/cryptoService', () => ({
   cryptoService: {
@@ -47,6 +47,7 @@ vi.mock('@/services/cryptoService', () => ({
       keyBoxes: keys.map(k => ({ ciphertext: `key-for-${k}`, nonce: 'n' })),
     })),
     openSealed: vi.fn(),
+    signJson: vi.fn((p: Record<string, unknown>) => ({ ...p, __sig: 'test-sig', __pub: 'pub-sign-alice' })),
   },
 }))
 

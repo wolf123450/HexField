@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Unit tests for syncService.ts
  *
@@ -8,7 +9,8 @@
  * Sync is scoped to servers that both we and the peer are members of: a peer
  * that shares no server with us gets nothing and can push nothing.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from 'vitest'
+import type { MutationRow } from '@/types/core'
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 
@@ -42,12 +44,28 @@ vi.mock('@/stores/serversStore', () => ({
     members:             mockMembers,
     updateMemberProfile: mockUpdateMemberProfile,
     isServerMember:      mockIsServerMember,
+    fetchMembers:        vi.fn().mockResolvedValue(undefined),
   }),
 }))
+
+vi.mock('@/stores/identityStore', () => ({
+  useIdentityStore: () => ({ userId: 'user-me', publicSignKey: 'pub-me' }),
+}))
+
+// By default every pushed mutation is authorized, so the hydration tests stay
+// focused. The "mutation authorization" block swaps in the real helper.
+const acceptAll = async (m: Record<string, unknown>) => ({ ok: true, mutation: { ...m, verified: true } })
+const mockAuthorize = vi.hoisted(() => vi.fn())
+vi.mock('@/services/mutationAuth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/mutationAuth')>()
+  return { ...actual, authorizeMutation: mockAuthorize }
+})
+mockAuthorize.mockImplementation(acceptAll)
 
 const mockApplyChannelMutation = vi.fn()
 vi.mock('@/stores/channelsStore', () => ({
   useChannelsStore: () => ({
+    channels:             {},
     applyChannelMutation: mockApplyChannelMutation,
   }),
 }))
@@ -430,7 +448,10 @@ describe('syncService.handleSyncMessage — sync_push', () => {
     })
 
     expect(mockInvoke).toHaveBeenCalledWith('sync_scope_mutations', { serverId: 'srv-1', channelId: 'chan-1', mutations })
-    expect(mockInvoke).toHaveBeenCalledWith('sync_save_mutations', { mutations })
+    expect(mockAuthorize).toHaveBeenCalledTimes(1)
+    expect(mockInvoke).toHaveBeenCalledWith('sync_save_mutations', {
+      mutations: [expect.objectContaining({ id: 'mut-x', verified: true })],
+    })
     expect(mockLoadMutationsForChannel).toHaveBeenCalledWith('chan-1')
   })
 
@@ -835,5 +856,140 @@ describe('syncService._onPush — governance mutation routing', () => {
     })
 
     expect(mockApplyGovernanceMutation).not.toHaveBeenCalled()
+  })
+})
+
+// ── sync_push authorization (real mutationAuth + real crypto) ──────────────────
+
+describe('syncService._onPush — mutation authorization', () => {
+  interface User { signSecret: string; dhSecret: string; pub: string }
+  let alice: User
+  let bob: User
+  let mallory: User
+  let cryptoService: typeof import('@/services/cryptoService').cryptoService
+  let signMutation: typeof import('@/services/mutationAuth').signMutation
+  let mutationToRow: typeof import('@/services/mutationAuth').mutationToRow
+
+  async function makeUser(): Promise<User> {
+    const { signSecret, dhSecret } = await cryptoService.generateKeys()
+    return { signSecret, dhSecret, pub: cryptoService.getPublicSignKey() }
+  }
+  async function signedRow(user: User, m: Parameters<typeof signMutation>[0]) {
+    await cryptoService.loadKeys(user.signSecret, user.dhSecret)
+    return mutationToRow(signMutation(m))
+  }
+  let seq = 0
+  function edit(authorId: string) {
+    seq++
+    return {
+      id: `mut-${authorId}-${seq}`, type: 'edit' as const, targetId: 'msg-1', channelId: 'chan-1',
+      authorId, newContent: 'edited', logicalTs: '1750000000000-000002', createdAt: '2025-06-01T00:00:00.000Z',
+    }
+  }
+  async function push(channelId: string, mutations: MutationRow[]) {
+    const { setSendFn, handleSyncMessage } = await import('@/services/syncService')
+    setSendFn(vi.fn())
+    await handleSyncMessage('peer-a', { type: 'sync_push', sessionId: 's-auth', table: 'mutations', serverId: 'srv-1', channelId, mutations })
+  }
+  const savedIds = () => mockInvoke.mock.calls
+    .filter(c => c[0] === 'sync_save_mutations')
+    .flatMap(c => (c[1] as { mutations: Array<{ id: string }> }).mutations.map(m => m.id))
+
+  beforeAll(async () => {
+    ;({ cryptoService } = await import('@/services/cryptoService'))
+    ;({ signMutation, mutationToRow } = await vi.importActual<typeof import('@/services/mutationAuth')>('@/services/mutationAuth'))
+    await cryptoService.init()
+    alice   = await makeUser()
+    bob     = await makeUser()
+    mallory = await makeUser()
+  })
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    for (const key of Object.keys(mockMembers)) delete mockMembers[key]
+    const actual = await vi.importActual<typeof import('@/services/mutationAuth')>('@/services/mutationAuth')
+    mockAuthorize.mockImplementation(actual.authorizeMutation)
+    const keys: Record<string, string[]> = { 'user-alice': [alice.pub], 'user-bob': [bob.pub] }
+    mockInvoke.mockImplementation(async (cmd: string, args: Record<string, unknown>) => {
+      if (cmd === 'sync_scope_mutations') return args.mutations
+      if (cmd === 'db_get_channel_server') return 'srv-1'
+      if (cmd === 'db_get_member_sign_keys') return keys[args.userId as string] ?? []
+      if (cmd === 'sync_get_messages') {
+        // Scoped like the Rust command: the target is only found within its own server + channel
+        return (args.ids as string[])[0] === 'msg-1' && args.serverId === 'srv-1' && args.channelId === 'chan-1'
+          ? [{ author_id: 'user-bob', channel_id: 'chan-1', server_id: 'srv-1' }]
+          : []
+      }
+      return undefined
+    })
+  })
+
+  afterEach(() => {
+    mockAuthorize.mockImplementation(acceptAll)
+    mockInvoke.mockReset()
+  })
+
+  it('stores a validly signed own edit, with its signature', async () => {
+    const row = await signedRow(bob, edit('user-bob'))
+    await push('chan-1', [row])
+    expect(mockInvoke).toHaveBeenCalledWith('sync_save_mutations', {
+      mutations: [expect.objectContaining({ id: row.id, sig: row.sig, verified: true })],
+    })
+    expect(mockLoadMutationsForChannel).toHaveBeenCalledWith('chan-1')
+  })
+
+  it('drops an unsigned mutation', async () => {
+    const row = { ...(await signedRow(bob, edit('user-bob'))), sig: null }
+    await push('chan-1', [row])
+    expect(savedIds()).toEqual([])
+    expect(mockLoadMutationsForChannel).not.toHaveBeenCalled()
+  })
+
+  it('drops a mutation with a bad signature', async () => {
+    const row = await signedRow(mallory, edit('user-bob'))
+    await push('chan-1', [row])
+    expect(savedIds()).toEqual([])
+  })
+
+  it('drops an edit of another user\'s message and keeps the valid rows of the batch', async () => {
+    const forged = await signedRow(alice, edit('user-alice'))
+    const valid  = await signedRow(bob, edit('user-bob'))
+    await push('chan-1', [forged, valid])
+    expect(savedIds()).toEqual([valid.id])
+  })
+
+  it('drops a row whose channel is not the pushed channel', async () => {
+    const row = await signedRow(bob, edit('user-bob'))
+    await push('chan-2', [row])
+    expect(savedIds()).toEqual([])
+  })
+
+  it('does not store or hydrate a forged server-level mutation', async () => {
+    const row = await signedRow(mallory, {
+      id: 'mut-chan-x', type: 'channel_create', targetId: 'c-9', channelId: '__server__',
+      authorId: 'user-alice', newContent: '{}', logicalTs: '1', createdAt: '2025-06-01T00:00:00.000Z',
+    })
+    await push('__server__', [row])
+    expect(mockApplyChannelMutation).not.toHaveBeenCalled()
+    expect(savedIds()).toEqual([])
+  })
+
+  it('applies member_join before later rows of the same batch that need its key', async () => {
+    const carol = await makeUser()
+    const profile = await signedRow(carol, {
+      id: 'mut-carol-profile', type: 'member_profile_update', targetId: 'user-carol', channelId: '__server__',
+      authorId: 'user-carol', newContent: JSON.stringify({ serverId: 'srv-1', bio: 'hi' }),
+      logicalTs: '1750000000000-000003', createdAt: '2025-06-01T00:00:00.000Z',
+    })
+    const join = await signedRow(carol, {
+      id: 'mut-carol-join', type: 'member_join', targetId: 'user-carol', channelId: '__server__',
+      authorId: 'user-carol',
+      newContent: JSON.stringify({ userId: 'user-carol', serverId: 'srv-1', publicSignKey: carol.pub, publicDHKey: 'dh', roles: ['member'] }),
+      logicalTs: '1750000000000-000001', createdAt: '2025-06-01T00:00:00.000Z',
+    })
+    // The profile update is first on the wire; the join must still be applied first.
+    await push('__server__', [profile, join])
+    expect(savedIds()).toEqual(['mut-carol-join', 'mut-carol-profile'])
+    expect(mockUpdateMemberProfile).toHaveBeenCalledWith('srv-1', 'user-carol', expect.objectContaining({ bio: 'hi' }))
   })
 })
