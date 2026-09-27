@@ -383,13 +383,14 @@ mod tests {
     async fn fresh_token_on_socket_extends_the_session() {
         let state = test_state();
         let url = serve(state.clone()).await;
-        let short = state.issue_session_token_until("alice", now_secs() + 1);
+        // +2 s, so a second boundary during setup cannot expire it before `auth`.
+        let short = state.issue_session_token_until("alice", now_secs() + 2);
         let mut ws = connect(&url, Some(&short)).await.unwrap();
         let (fresh, fresh_exp) = state.issue_session_token("alice");
         send_json(&mut ws, json!({ "type": "auth", "token": fresh })).await;
         assert_eq!(next_json(&mut ws, 5).await, json!({ "type": "auth_ok", "expires_at": fresh_exp }));
         // Past the old expiry, the socket still works.
-        tokio::time::sleep(Duration::from_millis(2500)).await;
+        tokio::time::sleep(Duration::from_millis(3000)).await;
         send_json(&mut ws, json!({ "type": "ping" })).await;
         assert_eq!(next_json(&mut ws, 5).await, json!({ "type": "pong" }));
     }
@@ -398,7 +399,7 @@ mod tests {
     async fn refresh_with_another_users_token_is_rejected() {
         let state = test_state();
         let url = serve(state.clone()).await;
-        let short = state.issue_session_token_until("alice", now_secs() + 1);
+        let short = state.issue_session_token_until("alice", now_secs() + 2);
         let mut ws = connect(&url, Some(&short)).await.unwrap();
         let (bobs, _) = state.issue_session_token("bob");
         send_json(&mut ws, json!({ "type": "auth", "token": bobs })).await;
