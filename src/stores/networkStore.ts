@@ -286,10 +286,14 @@ export const useNetworkStore = defineStore('network', () => {
       },
     ).catch(e => logger.warn('network', 'media_screen_share_stopped listen failed:', e))
 
-    listen<{ to: string; sdp: string }>('webrtc_offer', ({ payload }) => {
-      sendSignal({ type: 'signal_offer', to: payload.to, from: localUserId, sdp: payload.sdp })
+    listen<{ to: string; sdp: string; relayOnly?: boolean }>('webrtc_offer', ({ payload }) => {
+      sendSignal({ type: 'signal_offer', to: payload.to, from: localUserId, sdp: payload.sdp, relayOnly: payload.relayOnly === true })
         .catch(e => logger.warn('webrtc', 'relay webrtc_offer error:', e))
     }).catch(e => logger.warn('webrtc', 'webrtc_offer listen failed:', e))
+
+    listen<{ userId: string }>('webrtc_relay_retry', ({ payload }) => {
+      logger.info('webrtc', 'no direct path to', payload.userId, '— retrying via TURN relay')
+    }).catch(e => logger.warn('webrtc', 'webrtc_relay_retry listen failed:', e))
 
     listen<{ to: string; sdp: string }>('webrtc_answer', ({ payload }) => {
       sendSignal({ type: 'signal_answer', to: payload.to, from: localUserId, sdp: payload.sdp })
@@ -584,7 +588,7 @@ export const useNetworkStore = defineStore('network', () => {
     logger.debug('network', 'signal rx:', payload.type, 'from:', from)
     switch (payload.type) {
       case 'signal_offer':
-        webrtcService.handleOffer(from, payload.sdp as string).catch(e => logger.warn('webrtc', 'signal_offer unhandled:', e))
+        webrtcService.handleOffer(from, payload.sdp as string, payload.relayOnly === true).catch(e => logger.warn('webrtc', 'signal_offer unhandled:', e))
         break
       case 'signal_answer':
         webrtcService.handleAnswer(from, payload.sdp as string).catch(e => logger.warn('webrtc', 'signal_answer unhandled:', e))

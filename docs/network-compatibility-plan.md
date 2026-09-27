@@ -20,7 +20,7 @@ optional, and the app always tries the direct path first.
 | Any NAT, **no** port forward | ❌ at signaling | The invite has only direct endpoints; no fallback route for the offer and answer |
 | Symmetric NAT (CGNAT) on either side, STUN only | ❌ | Needs a relay |
 | TURN, relay-only, symmetric ↔ symmetric | ✅ ~2.1 s | Proves the relay path works |
-| TURN, all candidate types, symmetric NAT | ❌ | webrtc-rs 0.17 fails ICE with mixed candidate sets |
+| TURN, all candidate types, symmetric NAT | ✅ ~17 s (after 3a) | webrtc-rs 0.17 fails ICE with mixed candidate sets; the offerer retries relay-only after 15 s |
 | Cone ↔ cone at 3% loss / relay at 2% loss | ⚠️ flaky (3/8, 14/20) | webrtc-rs SCTP stalls: data channel fails to open (`sctp`) or messages delayed >5 s (`echo`) |
 | UDP blocked (corporate / guest Wi-Fi) | ❌ (not in lab yet) | webrtc-rs 0.17 TURN client is UDP-only; TCP/TLS are TODOs in `webrtc-ice/src/agent/agent_gather.rs` |
 
@@ -185,7 +185,7 @@ connection uses one hardcoded STUN server.
 
 *Fixes:* lab rows `symA-symB-fwd-turn` and `symA-coneB-fwd-turn`.
 
-- **3a: relay-only retry.** Small and deterministic.
+- **3a: relay-only retry.** ✅ Done. The retry lives in `WebRTCManager` (`schedule_relay_retry`), so the probe and lab exercise the app's own logic. Lab: `sym*-turn` pass at ~17 s, and the `cone-fwd-turn` guard stays direct (no retry).
   - If a peer's first connection attempt ends in `Failed` (or isn't connected
     after about 15 s) and TURN is configured, re-offer that peer with
     `relay_only`.

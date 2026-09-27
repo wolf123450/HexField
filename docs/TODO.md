@@ -309,7 +309,7 @@
   - [ ] 1 — Rendezvous signaling fallback for joins (invite `rendezvous` field, WS actor → `EventSink` module, probe `--rendezvous`, server in lab) — rows `cone-nofwd-rdv`
   - [ ] 1b — Manual offer/answer code exchange (non-trickle SDP, signed compact codes, Invite/Join modal UI, probe file exchange) — row `cone-nofwd-manual`
   - [x] 2 — `webrtc_set_ice_servers` command fed by `buildICEServers()` (TURN creds refresh at 80% TTL, custom-TURN settings watch, 2nd STUN); `setICEConfigBuilder()` stub removed; Cloudflare TURN credential backend in `server/src/routes/turn.rs` (coturn kept); server now compiles again (hmac 0.13) and is built/tested in CI
-  - [ ] 3a — Per-peer relay-only retry on initial ICE failure (`relayOnly` flag in `signal_offer`) — flips `sym*-turn` rows
+  - [x] 3a — Relay-only retry: offerer re-offers with relay-only ICE if the data channel isn't open after 15 s and TURN is configured (`relayOnly` in `signal_offer`, `webrtc_relay_retry` event) — `sym*-turn` rows pass at ~17 s; `cone-fwd-turn` guard stays direct
   - [ ] 3c — Enforce relay policy: per-peer `connectionType`, gate media for relayed peers with UI reason, image preview (≤150 KB) + hash with full-res fetch over direct links, refuse chunk requests over relay, slower heartbeat/keepalive for relayed peers
   - [ ] 3b — Root-cause webrtc-rs mixed-candidate ICE failure across symmetric NAT (time-box ~1 day)
   - [ ] 4 — ICE restart + heartbeat-timeout reconnect with backoff; probe `--duration`; rows `flap`, `rebind`, `host-restart`

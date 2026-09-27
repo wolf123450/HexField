@@ -88,8 +88,9 @@ export class WebRTCService {
     await invoke('webrtc_create_offer', { peerId: userId })
   }
 
-  async handleOffer(userId: string, sdp: string): Promise<void> {
-    await invoke('webrtc_handle_offer', { from: userId, sdp })
+  /** `relayOnly` mirrors the offerer's ICE policy (relay-only retry, see webrtc_manager.rs). */
+  async handleOffer(userId: string, sdp: string, relayOnly = false): Promise<void> {
+    await invoke('webrtc_handle_offer', { from: userId, sdp, relayOnly })
   }
 
   async handleAnswer(userId: string, sdp: string): Promise<void> {
