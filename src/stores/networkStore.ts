@@ -5,6 +5,7 @@ import { listen } from '@tauri-apps/api/event'
 import { signalingService } from '@/services/signalingService'
 import type { SignalPayload } from '@/services/signalingService'
 import { WebRTCService, webrtcService } from '@/services/webrtcService'
+import type { ConnectionType } from '@/services/webrtcService'
 import { startSync, handleSyncMessage, setSendFn } from '@/services/syncService'
 import type { SyncWireMessage } from '@/services/syncService'
 import type { ServerManifest } from '@/types/core'
@@ -85,13 +86,26 @@ export const useNetworkStore = defineStore('network', () => {
   // Interval is intentionally short for development; production can use a longer value.
   const HEARTBEAT_INTERVAL_MS = 10_000  // send / check every 10 s
   const HEARTBEAT_TIMEOUT_MS  = 25_000  // mark offline after 25 s of silence
+  // Relayed peers: heartbeat every 3rd tick (30 s) to save relay bandwidth,
+  // with a matching longer timeout (relay policy, network-compatibility-plan 3c).
+  const RELAYED_HEARTBEAT_EVERY_TICKS = 3
+  const RELAYED_HEARTBEAT_TIMEOUT_MS  = 75_000
   const lastHeartbeatFrom = new Map<string, number>()
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  let heartbeatTick = 0
+
+  /** Connection type per connected peer (`relay` = via TURN, limited per relay policy). */
+  const peerConnectionTypes = ref<Record<string, ConnectionType>>({})
+
+  function isRelayed(userId: string): boolean {
+    return peerConnectionTypes.value[userId] === 'relay'
+  }
 
   function startHeartbeat() {
     if (heartbeatTimer) return
     heartbeatTimer = setInterval(async () => {
-      // Broadcast our own status, scoped to this user's key so multiple instances
+      heartbeatTick++
+      // Send our own status, scoped to this user's key so multiple instances
       // on the same machine don't read each other's status from shared localStorage.
       const { useIdentityStore } = await import('./identityStore')
       const identityStore = useIdentityStore()
@@ -99,12 +113,16 @@ export const useNetworkStore = defineStore('network', () => {
         const statusKey = `hexfield_own_status_${identityStore.userId}`
         const ownStatus = localStorage.getItem(statusKey) ?? 'online'
         if (ownStatus !== 'offline') {
-          broadcast({
+          const presence = {
             type:      'presence_update',
             userId:    identityStore.userId,
             status:    ownStatus,
             timestamp: Date.now(),
-          })
+          }
+          for (const peerId of connectedPeers.value) {
+            if (isRelayed(peerId) && heartbeatTick % RELAYED_HEARTBEAT_EVERY_TICKS !== 0) continue
+            webrtcService.sendToPeer(peerId, presence)
+          }
         }
       }
       // Watchdog: mark peers offline if we haven't heard from them recently.
@@ -113,7 +131,8 @@ export const useNetworkStore = defineStore('network', () => {
       const serversStore = useServersStore()
       for (const peerId of [...connectedPeers.value]) {
         const last = lastHeartbeatFrom.get(peerId) ?? 0
-        if (now - last > HEARTBEAT_TIMEOUT_MS) {
+        const timeout = isRelayed(peerId) ? RELAYED_HEARTBEAT_TIMEOUT_MS : HEARTBEAT_TIMEOUT_MS
+        if (now - last > timeout) {
           handlePresenceUpdate(peerId, { status: 'offline' })
         }
       }
@@ -174,11 +193,13 @@ export const useNetworkStore = defineStore('network', () => {
     webrtcService.init(
       localUserId,
       handleDataChannelMessage,
-      (userId) => {
+      (userId, connectionType) => {
         if (!connectedPeers.value.includes(userId)) {
           connectedPeers.value = [...connectedPeers.value, userId]
         }
-        logger.info('network', 'peer connected:', userId)
+        const { [userId]: _previous, ...otherTypes } = peerConnectionTypes.value
+        peerConnectionTypes.value = connectionType ? { ...otherTypes, [userId]: connectionType } : otherTypes
+        logger.info('network', 'peer connected:', userId, connectionType ?? '')
         // Gossip identity first — member keys must be queued on the data channel
         // before startSync sends sync_neg_init, so the remote decrypts our messages
         // in the right order (SCTP preserves send order).
@@ -200,6 +221,8 @@ export const useNetworkStore = defineStore('network', () => {
         // m-line ordering because the new remote session has no prior history.
         webrtcService.destroyPeer(userId)
         connectedPeers.value = connectedPeers.value.filter(id => id !== userId)
+        const { [userId]: _gone, ...remainingTypes } = peerConnectionTypes.value
+        peerConnectionTypes.value = remainingTypes
         logger.info('network', 'peer disconnected:', userId)
         lastHeartbeatFrom.delete(userId)
         peerMessageCounts.delete(userId)
@@ -1219,6 +1242,8 @@ export const useNetworkStore = defineStore('network', () => {
   async function handleAttachmentWant(fromUserId: string, msg: Record<string, unknown>) {
     const contentHash = msg.contentHash as string
     if (!contentHash) return
+    // Relay policy: full attachments never travel over a TURN relay.
+    if (isRelayed(fromUserId)) return
     const hashHex = contentHash.replace('blake3:', '')
     const have = await invoke<boolean>('has_attachment', { contentHash: hashHex })
     if (have) {
@@ -1236,6 +1261,8 @@ export const useNetworkStore = defineStore('network', () => {
   function handleAttachmentHave(fromUserId: string, msg: Record<string, unknown>) {
     const contentHash = msg.contentHash as string
     if (!contentHash) return
+    // Relay policy: don't download from a peer we only reach through a relay.
+    if (isRelayed(fromUserId)) return
     const hashHex = contentHash.replace('blake3:', '')
     attachmentService.addSeeder(hashHex, fromUserId)
   }
@@ -1247,6 +1274,10 @@ export const useNetworkStore = defineStore('network', () => {
     const contentHash = msg.contentHash as string
     const indices = msg.chunkIndices as number[]
     if (!contentHash || !Array.isArray(indices)) return
+    if (isRelayed(fromUserId)) {
+      logger.info('network', 'refusing attachment chunks to relayed peer', fromUserId, '(relay policy)')
+      return
+    }
     const hashHex = contentHash.replace('blake3:', '')
     for (const idx of indices) {
       const data = await attachmentService.readChunkForSeeding(hashHex, idx)
@@ -1697,6 +1728,8 @@ export const useNetworkStore = defineStore('network', () => {
     ownPublicAddr,
     relayCapablePeers,
     connectedPeers,
+    peerConnectionTypes,
+    isRelayed,
     typingUsers,
     init,
     connect,

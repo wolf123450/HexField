@@ -53,6 +53,11 @@ rendezvous fallback for invites), flip the matching row from `fail` to `pass`.
 | `cone` | `MASQUERADE` | Home router (port-preserving, stateful filtering) |
 | `symmetric` | `MASQUERADE --random-fully` | Carrier-grade NAT (CGNAT), many corporate firewalls |
 
+The optional last column is the expected connection type (`lan`, `direct` or
+`relay`). The probe fails a passing row with stage `type` if the type differs,
+and reports `media_allowed` (false for relayed connections, per the relay
+policy).
+
 The `ice` column selects the ICE servers: `stun` means STUN only; `turn`
 means STUN plus TURN with all candidate types, as the app would use them; `relay`
 means STUN plus TURN restricted to relay candidates (`--relay-only`).

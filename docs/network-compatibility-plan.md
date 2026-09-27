@@ -211,7 +211,10 @@ connection uses one hardcoded STUN server.
     one; try `SettingEngine` UDP mux.
   - Check whether newer webrtc-rs releases fix it.
   - If found, fix locally or upstream, and drop the retry delay.
-- **3c: enforce the relay policy and keep relays cheap.**
+- **3c: enforce the relay policy and keep relays cheap.** ✅ Done, except image
+  previews, which moved to 3d. Media gating lives in `WebRTCManager`
+  (`ConnectionType`, `media_allowed`). Attachment gating is in
+  `networkStore` (`isRelayed`).
   - Expose each peer's connection type to the frontend: `connectionType: 'lan' | 'direct' | 'relay'`,
     from `selected_candidate_types()`, emitted on connect and after ICE restarts.
   - Gate voice, video and screen share per peer: no media tracks are added for
@@ -227,6 +230,22 @@ connection uses one hardcoded STUN server.
     webrtc-rs allows it.
   - Lab: a relayed row asserts `connectionType: relay` and that a media request
     is refused. The probe gains a `--media` attempt flag for this.
+
+- **3d: image previews for relayed peers.** Images above the inline cap already
+  travel as BLAKE3-addressed attachments (`attachment_want/have/chunk_request/chunk`,
+  16 KB chunks), and 3c blocks those over relays. So a relayed receiver currently
+  sees no image until a direct connection exists. There are two ways to carry a
+  preview:
+  - **(a) Inline preview:** a small preview (≈480–640 px WebP, ≤≈32 KB) embedded
+    in the message's attachment metadata. Simple, works for history sync, and
+    fits the existing ~40 KB inline / SCTP-safe budget. Lower quality than the
+    ≈150 KB this plan originally proposed.
+  - **(b) Preview attachment:** a separate ≤≈150 KB preview stored as its own
+    attachment (own hash) and marked as a preview, so relay gating lets it
+    through. Better quality, but more moving parts: a preview flag on the
+    wire, gating by hash, and more chunk traffic over the relay.
+  - In both cases the full original downloads automatically when any direct
+    peer has it (the existing want/have flow), replacing the preview.
 
 ### 4. Recovery after network changes
 
