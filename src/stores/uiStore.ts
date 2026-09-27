@@ -115,6 +115,7 @@ export const useUIStore = defineStore("ui", () => {
   const showServerCreateModal = ref(false)
   const showJoinModal         = ref(false)
   const showInviteModal       = ref(false)
+  const showDirectConnectModal = ref(false)
   const inviteServerId        = ref<string | null>(null)
   const showDeviceLinkModal   = ref(false)
   const showServerSettingsModal = ref(false)
@@ -276,6 +277,7 @@ export const useUIStore = defineStore("ui", () => {
     showServerCreateModal,
     showJoinModal,
     showInviteModal,
+    showDirectConnectModal,
     inviteServerId,
     openInviteModal,
     showDeviceLinkModal,
