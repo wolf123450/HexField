@@ -157,6 +157,8 @@ export const useChannelsStore = defineStore('channels', () => {
       targetId:   channelId,
       channelId:  '__server__',
       authorId:   identityStore.userId!,
+      // serverId lets history sync scope this row to its server after the channel row is gone
+      newContent: JSON.stringify({ serverId }),
       logicalTs:  generateHLC(),
       createdAt:  new Date().toISOString(),
       verified:   true,
@@ -195,7 +197,7 @@ export const useChannelsStore = defineStore('channels', () => {
       targetId:   channelId,
       channelId:  '__server__',
       authorId:   identityStore.userId!,
-      newContent: JSON.stringify({ name: newName }),
+      newContent: JSON.stringify({ serverId, name: newName }),
       logicalTs:  generateHLC(),
       createdAt:  new Date().toISOString(),
       verified:   true,

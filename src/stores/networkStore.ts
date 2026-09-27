@@ -665,9 +665,7 @@ export const useNetworkStore = defineStore('network', () => {
    */
   async function broadcastToServer(serverId: string, data: unknown) {
     const { useServersStore } = await import('./serversStore')
-    const serversStore = useServersStore()
-    if (!serversStore.members[serverId]) await serversStore.fetchMembers(serverId)
-    const members = serversStore.members[serverId] ?? {}
+    const members = await useServersStore().ensureMembers(serverId)
     webrtcService.broadcastWhere(userId => userId in members, data)
   }
 

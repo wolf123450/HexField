@@ -29,10 +29,18 @@ vi.mock('@/services/attachmentService', () => ({
   setRequestChunksFn: vi.fn(), addSeeder: vi.fn(), readChunkForSeeding: vi.fn(), receiveChunk: vi.fn(),
 }))
 
-const serversMock = vi.hoisted(() => ({
-  members: {} as Record<string, Record<string, unknown>>,
-  fetchMembers: vi.fn(),
-}))
+const serversMock = vi.hoisted(() => {
+  const mock = {
+    members: {} as Record<string, Record<string, unknown>>,
+    fetchMembers: vi.fn(),
+    // Same contract as serversStore.ensureMembers: load on first use
+    ensureMembers: async (id: string) => {
+      if (!mock.members[id]) await mock.fetchMembers(id)
+      return mock.members[id] ?? {}
+    },
+  }
+  return mock
+})
 vi.mock('@/stores/serversStore', () => ({ useServersStore: () => serversMock }))
 
 const messagesMock = vi.hoisted(() => ({ messages: {} as Record<string, Array<{ id: string; serverId: string }>> }))
