@@ -526,16 +526,6 @@ export const useNetworkStore = defineStore('network', () => {
   }
 
   /**
-   * Connect to a rendezvous signaling server.
-   */
-  async function connect(url: string) {
-    if (!url) return
-    serverUrl.value = url
-    reconnectAttempt.value = 0
-    await signalingService.connect(url)
-  }
-
-  /**
    * Disconnect from the signaling server and tear down all peers.
    */
   async function disconnect() {
@@ -1732,7 +1722,6 @@ export const useNetworkStore = defineStore('network', () => {
     isRelayed,
     typingUsers,
     init,
-    connect,
     disconnect,
     waitForConnected,
     waitForPeer,
