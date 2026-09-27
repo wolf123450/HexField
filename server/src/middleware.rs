@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::state::ServerState;
 
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     headers.get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
