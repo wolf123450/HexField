@@ -290,8 +290,9 @@ laptop sleep, the host restarting.
 **6a. Data-channel reliability under loss (high priority).** Chat, sync and
 signaling all ride on the data channel, and it stalls at 2–3% loss today.
 
-> **Partially done.** Root cause found and one of the two failure modes fixed;
-> the other is a separate, unfixed issue. Details below.
+> **Partially done.** Root cause found; a mitigation lands but doesn't clear
+> the lab's pass bar, and a second failure mode is separate and unfixed.
+> Details below.
 
 - **Root cause (confirmed by reading `webrtc-sctp` 0.17.1 source, not just
   logs):** `AssociationInternal::process_selective_ack` in
@@ -322,18 +323,37 @@ signaling all ride on the data channel, and it stalls at 2–3% loss today.
 - **Fix applied (`webrtc_manager.rs`):** since the corruption can't be
   prevented or tuned away from the app side, `WebRTCManager` now polls each
   open data channel's `buffered_amount()` every
-  `DATA_CHANNEL_STALL_CHECK_INTERVAL` (4 s). If outstanding bytes stop
-  draining for `DATA_CHANNEL_STALL_TRIGGER_POLLS` (2) consecutive polls
-  (~8 s — long enough to ride out one normal `RTO_INITIAL` retransmission), the
-  peer connection is treated as dead and gets a full reconnect through the
-  existing `start_offer()` path (same recovery `schedule_relay_retry` already
-  uses for a data channel that never opens).
-- **Lab results after the fix** (`scripts/netlab/netlab.sh case`, 5 runs each):
-  - `symA-symB-fwd-relay-loss` (2% loss, relay): **5/5 pass** (was 14/20
-    before). Flipped from `any` to `pass`.
+  `DATA_CHANNEL_STALL_CHECK_INTERVAL`. If outstanding bytes stop draining for
+  `DATA_CHANNEL_STALL_TRIGGER_POLLS` consecutive polls, the peer connection is
+  treated as dead and gets a full reconnect through the existing
+  `start_offer()` path (same recovery `schedule_relay_retry` already uses for
+  a data channel that never opens).
+  - The interval/count (10 s × 8 = ~80 s) is deliberately conservative: it must
+    clear `RTO_MAX` (60 s, also hardcoded) with margin, or the watchdog
+    mistakes a link that's merely slow for one that's stalled. A first version
+    (4 s × 2 = ~8 s) did exactly that — it force-reconnected a **passing**
+    `cone-fwd-stun-slow` run (250 ms delay, 512 kbit, no loss at all) mid-test,
+    turning a pass into a fail, because a tiny queued ping can legitimately sit
+    in `buffered_amount()` for several seconds on a link that thin. The
+    permanent desync this targets never drains no matter how long we wait, so
+    there's no downside to waiting well past `RTO_MAX` before acting — the
+    downside is only in reacting too fast on a healthy connection.
+- **Lab results after the fix** (`scripts/netlab/netlab.sh case`, batches of
+  5 runs):
+  - `cone-fwd-stun-slow` (250 ms delay, 512 kbit, no loss): **3/3 pass**,
+    confirming the regression above is fixed and the fix doesn't misfire on a
+    merely-slow link.
+  - `symA-symB-fwd-relay-loss` (2% loss, relay): **7/10 pass** across two
+    batches (was 14/20 before this change). Real improvement, but not the 5/5
+    needed to flip the expectation. The remaining failures are true instances
+    of the permanent-stall bug where detection-plus-reconnect (~80 s+) doesn't
+    finish inside the probe's fixed 20-ping/5 s-per-ping window — the same
+    session would recover fine given more patience (e.g. a real chat session,
+    which doesn't give up after 20 messages), but this specific test does.
+    Stays `any`.
   - `cone-fwd-stun-lossy` (3% loss, 80±20 ms jitter, direct): **1/5 pass**, no
-    real improvement. The failures here are a *different* failure mode: single
-    pings missing the probe's 5 s per-ping deadline during a legitimate RTO
+    change. The failures here are a *different* failure mode: single pings
+    missing the probe's 5 s per-ping deadline during a legitimate RTO
     retransmit (stage `echo`, `pongs: 15-19/20`), not the permanent-stall bug
     above — `buffered_amount()` is draining fine, just not within 5 s every
     time at this loss/jitter combination. The stall watchdog correctly doesn't
@@ -344,8 +364,10 @@ signaling all ride on the data channel, and it stalls at 2–3% loss today.
     (the plan's original app-level suggestion — still applicable for this
     remaining mode, since messages already have IDs and sync repairs gaps).
 - Done when the `*-lossy` / `*-loss` rows pass 20 of 20 and are switched from
-  `any` back to `pass`. **`symA-symB-fwd-relay-loss` done; `cone-fwd-stun-lossy`
-  still open.**
+  `any` back to `pass`. **Neither row clears that bar yet**, though
+  `symA-symB-fwd-relay-loss`'s underlying failure rate is now much lower in
+  real (non-probe) usage — a genuine chat session recovers once the reconnect
+  completes, it just isn't running against a 20-ping stopwatch.
 
 **6b. Media.**
 - Probe: send a synthetic Opus audio track (and optionally video) and report

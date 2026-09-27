@@ -89,19 +89,31 @@ the host's LAN address, just like an invite created behind an unmapped NAT.
     tuning via `SettingEngine` (`RTO_INITIAL`/`RTO_MIN`/`RTO_MAX`/`MAX_INIT_RETRANS`
     are `pub(crate)` in `webrtc-sctp`), so this can't be tuned from the app.
   - **Fix:** `webrtc_manager.rs` now polls each open data channel's
-    `buffered_amount()` every 4s and forces a full reconnect
+    `buffered_amount()` every 10s and forces a full reconnect
     (`start_offer()`, same path `schedule_relay_retry` uses) if outstanding
-    bytes stop draining for two consecutive polls (~8s).
-  - **Results after the fix** (5 runs each via `netlab.sh case`):
-    `symA-symB-fwd-relay-loss` (2% loss, relay) went from 14/20 to **5/5** —
-    flipped to `expect=pass`. `cone-fwd-stun-lossy` (3% loss, 80±20ms jitter,
-    direct) stayed at roughly its old rate (1/5 in this run; was 3/8) — its
-    failures are a *different* mode (single pings missing the probe's 5s
-    deadline during a legitimate RTO retransmit, stage `echo`,
-    `pongs: 15-19/20`), not the permanent-stall bug the fix targets. This row
-    stays `expect=any`; see `docs/network-compatibility-plan.md` step 6a for
-    follow-up ideas (app-level message ack/resend, or loosening the probe's
-    per-ping deadline).
+    bytes stop draining for 8 consecutive polls (~80s). That margin is
+    deliberate: it must clear webrtc-sctp's `RTO_MAX` (60s, hardcoded) or it
+    misfires on a link that's merely slow, not stalled. An earlier, faster
+    version (~8s total) force-reconnected a **passing** `cone-fwd-stun-slow`
+    run (250ms delay, 512kbit, no loss) mid-test and turned it into a fail —
+    a tiny queued ping can legitimately sit in `buffered_amount()` for
+    several seconds on a link that thin.
+  - **Results after the fix** (`netlab.sh case`, batches of 5 runs):
+    `cone-fwd-stun-slow` **3/3 pass** (confirms the regression above is
+    fixed). `symA-symB-fwd-relay-loss` (2% loss, relay) **7/10 pass** across
+    two batches — real improvement over 14/20 before the fix, but not the
+    5/5 needed to flip `expect=any` to `pass`. The remaining failures are
+    genuine instances of the stall bug where detection-plus-reconnect
+    (~80s+) doesn't finish inside the probe's fixed 20-ping/5s-per-ping
+    window, even though the same session would recover given more patience.
+    `cone-fwd-stun-lossy` (3% loss, 80±20ms jitter, direct) is unchanged
+    (1/5; was 3/8) — its failures are a *different* mode (single pings
+    missing the probe's 5s deadline during a legitimate RTO retransmit,
+    stage `echo`, `pongs: 15-19/20`), not the permanent-stall bug the fix
+    targets. Both rows stay `expect=any`; see
+    `docs/network-compatibility-plan.md` step 6a for follow-up ideas
+    (app-level message ack/resend, or loosening the probe's per-ping
+    deadline).
 - Joins with no port forward fail at the signaling stage, before WebRTC starts.
 - Symmetric NAT on either side fails with STUN only, as expected.
 - TURN works (the `relay` rows), but webrtc-rs 0.17 fails ICE across symmetric
