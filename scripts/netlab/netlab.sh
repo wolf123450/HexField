@@ -36,7 +36,10 @@
 # Env: PROBE=path to hexfield-netprobe (default src-tauri/target/debug/hexfield-netprobe)
 #      OUT=directory for logs and results (default /tmp/netlab)
 #      COTURN_ARGS=extra turnserver flags (e.g. --verbose)
-#      PROBE_ARGS=extra flags for both probes (e.g. "--no-relay-retry --trace-deps")
+#      PROBE_ARGS=extra flags for both probes (e.g. "--no-relay-retry --trace-deps",
+#                 or "--pings 200 --ping-timeout-secs 120" for a longer echo stage)
+#      JOINER_ENV=extra environment for the joiner probe only (e.g. an LD_PRELOAD
+#                 libfaketime setup to step its wall clock; see README)
 #      PCAP=1 captures the "internet" bridge to $OUT/<case>.pcap (needs tcpdump)
 
 set -euo pipefail
@@ -192,8 +195,11 @@ cmd_case() { # see usage
   sleep 1
   local type_args=()
   [[ $want_type != - ]] && type_args=(--expect-type "$want_type")
+  local joiner_env=()
+  # shellcheck disable=SC2206
+  [[ -n ${JOINER_ENV:-} ]] && joiner_env=(env $JOINER_ENV)
   local result code=0
-  result=$(nsx hf-peerB "$PROBE" --id joiner --connect "$endpoint" --peer host \
+  result=$(nsx hf-peerB "${joiner_env[@]}" "$PROBE" --id joiner --connect "$endpoint" --peer host \
     --pings 20 --timeout-secs 30 "${ice_args[@]}" "${type_args[@]}" "${extra_args[@]}" 2>"$OUT/$name.joiner.err") || code=$?
   [[ -z $pcap_pid ]] || { kill "$pcap_pid" 2>/dev/null; wait "$pcap_pid" 2>/dev/null || true; }
   cp "$OUT/coturn.log" "$OUT/$name.coturn.log" 2>/dev/null || true
