@@ -231,7 +231,11 @@ connection uses one hardcoded STUN server.
   - Lab: a relayed row asserts `connectionType: relay` and that a media request
     is refused. The probe gains a `--media` attempt flag for this.
 
-- **3d: image previews for relayed peers.** Images above the inline cap already
+- **3d: image previews for relayed peers.** ✅ Done with option (a), the inline preview.
+  Details: ≤24 KB WebP (JPEG fallback), 640→480→320 px, ≤36 K chars per message,
+  and an allowlist check (`isValidPreviewDataUrl`) before anything is rendered.
+  Measured in Chromium: a 3000×2000, 3.2 MB photo becomes a 640×427 21 KB preview
+  in ~130 ms. Background on the choice: Images above the inline cap already
   travel as BLAKE3-addressed attachments (`attachment_want/have/chunk_request/chunk`,
   16 KB chunks), and 3c blocks those over relays. So a relayed receiver currently
   sees no image until a direct connection exists. There are two ways to carry a
