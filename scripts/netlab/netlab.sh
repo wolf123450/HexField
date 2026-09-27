@@ -36,7 +36,10 @@
 # Env: PROBE=path to hexfield-netprobe (default src-tauri/target/debug/hexfield-netprobe)
 #      OUT=directory for logs and results (default /tmp/netlab)
 #      COTURN_ARGS=extra turnserver flags (e.g. --verbose)
-#      PROBE_ARGS=extra flags for both probes (e.g. "--no-relay-retry --trace-deps")
+#      PROBE_ARGS=extra flags for both probes (e.g. "--no-relay-retry --trace-deps",
+#                 or "--pings 200 --ping-timeout-secs 120" for a longer echo stage)
+#      JOINER_ENV=extra environment for the joiner probe only (e.g. an LD_PRELOAD
+#                 libfaketime setup to step its wall clock; see README)
 #      PCAP=1 captures the "internet" bridge to $OUT/<case>.pcap (needs tcpdump)
 
 set -euo pipefail
@@ -192,8 +195,11 @@ cmd_case() { # see usage
   sleep 1
   local type_args=()
   [[ $want_type != - ]] && type_args=(--expect-type "$want_type")
+  local joiner_env=()
+  # shellcheck disable=SC2206
+  [[ -n ${JOINER_ENV:-} ]] && joiner_env=(env $JOINER_ENV)
   local result code=0
-  result=$(nsx hf-peerB "$PROBE" --id joiner --connect "$endpoint" --peer host \
+  result=$(nsx hf-peerB "${joiner_env[@]}" "$PROBE" --id joiner --connect "$endpoint" --peer host \
     --pings 20 --timeout-secs 30 "${ice_args[@]}" "${type_args[@]}" "${extra_args[@]}" 2>"$OUT/$name.joiner.err") || code=$?
   [[ -z $pcap_pid ]] || { kill "$pcap_pid" 2>/dev/null; wait "$pcap_pid" 2>/dev/null || true; }
   cp "$OUT/coturn.log" "$OUT/$name.coturn.log" 2>/dev/null || true
@@ -214,25 +220,16 @@ cmd_case() { # see usage
 # name | natA | natB | forward | ice | netem | expected | connection type (checked when it passes) | [route|noroute]
 # Expectations document today's behaviour; flip a row when a fix lands.
 #   cone-nofwd-stun      → rendezvous fallback for invites without a port forward
-#   *-loss / *-lossy     → `any` (step 6a). A webrtc-sctp 0.17.1 bug (`process_selective_ack`
-#                          in association_internal.rs) permanently desyncs the SCTP
-#                          ack point after one bad SACK under loss, stalling the data
-#                          channel forever even though ICE/DTLS stay up. WebRTCManager
-#                          now watches buffered_amount() and forces a reconnect when it
-#                          stops draining for DATA_CHANNEL_STALL_TRIGGER_POLLS polls
-#                          (see webrtc_manager.rs). This must clear webrtc-sctp's
-#                          RTO_MAX (60 s, hardcoded) or it misfires on a link that's
-#                          merely slow (an 8 s version of this watchdog broke a
-#                          passing cone-fwd-stun-slow run). With the ~80 s margin,
-#                          detection + reconnect doesn't finish inside the probe's
-#                          fixed 20-ping/5 s-per-ping window, so the lab cannot show
-#                          the recovery: symA-symB-fwd-relay-loss passed 7/10 with
-#                          the watchdog and 14/20 without it (same rate). Stays `any`.
-#                          cone-fwd-stun-lossy (3% loss, 80±20 ms jitter, direct)
-#                          is unaffected either way (1/5): its failures are single
-#                          pings missing the probe's 5 s deadline during a
-#                          legitimate RTO retransmit (stage "echo", pongs 15-19/20),
-#                          a different failure mode from the permanent stall above.
+#   *-loss / *-lossy     → `any` (step 6a). webrtc-sctp 0.17.1 could desync its ack point
+#                          after one bad SACK and stall the data channel for good; the app
+#                          now builds a patched copy (src-tauri/patches/webrtc-sctp), and a
+#                          buffered_amount() watchdog (~80 s, webrtc_manager.rs) stays as a
+#                          safety net. With an injected clock step (README recipe) the old
+#                          code stalls 10/10 and the patch passes 10/10, but at these rows'
+#                          settings the stall did not reproduce this batch (relay-loss 20/20
+#                          in both builds; earlier batches 14/20, 7/10), so the rows stay
+#                          `any` until CI shows they hold. cone-fwd-stun-lossy's remaining
+#                          failures are connect-stage (`ice`/`sctp`, 3/20).
 #   *-turn (symmetric)   → direct ICE over mixed candidates, connect_ms ≈ 2 s,
 #                          relay_retry false (the selected pair is usually one
 #                          peer's host/srflx candidate to the other's relay)
