@@ -336,7 +336,7 @@
     - [x] Root cause: webrtc-sctp 0.17.1 `process_selective_ack` pops in-flight chunks before validating the SACK, so one bad SACK desyncs the ack point forever. Watchdog added: reconnect when `buffered_amount()` hasn't drained for ~80 s (no measurable lab change: 7/10 vs 14/20)
     - [x] Patch webrtc-sctp (vendored 0.17.1 in `src-tauri/patches/webrtc-sctp`, `[patch.crates-io]`): validate the SACK before popping, apply phase can't fail. Injected clock step: 0/10 unpatched vs 10/10 patched. Matrix settings N=20: relay-loss 20/20 both builds, lossy 17/20 both (spontaneous stall didn't reproduce), so rows stay `any`
     - [x] Probe `--ping-interval-ms` / `--ping-timeout-secs`, `reconnects` in the result; `netlab.sh` `JOINER_ENV` (libfaketime clock-step recipe in `scripts/netlab/README.md`). Unpatched build with a 150 s echo window: the watchdog recovers 3/3 runs (one reconnect, 59/60 echoes)
-    - [ ] Post the upstream issue + PR (drafts in `docs/upstream/webrtc-sctp-sack.md`); drop the patch once a release has the fix (`PATCHES.md`)
+    - [ ] Upstream: issue posted as [webrtc-rs/webrtc#914](https://github.com/webrtc-rs/webrtc/issues/914); open the PR against `v0.17.x` if the maintainers want it (drafts in `docs/upstream/webrtc-sctp-sack.md`); drop the patch once a release has the fix (`PATCHES.md`)
     - [ ] Flip `symA-symB-fwd-relay-loss` to `pass` once CI shows 20/20 holds (same code failed 6/20 in an earlier batch)
     - [ ] `cone-fwd-stun-lossy` connect-stage failures (`ice`/`sctp`, 3/20 in both builds); echo-stage misses (single pings > 5 s) didn't occur this batch
     - [ ] Spurious SCTP T3-rtx timeouts: 14 in 30 pings at 400 ms RTT with no loss (RTO_MIN is 1 s), so few RTT samples; candidate cause of slow echoes under loss
