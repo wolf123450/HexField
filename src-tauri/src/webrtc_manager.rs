@@ -308,6 +308,28 @@ pub fn default_ice_servers() -> Vec<RTCIceServer> {
     }]
 }
 
+/// The DTLS certificate fingerprint of an SDP (the first `a=fingerprint:`
+/// value; with BUNDLE every section carries the same one).
+fn sdp_fingerprint(sdp: &str) -> Option<&str> {
+    sdp.lines()
+        .find_map(|line| line.trim_end().strip_prefix("a=fingerprint:"))
+        .map(str::trim)
+}
+
+/// True when `offer_sdp` comes from a different PeerConnection than the one
+/// that produced `current_remote_sdp`. Every new PC generates a new DTLS
+/// certificate, while a renegotiation or ICE restart on the same PC keeps it,
+/// so a changed fingerprint means the remote side started over: a webview
+/// reload, an app restart, a stall-recovery or relay-only re-offer. Such an
+/// offer can't be applied to the existing PC — its DTLS and SCTP state
+/// belong to the remote's old PC — so it needs a fresh PC.
+fn is_new_remote_session(current_remote_sdp: Option<&str>, offer_sdp: &str) -> bool {
+    match (current_remote_sdp.and_then(sdp_fingerprint), sdp_fingerprint(offer_sdp)) {
+        (Some(current), Some(offered)) => !current.eq_ignore_ascii_case(offered),
+        _ => true,
+    }
+}
+
 impl WebRTCManager {
     pub fn new() -> Self {
         WebRTCManager {
@@ -941,7 +963,12 @@ impl WebRTCManager {
         };
 
         if let Some((pc, remote_desc_ready, state)) = existing {
-            if state == RTCPeerConnectionState::Connected {
+            let current_remote_sdp = pc.remote_description().await.map(|d| d.sdp);
+            let new_session = is_new_remote_session(current_remote_sdp.as_deref(), &sdp);
+            if state == RTCPeerConnectionState::Connected && new_session {
+                log::info!("[webrtc] offer from {from} has a new DTLS fingerprint — new remote session, replacing the Connected PC");
+            }
+            if state == RTCPeerConnectionState::Connected && !new_session {
                 log::debug!("[webrtc] renegotiation offer from {from} — reusing existing PC");
 
                 // Handle "glare" — both sides sent offers simultaneously.
@@ -1734,6 +1761,7 @@ mod tests {
     }
     use super::*;
     use serde_json::Value;
+    use webrtc::peer_connection::offer_answer_options::RTCOfferOptions;
     use std::time::Duration;
     use tokio::sync::mpsc::UnboundedSender;
 
@@ -1851,5 +1879,49 @@ mod tests {
         // Cancelling twice, or a session that never existed, is a harmless no-op.
         mgr.cancel_offer_session("session-c").await;
         mgr.cancel_offer_session("never-existed").await;
+    }
+
+    #[test]
+    fn sdp_fingerprint_reads_the_first_fingerprint_line() {
+        let sdp = "v=0
+a=fingerprint:sha-256 AB:CD 
+m=application 9
+a=fingerprint:sha-256 EF
+";
+        assert_eq!(sdp_fingerprint(sdp), Some("sha-256 AB:CD"));
+        assert_eq!(sdp_fingerprint("v=0
+m=application 9
+"), None);
+    }
+
+    /// A reloaded or restarted remote sends an offer from a brand-new PC while
+    /// our PC for it may still be Connected; that offer must not be treated as
+    /// a renegotiation of the old session (the reload-reconnect bug).
+    #[tokio::test]
+    async fn offer_from_a_new_peer_connection_is_a_new_session() {
+        let mgr = test_manager();
+
+        let first = with_timeout(mgr.build_pc(false)).await.unwrap();
+        with_timeout(first.create_data_channel("hexfield", None)).await.unwrap();
+        let original = with_timeout(first.create_offer(None)).await.unwrap();
+        with_timeout(first.set_local_description(original.clone())).await.unwrap();
+
+        // An ICE restart on the same PC changes the ICE credentials but keeps
+        // the DTLS certificate: still the same session.
+        let restart = RTCOfferOptions { ice_restart: true, ..Default::default() };
+        let renegotiation = with_timeout(first.create_offer(Some(restart))).await.unwrap();
+        assert_ne!(original.sdp, renegotiation.sdp);
+        assert!(!is_new_remote_session(Some(&original.sdp), &renegotiation.sdp));
+
+        let second = with_timeout(mgr.build_pc(false)).await.unwrap();
+        with_timeout(second.create_data_channel("hexfield", None)).await.unwrap();
+        let fresh = with_timeout(second.create_offer(None)).await.unwrap();
+        assert!(is_new_remote_session(Some(&original.sdp), &fresh.sdp));
+
+        // No remote description yet: nothing to renegotiate.
+        assert!(is_new_remote_session(None, &original.sdp));
+
+        let _ = first.close().await;
+        let _ = second.close().await;
     }
 }

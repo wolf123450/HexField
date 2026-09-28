@@ -630,13 +630,13 @@ test('voice channel participant visibility', async () => {
   const voiceCount = await existingVoice.count()
 
   if (voiceCount === 0) {
-    // Create a voice channel via the add button + dialog
+    // Create a voice channel via the add button — this opens ChannelCreateModal
+    // (src/components/modals/ChannelCreateModal.vue), not a native prompt().
     const addVoiceBtn = alicePage.locator('button.add-channel-btn[title="Add voice channel"]')
-    // Set up dialog handler BEFORE clicking
-    alicePage.once('dialog', async dialog => {
-      await dialog.accept('Test Voice')
-    })
     await addVoiceBtn.click()
+    await alicePage.waitForSelector('.modal-backdrop', { timeout: OP_MS })
+    await alicePage.locator('#channel-name-input').fill('Test Voice')
+    await alicePage.locator('.modal-box button.btn-primary', { hasText: 'Create' }).click()
 
     // Wait for the voice channel to appear in Alice's sidebar
     await alicePage.locator('.channel-item.channel-voice .channel-name')
@@ -905,11 +905,6 @@ test('alice can delete a message and bob sees it disappear', async () => {
   const bobMsg = bobPage.locator('.message-text').filter({ hasText: deleteText })
   await bobMsg.waitFor({ timeout: SYNC_MS })
 
-  // Set up dialog handler for the confirmation prompt (confirmBeforeDelete defaults true)
-  alicePage.once('dialog', async dialog => {
-    await dialog.accept()
-  })
-
   // Find the message bubble on Alice's side and hover to get action bar
   const aliceBubble = alicePage.locator('.message-bubble').filter({
     has: alicePage.locator('.message-text', { hasText: deleteText }),
@@ -920,6 +915,12 @@ test('alice can delete a message and bob sees it disappear', async () => {
   const deleteBtn = aliceBubble.locator('.action-btn--danger[title="Delete message"]')
   await deleteBtn.waitFor({ timeout: OP_MS })
   await deleteBtn.click()
+
+  // confirmBeforeDelete (default true) now opens the in-app ConfirmModal
+  // (src/components/modals/ConfirmModal.vue via uiStore.confirmDialog), not a
+  // native confirm() dialog. Confirm via its "Delete" button.
+  await alicePage.waitForSelector('.modal-backdrop', { timeout: OP_MS })
+  await alicePage.locator('.modal-box button.btn-primary', { hasText: 'Delete' }).click()
 
   // The message text should be replaced with a deleted placeholder on Alice's side
   // (or completely disappear depending on settings). Wait for the text to vanish.
@@ -1049,16 +1050,12 @@ test('alice can create a new text channel', async () => {
   const addTextBtn = alicePage.locator('button.add-channel-btn[title="Add text channel"]')
   await addTextBtn.waitFor({ timeout: OP_MS })
 
-  // Override window.prompt since CDP doesn't reliably intercept native dialogs
-  await alicePage.evaluate(() => {
-    (window as any).__origPrompt = window.prompt
-    window.prompt = () => 'e2e-test-channel'
-  })
+  // Add-channel now opens ChannelCreateModal (src/components/modals/ChannelCreateModal.vue)
+  // instead of a native prompt().
   await addTextBtn.click()
-  // Restore original prompt
-  await alicePage.evaluate(() => {
-    if ((window as any).__origPrompt) window.prompt = (window as any).__origPrompt
-  })
+  await alicePage.waitForSelector('.modal-backdrop', { timeout: OP_MS })
+  await alicePage.locator('#channel-name-input').fill('e2e-test-channel')
+  await alicePage.locator('.modal-box button.btn-primary', { hasText: 'Create' }).click()
 
   // The new channel should appear in Alice's sidebar
   const newChannel = alicePage.locator('.channel-name').filter({ hasText: 'e2e-test-channel' })
@@ -1120,12 +1117,6 @@ test('alice can delete a channel', async () => {
   // Count channels before delete
   const aliceCountBefore = await alicePage.locator('.channel-item .channel-name').filter({ hasText: 'e2e-renamed' }).count()
 
-  // Override window.confirm since CDP doesn't reliably intercept native dialogs
-  await alicePage.evaluate(() => {
-    (window as any).__origConfirm = window.confirm
-    window.confirm = () => true
-  })
-
   await channelItem.click({ button: 'right' })
 
   // Click "Delete Channel" in the context menu
@@ -1133,13 +1124,16 @@ test('alice can delete a channel', async () => {
   await deleteItem.waitFor({ timeout: OP_MS })
   await deleteItem.click()
 
-  // Wait a moment for the dialog to be handled
-  await alicePage.waitForTimeout(1_000)
+  // Deletion now goes through the in-app ConfirmModal (uiStore.confirmDialog),
+  // not a native confirm() dialog. Confirm via its "Delete" button.
+  const hasModal = await alicePage.waitForSelector('.modal-backdrop', { timeout: OP_MS })
+    .then(() => true).catch(() => false)
+  if (hasModal) {
+    await alicePage.locator('.modal-box button.btn-primary', { hasText: 'Delete' }).click()
+  }
 
-  // Restore original confirm
-  await alicePage.evaluate(() => {
-    if ((window as any).__origConfirm) window.confirm = (window as any).__origConfirm
-  })
+  // Wait a moment for the deletion to propagate
+  await alicePage.waitForTimeout(1_000)
 
   // Check if the delete actually worked; if not, try direct store call
   const aliceCountAfter = await alicePage.locator('.channel-item .channel-name').filter({ hasText: 'e2e-renamed' }).count()
@@ -1362,4 +1356,63 @@ test('message context menu has expected items for own messages', async () => {
   await alicePage.mouse.move(0, 0)
 
   console.log('[test] Message action bar has edit, delete, react ✓')
+})
+
+// ── Reload reconnect ─────────────────────────────────────────────────────────
+// A webview reload drops all JS state while the Rust process keeps its
+// WebRTC connections. The reloaded side must be connected again, in both
+// directions, without a restart. Alice has the lower user ID in some runs and
+// the higher one in others, so each side is reloaded in turn.
+
+const RECONNECT_MS = 20_000
+
+async function ownUserId(page: Page): Promise<string> {
+  return page.evaluate(async () => {
+    // @ts-ignore — browser-context dynamic import, resolved by Vite dev server
+    const { useIdentityStore } = await import('/src/stores/identityStore.ts')
+    return useIdentityStore().userId as string
+  })
+}
+
+async function waitForPeer(page: Page, peerId: string, label: string): Promise<void> {
+  await page.waitForFunction(async (id) => {
+    // @ts-ignore — browser-context dynamic import, resolved by Vite dev server
+    const { useNetworkStore } = await import('/src/stores/networkStore.ts')
+    return (useNetworkStore().connectedPeers as string[]).includes(id)
+  }, peerId, { timeout: RECONNECT_MS, polling: 250 }).catch(() => {
+    throw new Error(`[${label}] peer ${peerId} not in connectedPeers ${RECONNECT_MS} ms after reload`)
+  })
+}
+
+async function reloadAndExpectReconnect(reloaded: Page, reloadedLabel: string, other: Page, otherLabel: string) {
+  const reloadedId = await ownUserId(reloaded)
+  const otherId    = await ownUserId(other)
+
+  await reloaded.reload()
+  await waitForAppReady(reloaded, reloadedLabel)
+  const started = Date.now()
+  await waitForPeer(reloaded, otherId, reloadedLabel)
+  await waitForPeer(other, reloadedId, otherLabel)
+  console.log(`[test] ${reloadedLabel} and ${otherLabel} list each other ${Date.now() - started} ms after the reloaded app was ready`)
+
+  await ensureChannelSelected(reloaded, reloadedLabel)
+  await ensureChannelSelected(other, otherLabel)
+
+  const fromOther = `after ${reloadedLabel} reload, from ${otherLabel} ${Date.now()}`
+  await sendMessage(other, fromOther)
+  await reloaded.locator('.message-text').filter({ hasText: fromOther }).waitFor({ timeout: RECONNECT_MS })
+
+  const fromReloaded = `after ${reloadedLabel} reload, from ${reloadedLabel} ${Date.now()}`
+  await sendMessage(reloaded, fromReloaded)
+  await other.locator('.message-text').filter({ hasText: fromReloaded }).waitFor({ timeout: RECONNECT_MS })
+}
+
+test('bob reloads the page and reconnects to alice', async () => {
+  test.setTimeout(RECONNECT_MS * 4)
+  await reloadAndExpectReconnect(bobPage, 'bob', alicePage, 'alice')
+})
+
+test('alice reloads the page and reconnects to bob', async () => {
+  test.setTimeout(RECONNECT_MS * 4)
+  await reloadAndExpectReconnect(alicePage, 'alice', bobPage, 'bob')
 })
