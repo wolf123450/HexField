@@ -2,9 +2,10 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
-import type { CustomEmoji, Mutation } from '@/types/core'
+import type { CustomEmoji } from '@/types/core'
 import { APP_STORAGE_PREFIX } from '@/appConfig'
 import { generateHLC } from '@/utils/hlc'
+import { signMutation } from '@/services/mutationAuth'
 
 const RECENT_KEY = APP_STORAGE_PREFIX + 'recent_emoji'
 const USAGE_KEY  = APP_STORAGE_PREFIX + 'emoji_usage'
@@ -106,7 +107,7 @@ export const useEmojiStore = defineStore('emoji', () => {
     const { useMessagesStore } = await import('./messagesStore')
     const messagesStore = useMessagesStore()
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'emoji_add',
       targetId:   id,
@@ -121,8 +122,7 @@ export const useEmojiStore = defineStore('emoji', () => {
       }),
       logicalTs:  generateHLC(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     await messagesStore.applyMutation(mutation)
 
@@ -143,16 +143,17 @@ export const useEmojiStore = defineStore('emoji', () => {
     const { useMessagesStore } = await import('./messagesStore')
     const messagesStore = useMessagesStore()
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'emoji_remove',
       targetId:   emojiId,
       channelId:  '__server__',
       authorId:   identityStore.userId!,
+      // serverId lets history sync scope this row to its server
+      newContent: JSON.stringify({ serverId }),
       logicalTs:  generateHLC(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     await messagesStore.applyMutation(mutation)
 

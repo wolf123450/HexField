@@ -174,6 +174,8 @@ pub fn run() {
             // Mutations
             db_save_mutation,
             db_load_mutations,
+            db_get_member_sign_keys,
+            db_get_channel_server,
             // Servers & channels
             db_load_servers,
             db_save_server,
@@ -293,6 +295,8 @@ pub fn run() {
             sync_save_messages,
             sync_save_mutations,
             sync_list_channels,
+            sync_scope_messages,
+            sync_scope_mutations,
             // Media (Rust-native audio) — excluded when native-media feature is off
             #[cfg(feature = "native-media")]
             media_reset_all,

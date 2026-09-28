@@ -1,9 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
+import { signMutation, mutationToRow } from '@/services/mutationAuth'
 
 /**
- * One-time backfill: creates member_join and channel_create mutations for
- * existing data that predates the mutation-based sync system.
+ * One-time backfill: creates member_join, member_profile_update and
+ * channel_create mutations for existing data that predates the mutation-based
+ * sync system. Mutations are signed (spec 08 §5), so only data authored by the
+ * local user is backfilled — we cannot sign on behalf of other members.
  * Safe to call multiple times — uses a marker key to skip if already done.
  */
 export async function backfillMutations(): Promise<number> {
@@ -14,69 +17,75 @@ export async function backfillMutations(): Promise<number> {
     .catch(() => null)
   if (marker) return 0
 
-  // Backfill member_join for all existing members
+  const { useIdentityStore } = await import('@/stores/identityStore')
+  const myId = useIdentityStore().userId
+  if (!myId) return 0
+
+  const save = async (m: Parameters<typeof signMutation>[0]) => {
+    await invoke('db_save_mutation', { mutation: mutationToRow(signMutation(m)) }).catch(() => {})
+    count++
+  }
+
   const servers = await invoke<any[]>('db_load_servers').catch(() => [])
   for (const serverRow of servers) {
     const serverId = serverRow.id
     const members = await invoke<any[]>('db_load_members', { serverId }).catch(() => [])
-    for (const m of members) {
-      const mutation = {
-        id:           uuidv7(),
-        type:         'member_join',
-        target_id:    m.user_id,
-        channel_id:   '__server__',
-        author_id:    m.user_id,
-        new_content:  JSON.stringify({
-          userId: m.user_id,
+    const me = members.find(m => m.user_id === myId)
+    if (me) {
+      await save({
+        id:         uuidv7(),
+        type:       'member_join',
+        targetId:   myId,
+        channelId:  '__server__',
+        authorId:   myId,
+        newContent: JSON.stringify({
+          userId: myId,
           serverId,
-          displayName: m.display_name,
-          publicSignKey: m.public_sign_key,
-          publicDHKey: m.public_dh_key,
-          roles: JSON.parse(m.roles || '["member"]'),
-          joinedAt: m.joined_at,
+          displayName: me.display_name,
+          publicSignKey: me.public_sign_key,
+          publicDHKey: me.public_dh_key,
+          // Only the owner may claim elevated roles in a member_join.
+          roles: serverRow.owner_id === myId ? ['owner', 'admin'] : ['member'],
+          joinedAt: me.joined_at,
         }),
-        logical_ts:   m.joined_at,
-        created_at:   m.joined_at,
-        verified:     true,
-      }
-      await invoke('db_save_mutation', { mutation }).catch(() => {})
-      count++
+        logicalTs:  me.joined_at,
+        createdAt:  me.joined_at,
+      })
 
-      // If member has avatar_hash, also create member_profile_update
-      if (m.avatar_hash) {
-        const profileMut = {
-          id:           uuidv7(),
-          type:         'member_profile_update',
-          target_id:    m.user_id,
-          channel_id:   '__server__',
-          author_id:    m.user_id,
-          new_content:  JSON.stringify({
+      // If we have an avatar_hash, also create member_profile_update
+      if (me.avatar_hash) {
+        const now = new Date().toISOString()
+        await save({
+          id:         uuidv7(),
+          type:       'member_profile_update',
+          targetId:   myId,
+          channelId:  '__server__',
+          authorId:   myId,
+          newContent: JSON.stringify({
             serverId,
-            avatarHash: m.avatar_hash,
-            displayName: m.display_name,
-            bio: m.bio,
-            bannerColor: m.banner_color,
-            bannerHash: m.banner_hash,
+            avatarHash: me.avatar_hash,
+            displayName: me.display_name,
+            bio: me.bio,
+            bannerColor: me.banner_color,
+            bannerHash: me.banner_hash,
           }),
-          logical_ts:   new Date().toISOString(),
-          created_at:   new Date().toISOString(),
-          verified:     true,
-        }
-        await invoke('db_save_mutation', { mutation: profileMut }).catch(() => {})
-        count++
+          logicalTs:  now,
+          createdAt:  now,
+        })
       }
     }
 
-    // Backfill channel_create for all existing channels
+    // Backfill channel_create for all channels of servers we own
+    if (serverRow.owner_id !== myId) continue
     const channels = await invoke<any[]>('db_load_channels', { serverId }).catch(() => [])
     for (const ch of channels) {
-      const mutation = {
-        id:           uuidv7(),
-        type:         'channel_create',
-        target_id:    ch.id,
-        channel_id:   '__server__',
-        author_id:    serverRow.owner_id,
-        new_content:  JSON.stringify({
+      await save({
+        id:         uuidv7(),
+        type:       'channel_create',
+        targetId:   ch.id,
+        channelId:  '__server__',
+        authorId:   myId,
+        newContent: JSON.stringify({
           id: ch.id,
           serverId,
           name: ch.name,
@@ -84,12 +93,9 @@ export async function backfillMutations(): Promise<number> {
           position: ch.position,
           topic: ch.topic,
         }),
-        logical_ts:   ch.created_at,
-        created_at:   ch.created_at,
-        verified:     true,
-      }
-      await invoke('db_save_mutation', { mutation }).catch(() => {})
-      count++
+        logicalTs:  ch.created_at,
+        createdAt:  ch.created_at,
+      })
     }
   }
 

@@ -88,11 +88,15 @@ Pass 3: reconcile mutations table (per server — server_update, role_assign,
 
 Channels prioritised by: currently open > recently active > others.
 
+**Scope**: sync only covers servers where both peers are members. Every frame (`sync_neg_init`, `sync_push`, `sync_want`) carries `serverId`. Each side checks that the peer shares that server before it reconciles, serves or accepts rows. The Rust `sync_*` commands check that the channel belongs to `serverId` and only return or accept rows of that channel and server. Pass 3 runs once per shared server. A `__server__` mutation belongs to the server in its `target_id` (`server_update`, `access_mode_update`, `server_rebaseline`, `governance_*`) or else in `newContent.serverId`. Rows with neither never sync.
+
 ---
 
 ## 5. Mutations Sync
 
 Mutations have their own UUID v7 IDs — they are first-class Negentropy entries, reconciled independently from messages.
+
+**Authorization before apply.** Every pushed mutation row goes through the same check as a live mutation (`authorizeMutation` in `src/services/mutationAuth.ts`, spec 08 §5): a valid signature by the author's known key plus authorship rules. The peer's `verified` flag is ignored. Rejected rows are not stored, so the next sync session offers them again (for example, an edit whose target message had not arrived yet). Rows are checked one at a time and `member_join` rows first, because a join introduces the key that later rows in the same batch are verified against. The signature is stored in `mutations.sig` (migration 014) so the row can be re-served and re-verified by third parties.
 
 **Applying mutations on receipt** (in `logical_ts` order):
 

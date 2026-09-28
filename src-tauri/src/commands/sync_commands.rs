@@ -66,20 +66,91 @@ fn build_storage(items: Vec<(u64, Id)>) -> Result<NegentropyStorageVector, Strin
     Ok(storage)
 }
 
-/// Load (timestamp, id) pairs for the given channel + table from SQLite.
+// ── Sync scope (which server a row belongs to) ───────────────────────────────
+
+/// Pseudo channel ID that holds server-level mutations (members, channels, emoji…).
+const SERVER_CHANNEL: &str = "__server__";
+
+/// Server-level mutation types whose `target_id` is the server ID.
+const SERVER_TARGET_TYPES: [&str; 3] = ["server_update", "access_mode_update", "server_rebaseline"];
+
+/// The server a server-level (`__server__`) mutation belongs to, derived from
+/// the row alone so that both peers always agree on it (a DB lookup would
+/// differ once one peer has applied a `channel_delete` / `emoji_remove`).
+/// Returns `None` for rows that cannot be attributed; those never sync.
+fn server_mutation_server_id(
+    mutation_type: &str,
+    target_id: &str,
+    new_content: Option<&str>,
+) -> Option<String> {
+    if SERVER_TARGET_TYPES.contains(&mutation_type) || mutation_type.starts_with("governance_") {
+        return (!target_id.is_empty()).then(|| target_id.to_string());
+    }
+    let value: serde_json::Value = serde_json::from_str(new_content?).ok()?;
+    value
+        .get("serverId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Server ID of a regular channel, or `None` if we don't have the channel.
+fn channel_server_id(conn: &rusqlite::Connection, channel_id: &str) -> Result<Option<String>, String> {
+    match conn.query_row("SELECT server_id FROM channels WHERE id = ?1", [channel_id], |r| r.get(0)) {
+        Ok(id) => Ok(Some(id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Validate a (server, channel) sync scope: the server ID must be non-empty and
+/// a regular channel must belong to that server. The frontend has already
+/// checked that the peer shares the server; this makes sure a frame can't
+/// name a channel of some other server under it.
+fn check_scope(conn: &rusqlite::Connection, server_id: &str, channel_id: &str) -> Result<(), String> {
+    if server_id.is_empty() || channel_id.is_empty() {
+        return Err("sync scope: empty server or channel ID".into());
+    }
+    if channel_id == SERVER_CHANNEL {
+        return Ok(());
+    }
+    match channel_server_id(conn, channel_id)? {
+        Some(sid) if sid == server_id => Ok(()),
+        _ => Err(format!("sync scope: channel {channel_id} is not in server {server_id}")),
+    }
+}
+
+/// True when a mutation row belongs to the (server, channel) scope.
+/// Callers must have run `check_scope` for regular channels.
+fn mutation_in_scope(m: &MutationRow, server_id: &str, channel_id: &str) -> bool {
+    if m.channel_id != channel_id {
+        return false;
+    }
+    if channel_id != SERVER_CHANNEL {
+        return true;
+    }
+    server_mutation_server_id(&m.mutation_type, &m.target_id, m.new_content.as_deref()).as_deref()
+        == Some(server_id)
+}
+
+/// Load (timestamp, id) pairs for the given channel + table from SQLite,
+/// scoped to `server_id` (see `check_scope` / `server_mutation_server_id`).
 /// Messages before the server's `history_starts_at` are excluded so re-baselined
 /// servers don't gossip pre-baseline history to new peers.
 fn load_items(
     conn: &rusqlite::Connection,
+    server_id: &str,
     channel_id: &str,
     table: &SyncTable,
 ) -> Result<Vec<(u64, Id)>, String> {
+    check_scope(conn, server_id, channel_id)?;
+
+    if channel_id == SERVER_CHANNEL {
+        return load_server_mutation_items(conn, server_id, table);
+    }
+
     // Look up history_starts_at for this channel's server (may be NULL).
-    // The '__server__' channel holds member_join, channel_create, etc. — these
-    // must always sync regardless of rebaseline so new joiners see all members.
-    let history_starts_at: Option<String> = if channel_id == "__server__" {
-        None
-    } else {
+    let history_starts_at: Option<String> = {
         conn.query_row(
             "SELECT s.history_starts_at FROM servers s
              JOIN channels c ON c.server_id = s.id
@@ -131,6 +202,43 @@ fn load_items(
         .collect::<Result<Vec<_>, _>>()
 }
 
+/// Server-wide pass: only the `__server__` mutations that belong to `server_id`.
+/// These always sync regardless of rebaseline so new joiners see all members.
+fn load_server_mutation_items(
+    conn: &rusqlite::Connection,
+    server_id: &str,
+    table: &SyncTable,
+) -> Result<Vec<(u64, Id)>, String> {
+    if !matches!(table, SyncTable::Mutations) {
+        return Err("sync scope: the server-wide pass only syncs mutations".into());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, type, target_id, new_content FROM mutations
+             WHERE channel_id = ?1 ORDER BY logical_ts ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([SERVER_CHANNEL], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    rows.iter()
+        .filter(|(_, m_type, target_id, new_content)| {
+            server_mutation_server_id(m_type, target_id, new_content.as_deref()).as_deref() == Some(server_id)
+        })
+        .map(|(id, _, _, _)| uuid_to_neg_id(id))
+        .collect::<Result<Vec<_>, _>>()
+}
+
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
 /// Initiator side: build our negentropy storage and produce the initial message.
@@ -138,11 +246,12 @@ fn load_items(
 #[tauri::command]
 pub fn sync_initiate(
     state: State<AppState>,
+    server_id: String,
     channel_id: String,
     table: SyncTable,
 ) -> Result<String, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let items = load_items(&conn, &channel_id, &table)?;
+    let items = load_items(&conn, &server_id, &channel_id, &table)?;
     let storage = build_storage(items)?;
     let mut neg = Negentropy::owned(storage, 0).map_err(|e| e.to_string())?;
     let msg = neg.initiate().map_err(|e| e.to_string())?;
@@ -154,13 +263,14 @@ pub fn sync_initiate(
 #[tauri::command]
 pub fn sync_respond(
     state: State<AppState>,
+    server_id: String,
     channel_id: String,
     table: SyncTable,
     msg: String,
 ) -> Result<String, String> {
     let raw = BASE64.decode(msg).map_err(|e| e.to_string())?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let items = load_items(&conn, &channel_id, &table)?;
+    let items = load_items(&conn, &server_id, &channel_id, &table)?;
     let storage = build_storage(items)?;
     let mut neg = Negentropy::owned(storage, 0).map_err(|e| e.to_string())?;
     let reply = neg.reconcile(&raw).map_err(|e| e.to_string())?;
@@ -173,13 +283,14 @@ pub fn sync_respond(
 #[tauri::command]
 pub fn sync_process_response(
     state: State<AppState>,
+    server_id: String,
     channel_id: String,
     table: SyncTable,
     msg: String,
 ) -> Result<SyncDiff, String> {
     let raw = BASE64.decode(msg).map_err(|e| e.to_string())?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let items = load_items(&conn, &channel_id, &table)?;
+    let items = load_items(&conn, &server_id, &channel_id, &table)?;
     let storage = build_storage(items)?;
     let mut neg = Negentropy::owned(storage, 0).map_err(|e| e.to_string())?;
     neg.set_initiator();
@@ -196,15 +307,38 @@ pub fn sync_process_response(
 }
 
 /// Fetch full message rows for the given IDs (used to push content to peer).
+/// Only rows of `channel_id` in `server_id` are returned, whatever IDs the
+/// peer asked for, so a `sync_want` can't pull another server's history.
 #[tauri::command]
 pub fn sync_get_messages(
     state: State<AppState>,
+    server_id: String,
+    channel_id: String,
     ids: Vec<String>,
 ) -> Result<Vec<MessageRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    get_messages_scoped(&conn, &server_id, &channel_id, &ids)
+}
+
+fn get_messages_scoped(
+    conn: &rusqlite::Connection,
+    server_id: &str,
+    channel_id: &str,
+    ids: &[String],
+) -> Result<Vec<MessageRow>, String> {
+    check_scope(conn, server_id, channel_id)?;
+    if channel_id == SERVER_CHANNEL {
+        return Ok(vec![]);
+    }
+    let mut rows = load_messages_by_id(conn, ids)?;
+    rows.retain(|m| m.channel_id == channel_id && m.server_id == server_id);
+    Ok(rows)
+}
+
+fn load_messages_by_id(conn: &rusqlite::Connection, ids: &[String]) -> Result<Vec<MessageRow>, String> {
     if ids.is_empty() {
         return Ok(vec![]);
     }
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
     let placeholders = ids.iter().enumerate()
         .map(|(i, _)| format!("?{}", i + 1))
         .collect::<Vec<_>>()
@@ -237,23 +371,42 @@ pub fn sync_get_messages(
     Ok(rows)
 }
 
-/// Fetch full mutation rows for the given IDs.
+/// Fetch full mutation rows for the given IDs, limited to the
+/// (`server_id`, `channel_id`) scope like `sync_get_messages`.
 #[tauri::command]
 pub fn sync_get_mutations(
     state: State<AppState>,
+    server_id: String,
+    channel_id: String,
     ids: Vec<String>,
 ) -> Result<Vec<MutationRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    get_mutations_scoped(&conn, &server_id, &channel_id, &ids)
+}
+
+fn get_mutations_scoped(
+    conn: &rusqlite::Connection,
+    server_id: &str,
+    channel_id: &str,
+    ids: &[String],
+) -> Result<Vec<MutationRow>, String> {
+    check_scope(conn, server_id, channel_id)?;
+    let mut rows = load_mutations_by_id(conn, ids)?;
+    rows.retain(|m| mutation_in_scope(m, server_id, channel_id));
+    Ok(rows)
+}
+
+fn load_mutations_by_id(conn: &rusqlite::Connection, ids: &[String]) -> Result<Vec<MutationRow>, String> {
     if ids.is_empty() {
         return Ok(vec![]);
     }
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
     let placeholders = ids.iter().enumerate()
         .map(|(i, _)| format!("?{}", i + 1))
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
         "SELECT id, type, target_id, channel_id, author_id, new_content,
-         emoji_id, logical_ts, created_at, verified
+         emoji_id, logical_ts, created_at, verified, sig
          FROM mutations WHERE id IN ({placeholders})"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -270,6 +423,7 @@ pub fn sync_get_mutations(
                 logical_ts:     row.get(7)?,
                 created_at:     row.get(8)?,
                 verified:       row.get::<_, i64>(9)? != 0,
+                sig:            row.get(10)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -323,11 +477,12 @@ pub fn sync_save_mutations(
         conn.execute(
             "INSERT OR IGNORE INTO mutations
              (id, type, target_id, channel_id, author_id, new_content,
-              emoji_id, logical_ts, created_at, verified)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+              emoji_id, logical_ts, created_at, verified, sig)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             rusqlite::params![
                 m.id, m.mutation_type, m.target_id, m.channel_id, m.author_id,
-                m.new_content, m.emoji_id, m.logical_ts, m.created_at, m.verified as i64
+                m.new_content, m.emoji_id, m.logical_ts, m.created_at, m.verified as i64,
+                m.sig
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -335,23 +490,317 @@ pub fn sync_save_mutations(
     Ok(())
 }
 
-/// List all distinct channel IDs present in the local messages + mutations tables.
+/// A channel to reconcile, with the server it belongs to.
+#[derive(Serialize)]
+pub struct SyncChannel {
+    pub channel_id: String,
+    pub server_id: String,
+}
+
+/// Most servers a single `sync_list_channels` call may name.
+const MAX_SYNC_SERVERS: usize = 500;
+
+/// List the channels of the given servers (the ones this peer shares with us).
 /// Used by the sync service to know which channels to reconcile with a peer.
 #[tauri::command]
-pub fn sync_list_channels(state: State<AppState>) -> Result<Vec<String>, String> {
+pub fn sync_list_channels(
+    state: State<AppState>,
+    server_ids: Vec<String>,
+) -> Result<Vec<SyncChannel>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT DISTINCT channel_id FROM messages
-             UNION
-             SELECT DISTINCT channel_id FROM mutations
-             WHERE channel_id != '__server__'",
-        )
-        .map_err(|e| e.to_string())?;
-    let ids = stmt
-        .query_map([], |row| row.get(0))
+    list_channels(&conn, &server_ids)
+}
+
+fn list_channels(conn: &rusqlite::Connection, server_ids: &[String]) -> Result<Vec<SyncChannel>, String> {
+    if server_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    if server_ids.len() > MAX_SYNC_SERVERS {
+        return Err(format!("sync_list_channels: at most {MAX_SYNC_SERVERS} servers"));
+    }
+    if server_ids.iter().any(|s| s.is_empty()) {
+        return Err("sync_list_channels: empty server ID".into());
+    }
+    let placeholders = (1..=server_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id, server_id FROM channels WHERE server_id IN ({placeholders}) ORDER BY server_id, position"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(server_ids.iter()), |r| {
+            Ok(SyncChannel { channel_id: r.get(0)?, server_id: r.get(1)? })
+        })
         .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<String>, _>>()
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    Ok(ids)
+    Ok(rows)
+}
+
+/// Receive-side gate: keep only the pushed messages that belong to the frame's
+/// (`server_id`, `channel_id`) scope. Rows for another channel or server, or for
+/// a channel we don't have in that server, are dropped.
+#[tauri::command]
+pub fn sync_scope_messages(
+    state: State<AppState>,
+    server_id: String,
+    channel_id: String,
+    messages: Vec<MessageRow>,
+) -> Result<Vec<MessageRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    scope_messages(&conn, &server_id, &channel_id, messages)
+}
+
+fn scope_messages(
+    conn: &rusqlite::Connection,
+    server_id: &str,
+    channel_id: &str,
+    mut messages: Vec<MessageRow>,
+) -> Result<Vec<MessageRow>, String> {
+    if channel_id == SERVER_CHANNEL || check_scope(conn, server_id, channel_id).is_err() {
+        return Ok(vec![]);
+    }
+    messages.retain(|m| m.channel_id == channel_id && m.server_id == server_id);
+    Ok(messages)
+}
+
+/// Receive-side gate for pushed mutations; see `sync_scope_messages`.
+/// `__server__` rows are kept only when they belong to `server_id`.
+#[tauri::command]
+pub fn sync_scope_mutations(
+    state: State<AppState>,
+    server_id: String,
+    channel_id: String,
+    mutations: Vec<MutationRow>,
+) -> Result<Vec<MutationRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    scope_mutations(&conn, &server_id, &channel_id, mutations)
+}
+
+fn scope_mutations(
+    conn: &rusqlite::Connection,
+    server_id: &str,
+    channel_id: &str,
+    mut mutations: Vec<MutationRow>,
+) -> Result<Vec<MutationRow>, String> {
+    if check_scope(conn, server_id, channel_id).is_err() {
+        return Ok(vec![]);
+    }
+    mutations.retain(|m| mutation_in_scope(m, server_id, channel_id));
+    Ok(mutations)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::migrations;
+    use rusqlite::Connection;
+
+    fn test_conn() -> Connection {
+        let mut conn = Connection::open_in_memory().expect("in-memory DB");
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        migrations::run(&mut conn);
+        conn
+    }
+
+    fn uid(n: u32) -> String {
+        format!("0190a000-0000-7000-8000-{n:012}")
+    }
+
+    /// Servers A and B, channel ca in A and cb in B.
+    fn seed(conn: &Connection) {
+        for s in ["srv-a", "srv-b"] {
+            conn.execute(
+                "INSERT INTO servers (id, name, owner_id, created_at, raw_json) VALUES (?1, ?1, 'owner', '2025-01-01', '{}')",
+                [s],
+            ).unwrap();
+        }
+        for (c, s) in [("ca", "srv-a"), ("cb", "srv-b")] {
+            conn.execute(
+                "INSERT INTO channels (id, server_id, name, created_at) VALUES (?1, ?2, ?1, '2025-01-01')",
+                [c, s],
+            ).unwrap();
+        }
+    }
+
+    fn message(id: &str, channel_id: &str, server_id: &str) -> MessageRow {
+        MessageRow {
+            id: id.into(),
+            channel_id: channel_id.into(),
+            server_id: server_id.into(),
+            author_id: "alice".into(),
+            content: Some("hi".into()),
+            content_type: "text".into(),
+            reply_to_id: None,
+            created_at: "2025-01-01".into(),
+            logical_ts: format!("1-{id}"),
+            verified: true,
+            raw_attachments: None,
+        }
+    }
+
+    fn mutation(id: &str, m_type: &str, target_id: &str, channel_id: &str, new_content: Option<&str>) -> MutationRow {
+        MutationRow {
+            id: id.into(),
+            mutation_type: m_type.into(),
+            target_id: target_id.into(),
+            channel_id: channel_id.into(),
+            author_id: "alice".into(),
+            new_content: new_content.map(str::to_string),
+            emoji_id: None,
+            logical_ts: format!("1-{id}"),
+            created_at: "2025-01-01".into(),
+            verified: true,
+            sig: None,
+        }
+    }
+
+    fn insert_message(conn: &Connection, m: &MessageRow) {
+        conn.execute(
+            "INSERT INTO messages (id, channel_id, server_id, author_id, content, content_type,
+             created_at, logical_ts, verified) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1)",
+            rusqlite::params![m.id, m.channel_id, m.server_id, m.author_id, m.content,
+                              m.content_type, m.created_at, m.logical_ts],
+        ).unwrap();
+    }
+
+    fn insert_mutation(conn: &Connection, m: &MutationRow) {
+        conn.execute(
+            "INSERT INTO mutations (id, type, target_id, channel_id, author_id, new_content,
+             logical_ts, created_at, verified) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1)",
+            rusqlite::params![m.id, m.mutation_type, m.target_id, m.channel_id, m.author_id,
+                              m.new_content, m.logical_ts, m.created_at],
+        ).unwrap();
+    }
+
+    fn ids_of<T>(rows: &[T], id: impl Fn(&T) -> &str) -> Vec<String> {
+        rows.iter().map(|r| id(r).to_string()).collect()
+    }
+
+    #[test]
+    fn server_mutation_attribution_by_type() {
+        let a = Some("srv-a".to_string());
+        assert_eq!(server_mutation_server_id("server_update", "srv-a", Some(r#"{"name":"x"}"#)), a);
+        assert_eq!(server_mutation_server_id("access_mode_update", "srv-a", None), a);
+        // server_rebaseline's new_content is a bare timestamp, not JSON
+        assert_eq!(server_mutation_server_id("server_rebaseline", "srv-a", Some("2025-01-01T00:00:00Z")), a);
+        assert_eq!(server_mutation_server_id("governance_motion_create", "srv-a", Some("{}")), a);
+        assert_eq!(server_mutation_server_id("member_join", "bob", Some(r#"{"serverId":"srv-a","userId":"bob"}"#)), a);
+        assert_eq!(server_mutation_server_id("channel_create", "ca", Some(r#"{"id":"ca","serverId":"srv-a"}"#)), a);
+        assert_eq!(server_mutation_server_id("channel_delete", "ca", Some(r#"{"serverId":"srv-a"}"#)), a);
+        assert_eq!(server_mutation_server_id("emoji_remove", "e1", Some(r#"{"serverId":"srv-a"}"#)), a);
+        // Unattributable rows never sync
+        assert_eq!(server_mutation_server_id("channel_delete", "ca", None), None);
+        assert_eq!(server_mutation_server_id("member_join", "bob", Some("not json")), None);
+        assert_eq!(server_mutation_server_id("member_join", "bob", Some(r#"{"serverId":""}"#)), None);
+        assert_eq!(server_mutation_server_id("server_update", "", None), None);
+    }
+
+    #[test]
+    fn server_pass_loads_only_that_servers_mutations() {
+        let conn = test_conn();
+        seed(&conn);
+        insert_mutation(&conn, &mutation(&uid(1), "member_join", "bob", SERVER_CHANNEL, Some(r#"{"serverId":"srv-a"}"#)));
+        insert_mutation(&conn, &mutation(&uid(2), "server_update", "srv-b", SERVER_CHANNEL, Some("{}")));
+        insert_mutation(&conn, &mutation(&uid(3), "channel_delete", "cz", SERVER_CHANNEL, None));
+
+        let a = load_items(&conn, "srv-a", SERVER_CHANNEL, &SyncTable::Mutations).unwrap();
+        assert_eq!(a.iter().map(|(_, id)| neg_id_to_uuid(id)).collect::<Vec<_>>(), vec![uid(1)]);
+        let b = load_items(&conn, "srv-b", SERVER_CHANNEL, &SyncTable::Mutations).unwrap();
+        assert_eq!(b.iter().map(|(_, id)| neg_id_to_uuid(id)).collect::<Vec<_>>(), vec![uid(2)]);
+        assert!(load_items(&conn, "srv-a", SERVER_CHANNEL, &SyncTable::Messages).is_err());
+    }
+
+    #[test]
+    fn channel_pass_rejects_channel_of_another_server() {
+        let conn = test_conn();
+        seed(&conn);
+        insert_message(&conn, &message(&uid(1), "cb", "srv-b"));
+        assert!(load_items(&conn, "srv-a", "cb", &SyncTable::Messages).is_err());
+        assert!(load_items(&conn, "srv-a", "missing", &SyncTable::Messages).is_err());
+        assert!(load_items(&conn, "", "cb", &SyncTable::Messages).is_err());
+        assert_eq!(load_items(&conn, "srv-b", "cb", &SyncTable::Messages).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn get_messages_never_serves_ids_outside_the_scope() {
+        let conn = test_conn();
+        seed(&conn);
+        insert_message(&conn, &message(&uid(1), "ca", "srv-a"));
+        insert_message(&conn, &message(&uid(2), "cb", "srv-b"));
+        let ids = vec![uid(1), uid(2)];
+
+        // A want for channel ca that also names B's message only gets ca's row
+        let rows = get_messages_scoped(&conn, "srv-a", "ca", &ids).unwrap();
+        assert_eq!(ids_of(&rows, |m| &m.id), vec![uid(1)]);
+        // A frame naming B's channel under server A is refused outright
+        assert!(get_messages_scoped(&conn, "srv-a", "cb", &ids).is_err());
+        assert!(get_messages_scoped(&conn, "srv-a", SERVER_CHANNEL, &ids).unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_mutations_scopes_server_and_channel_rows() {
+        let conn = test_conn();
+        seed(&conn);
+        insert_mutation(&conn, &mutation(&uid(1), "member_join", "bob", SERVER_CHANNEL, Some(r#"{"serverId":"srv-a"}"#)));
+        insert_mutation(&conn, &mutation(&uid(2), "member_join", "eve", SERVER_CHANNEL, Some(r#"{"serverId":"srv-b"}"#)));
+        insert_mutation(&conn, &mutation(&uid(3), "reaction_add", "m1", "ca", None));
+        insert_mutation(&conn, &mutation(&uid(4), "reaction_add", "m2", "cb", None));
+        let ids: Vec<String> = (1..=4).map(uid).collect();
+
+        let server_rows = get_mutations_scoped(&conn, "srv-a", SERVER_CHANNEL, &ids).unwrap();
+        assert_eq!(ids_of(&server_rows, |m| &m.id), vec![uid(1)]);
+        let channel_rows = get_mutations_scoped(&conn, "srv-a", "ca", &ids).unwrap();
+        assert_eq!(ids_of(&channel_rows, |m| &m.id), vec![uid(3)]);
+        assert!(get_mutations_scoped(&conn, "srv-a", "cb", &ids).is_err());
+    }
+
+    #[test]
+    fn list_channels_only_returns_the_given_servers() {
+        let conn = test_conn();
+        seed(&conn);
+        let rows = list_channels(&conn, &["srv-a".to_string()]).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].channel_id.as_str(), rows[0].server_id.as_str()), ("ca", "srv-a"));
+        assert!(list_channels(&conn, &[]).unwrap().is_empty());
+        assert!(list_channels(&conn, &[String::new()]).is_err());
+        let too_many: Vec<String> = (0..=MAX_SYNC_SERVERS).map(|i| format!("s{i}")).collect();
+        assert!(list_channels(&conn, &too_many).is_err());
+    }
+
+    #[test]
+    fn scope_messages_drops_foreign_rows() {
+        let conn = test_conn();
+        seed(&conn);
+        let pushed = vec![
+            message(&uid(1), "ca", "srv-a"),
+            message(&uid(2), "cb", "srv-b"),
+            message(&uid(3), "ca", "srv-b"), // row claims another server
+        ];
+        let kept = scope_messages(&conn, "srv-a", "ca", pushed.clone()).unwrap();
+        assert_eq!(ids_of(&kept, |m| &m.id), vec![uid(1)]);
+        // Frame claims channel cb is in server A
+        assert!(scope_messages(&conn, "srv-a", "cb", pushed.clone()).unwrap().is_empty());
+        assert!(scope_messages(&conn, "srv-a", SERVER_CHANNEL, pushed).unwrap().is_empty());
+    }
+
+    #[test]
+    fn scope_mutations_drops_foreign_rows() {
+        let conn = test_conn();
+        seed(&conn);
+        let pushed = vec![
+            mutation(&uid(1), "channel_create", "cn", SERVER_CHANNEL, Some(r#"{"id":"cn","serverId":"srv-a"}"#)),
+            mutation(&uid(2), "server_update", "srv-b", SERVER_CHANNEL, Some("{}")),
+            mutation(&uid(3), "reaction_add", "m1", "ca", None),
+        ];
+        let kept = scope_mutations(&conn, "srv-a", SERVER_CHANNEL, pushed.clone()).unwrap();
+        assert_eq!(ids_of(&kept, |m| &m.id), vec![uid(1)]);
+        let kept = scope_mutations(&conn, "srv-a", "ca", pushed.clone()).unwrap();
+        assert_eq!(ids_of(&kept, |m| &m.id), vec![uid(3)]);
+        assert!(scope_mutations(&conn, "srv-b", "ca", pushed).unwrap().is_empty());
+    }
 }

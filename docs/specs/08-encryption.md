@@ -181,21 +181,37 @@ and it does not check that the peer is a member of the channel's server. Edit
 
 ## 5. Mutation Signing
 
-All mutations that change server state (role_assign, server_update, etc.) must be signed:
+**Every** mutation is signed by its author's Ed25519 identity key when it is created (`signMutation` in `src/services/mutationAuth.ts`). Unsigned mutations are rejected; there is no compatibility path.
+
+**Signed payload** — `cryptoService.signJson()` over this object (canonical JSON: all keys deep-sorted, so key order after a serde round trip does not matter):
 
 ```typescript
-function signMutation(mutation: Omit<Mutation, 'verified'>): Mutation & { sig: string } {
-  const payload = JSON.stringify({
-    id: mutation.id, type: mutation.type, targetId: mutation.targetId,
-    authorId: mutation.authorId, newContent: mutation.newContent,
-    logicalTs: mutation.logicalTs,
-  })
-  const sig = cryptoService.signData(sodium.from_string(payload))
-  return { ...mutation, sig, verified: true }
+{
+  v: 1,                          // payload version
+  id, type, targetId, channelId, authorId,
+  newContent: m.newContent ?? null,   // absent → null, never undefined
+  emojiId:    m.emojiId ?? null,
+  logicalTs, createdAt,
 }
 ```
 
-Peers verify the signature before applying the mutation. Invalid signatures are silently dropped.
+`verified` and `sig` are not signed. Only the base64 signature (`__sig`) is kept: on the wire as `mutation.sig` and in the DB as `mutations.sig` (migration 014), so a synced mutation can be re-served and re-verified by third parties. The public key is never taken from the sender: the verifier sets `__pub` to a key it already knows for `authorId` (own identity key, or `members.public_sign_key` in any server).
+
+**Receive checks** (`authorizeMutation`, used by the live `mutation` message and by history sync). `verified: true` is set only after all pass:
+
+| Check | Rule |
+|---|---|
+| Signature | Valid under a known key of `authorId`. No known key → drop. |
+| Live sender | The peer that sent a live `mutation` message must be `authorId`. (Sync relays third-party history, so it has no sender check.) |
+| Channel/server | Live path: a real `channelId` must be a channel of the wire's `serverId` in our DB. |
+| `edit` | Target message must be in our DB, in the same channel, and authored by `authorId`. |
+| `delete` | As `edit`, but an admin/owner of the message's server may delete others' messages. |
+| `reaction_add` / `reaction_remove` | Target message in our DB and same channel; the reacting user is `authorId` (the signer). |
+| `member_join` | Self-join only (`authorId === targetId === payload.userId`). Verified with the key it introduces, which must match any key already known for that user (no key replacement). Roles other than `member` only for the server owner. |
+| `member_profile_update` | `targetId === authorId`. |
+| Server / role / channel / moderation / emoji / voice / governance | Signature only. Per-author permission checks (spec 11) are not implemented yet — see `docs/TODO.md`. |
+
+An edit/delete/reaction whose target message is unknown is **dropped, not held**. It is not stored, so negentropy offers it again on the next sync session, after the message has arrived.
 
 ---
 

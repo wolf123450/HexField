@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { v7 as uuidv7 } from 'uuid'
 import type { Server, ServerMember, Mutation, ServerManifest, JoinRequest, JoinCapsule, PeerEndpoint } from '@/types/core'
 import { generateHLC } from '@/utils/hlc'
+import { signMutation, serializeMutation, mutationToRow } from '@/services/mutationAuth'
 
 export interface InviteCode {
   code: string
@@ -120,6 +121,18 @@ export const useServersStore = defineStore('servers', () => {
     if (!members.value[server.id]) members.value[server.id] = {}
     members.value[server.id][selfMember.userId] = selfMember
 
+    // The owner signs its own member_join so joiners learn the owner's keys via
+    // sync. Only the owner may claim the owner/admin roles in a member_join.
+    await createMemberJoinMutation({
+      userId:        selfMember.userId,
+      serverId:      server.id,
+      displayName:   selfMember.displayName,
+      publicSignKey: selfMember.publicSignKey,
+      publicDHKey:   selfMember.publicDHKey,
+      roles:         ['owner', 'admin'],
+      joinedAt:      server.createdAt,
+    })
+
     return server
   }
 
@@ -161,6 +174,24 @@ export const useServersStore = defineStore('servers', () => {
       if (identityStore.bannerColor)  map[uid].bannerColor  = identityStore.bannerColor
     }
     members.value[serverId] = map
+  }
+
+  /** Members of `serverId`, loaded from the DB the first time they are needed. */
+  async function ensureMembers(serverId: string): Promise<Record<string, ServerMember>> {
+    if (!members.value[serverId]) await fetchMembers(serverId)
+    return members.value[serverId] ?? {}
+  }
+
+  /**
+   * True when we have joined `serverId` and `userId` is one of its members.
+   * The in-memory map can be partial (gossip adds single entries), so a miss
+   * reloads the members from the DB once before answering no.
+   */
+  async function isServerMember(serverId: string, userId: string): Promise<boolean> {
+    if (!serverId || !userId || !servers.value[serverId]) return false
+    if ((await ensureMembers(serverId))[userId]) return true
+    await fetchMembers(serverId)
+    return Boolean(members.value[serverId]?.[userId])
   }
 
   function setActiveServer(serverId: string | null) {
@@ -257,7 +288,7 @@ export const useServersStore = defineStore('servers', () => {
         raw_json:    JSON.stringify(server),
       },
     })
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'server_update',
       targetId:   serverId,
@@ -266,8 +297,7 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify({ iconBgColor: color }),
       logicalTs:  new Date().toISOString(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
     const { useNetworkStore } = await import('./networkStore')
     useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
   }
@@ -290,7 +320,7 @@ export const useServersStore = defineStore('servers', () => {
         raw_json:    JSON.stringify(server),
       },
     })
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'server_update',
       targetId:   serverId,
@@ -299,8 +329,7 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify({ name: newName }),
       logicalTs:  new Date().toISOString(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
     const { useNetworkStore } = await import('./networkStore')
     useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
   }
@@ -393,7 +422,7 @@ export const useServersStore = defineStore('servers', () => {
     const identity = useIdentityStore()
     const myId = identity.userId!
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'member_kick',
       targetId,
@@ -402,8 +431,7 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify({ serverId, reason }),
       logicalTs:  new Date().toISOString(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     // Apply locally
     applyServerMutation(mutation)
@@ -431,7 +459,7 @@ export const useServersStore = defineStore('servers', () => {
     const identity = useIdentityStore()
     const myId = identity.userId!
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'member_ban',
       targetId,
@@ -440,8 +468,7 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify({ serverId, reason, expiresAt }),
       logicalTs:  new Date().toISOString(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     applyServerMutation(mutation)
     await logModAction(serverId, 'ban', targetId, reason || undefined,
@@ -460,7 +487,7 @@ export const useServersStore = defineStore('servers', () => {
     const identity = useIdentityStore()
     const myId = identity.userId!
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'member_unban',
       targetId,
@@ -469,23 +496,13 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify({ serverId }),
       logicalTs:  new Date().toISOString(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     applyServerMutation(mutation)
     await logModAction(serverId, 'unban', targetId)
 
     const { useNetworkStore } = await import('./networkStore')
     useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
-  }
-
-  /** Serialize a Mutation to the wire-safe subset (no internal fields). */
-  function serializeMutation(m: Mutation) {
-    return {
-      id: m.id, type: m.type, targetId: m.targetId,
-      channelId: m.channelId, authorId: m.authorId,
-      newContent: m.newContent, logicalTs: m.logicalTs, createdAt: m.createdAt,
-    }
   }
 
   /**
@@ -497,7 +514,7 @@ export const useServersStore = defineStore('servers', () => {
     const identity = useIdentityStore()
     const myId = identity.userId!
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'voice_kick',
       targetId,
@@ -506,8 +523,7 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify({ channelId, reason }),
       logicalTs:  new Date().toISOString(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     // Log before broadcast
     await logModAction(serverId, 'voice_kick', targetId, reason || undefined,
@@ -521,7 +537,7 @@ export const useServersStore = defineStore('servers', () => {
     const { useIdentityStore } = await import('./identityStore')
     const myId = useIdentityStore().userId!
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'voice_mute',
       targetId,
@@ -530,8 +546,7 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify({ reason }),
       logicalTs:  new Date().toISOString(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     await logModAction(serverId, 'voice_mute', targetId, reason || undefined)
 
@@ -543,7 +558,7 @@ export const useServersStore = defineStore('servers', () => {
     const { useIdentityStore } = await import('./identityStore')
     const myId = useIdentityStore().userId!
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'voice_unmute',
       targetId,
@@ -552,8 +567,7 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify({}),
       logicalTs:  new Date().toISOString(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     await logModAction(serverId, 'voice_unmute', targetId)
 
@@ -565,7 +579,7 @@ export const useServersStore = defineStore('servers', () => {
     const { useIdentityStore } = await import('./identityStore')
     const myId = useIdentityStore().userId!
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'channel_acl_update',
       targetId:   acl.channelId,
@@ -574,8 +588,7 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify(acl),
       logicalTs:  new Date().toISOString(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     // Apply locally first
     const { useChannelsStore } = await import('./channelsStore')
@@ -599,7 +612,7 @@ export const useServersStore = defineStore('servers', () => {
     const patch: Record<string, unknown> = { accessMode }
     if (inviteMode !== undefined) patch.inviteMode = inviteMode
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'access_mode_update',
       targetId:   serverId,
@@ -608,8 +621,7 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify(patch),
       logicalTs:  new Date().toISOString(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     // Apply locally
     applyServerMutation(mutation)
@@ -894,17 +906,8 @@ export const useServersStore = defineStore('servers', () => {
           online_status:   'offline',
         },
       })
-
-      // Create member_join mutation for the owner so it syncs via negentropy
-      await createMemberJoinMutation({
-        userId: manifest.owner.userId,
-        serverId: server.id,
-        displayName: manifest.owner.displayName,
-        publicSignKey: manifest.owner.publicSignKey,
-        publicDHKey: manifest.owner.publicDHKey,
-        roles: ['owner', 'admin'],
-        joinedAt: server.createdAt,
-      })
+      // The owner's member_join is signed by the owner and arrives via sync;
+      // a joiner cannot sign one on the owner's behalf.
     }
 
     // Persist self as member (unless we are the owner)
@@ -1200,7 +1203,7 @@ export const useServersStore = defineStore('servers', () => {
 
     await invoke('db_save_rebaseline', { serverId, historyStartsAt })
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'server_rebaseline',
       targetId:   serverId,
@@ -1209,23 +1212,9 @@ export const useServersStore = defineStore('servers', () => {
       newContent: historyStartsAt,
       logicalTs:  historyStartsAt,
       createdAt:  historyStartsAt,
-      verified:   true,
-    }
-
-    await invoke('db_save_mutation', {
-      mutation: {
-        id:          mutation.id,
-        type:        mutation.type,
-        target_id:   mutation.targetId,
-        channel_id:  mutation.channelId,
-        author_id:   mutation.authorId,
-        new_content: mutation.newContent,
-        emoji_id:    null,
-        logical_ts:  mutation.logicalTs,
-        created_at:  mutation.createdAt,
-        verified:    mutation.verified,
-      },
     })
+
+    await invoke('db_save_mutation', { mutation: mutationToRow(mutation) })
 
     const { useNetworkStore } = await import('./networkStore')
     useNetworkStore().broadcast({ type: 'mutation', serverId, mutation: serializeMutation(mutation) })
@@ -1243,7 +1232,7 @@ export const useServersStore = defineStore('servers', () => {
     const { useMessagesStore } = await import('./messagesStore')
     const messagesStore = useMessagesStore()
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'member_join',
       targetId:   member.userId,
@@ -1252,8 +1241,7 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify(member),
       logicalTs:  generateHLC(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     await messagesStore.applyMutation(mutation)
 
@@ -1286,7 +1274,7 @@ export const useServersStore = defineStore('servers', () => {
     const { useMessagesStore } = await import('./messagesStore')
     const messagesStore = useMessagesStore()
 
-    const mutation: Mutation = {
+    const mutation = signMutation({
       id:         uuidv7(),
       type:       'member_profile_update',
       targetId:   identityStore.userId!,
@@ -1295,8 +1283,7 @@ export const useServersStore = defineStore('servers', () => {
       newContent: JSON.stringify({ serverId, ...profile }),
       logicalTs:  generateHLC(),
       createdAt:  new Date().toISOString(),
-      verified:   true,
-    }
+    })
 
     await messagesStore.applyMutation(mutation)
 
@@ -1347,6 +1334,8 @@ export const useServersStore = defineStore('servers', () => {
     loadServers,
     createServer,
     fetchMembers,
+    ensureMembers,
+    isServerMember,
     upsertMember,
     setActiveServer,
     updateMemberStatus,

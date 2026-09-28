@@ -2618,7 +2618,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hexfield"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -7945,8 +7945,6 @@ dependencies = [
 [[package]]
 name = "webrtc-sctp"
 version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ea6633bf951b3fd71eba3244731c8d0814f6a80300620a4370cad2983a5a42f"
 dependencies = [
  "arc-swap",
  "async-trait",
