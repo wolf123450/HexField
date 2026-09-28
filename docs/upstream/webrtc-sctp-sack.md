@@ -1,7 +1,8 @@
 # Upstream draft: webrtc-sctp SACK processing desync
 
-Drafts for webrtc-rs/webrtc (crate `webrtc-sctp`, path `sctp/`). **Not posted.**
-The maintainer decides whether and when to post them. Our patch lives in
+Drafts for webrtc-rs/webrtc (crate `webrtc-sctp`, path `sctp/`). Posted as
+[webrtc-rs/webrtc#914](https://github.com/webrtc-rs/webrtc/issues/914); the issue offers a PR against
+the `v0.17.x` branch. Our patch lives in
 `src-tauri/patches/webrtc-sctp/` (see `PATCHES.md` there); lab numbers are in
 `docs/network-compatibility-plan.md` step 6a.
 
