@@ -1357,3 +1357,62 @@ test('message context menu has expected items for own messages', async () => {
 
   console.log('[test] Message action bar has edit, delete, react ✓')
 })
+
+// ── Reload reconnect ─────────────────────────────────────────────────────────
+// A webview reload drops all JS state while the Rust process keeps its
+// WebRTC connections. The reloaded side must be connected again, in both
+// directions, without a restart. Alice has the lower user ID in some runs and
+// the higher one in others, so each side is reloaded in turn.
+
+const RECONNECT_MS = 20_000
+
+async function ownUserId(page: Page): Promise<string> {
+  return page.evaluate(async () => {
+    // @ts-ignore — browser-context dynamic import, resolved by Vite dev server
+    const { useIdentityStore } = await import('/src/stores/identityStore.ts')
+    return useIdentityStore().userId as string
+  })
+}
+
+async function waitForPeer(page: Page, peerId: string, label: string): Promise<void> {
+  await page.waitForFunction(async (id) => {
+    // @ts-ignore — browser-context dynamic import, resolved by Vite dev server
+    const { useNetworkStore } = await import('/src/stores/networkStore.ts')
+    return (useNetworkStore().connectedPeers as string[]).includes(id)
+  }, peerId, { timeout: RECONNECT_MS, polling: 250 }).catch(() => {
+    throw new Error(`[${label}] peer ${peerId} not in connectedPeers ${RECONNECT_MS} ms after reload`)
+  })
+}
+
+async function reloadAndExpectReconnect(reloaded: Page, reloadedLabel: string, other: Page, otherLabel: string) {
+  const reloadedId = await ownUserId(reloaded)
+  const otherId    = await ownUserId(other)
+
+  await reloaded.reload()
+  await waitForAppReady(reloaded, reloadedLabel)
+  const started = Date.now()
+  await waitForPeer(reloaded, otherId, reloadedLabel)
+  await waitForPeer(other, reloadedId, otherLabel)
+  console.log(`[test] ${reloadedLabel} and ${otherLabel} list each other ${Date.now() - started} ms after the reloaded app was ready`)
+
+  await ensureChannelSelected(reloaded, reloadedLabel)
+  await ensureChannelSelected(other, otherLabel)
+
+  const fromOther = `after ${reloadedLabel} reload, from ${otherLabel} ${Date.now()}`
+  await sendMessage(other, fromOther)
+  await reloaded.locator('.message-text').filter({ hasText: fromOther }).waitFor({ timeout: RECONNECT_MS })
+
+  const fromReloaded = `after ${reloadedLabel} reload, from ${reloadedLabel} ${Date.now()}`
+  await sendMessage(reloaded, fromReloaded)
+  await other.locator('.message-text').filter({ hasText: fromReloaded }).waitFor({ timeout: RECONNECT_MS })
+}
+
+test('bob reloads the page and reconnects to alice', async () => {
+  test.setTimeout(RECONNECT_MS * 4)
+  await reloadAndExpectReconnect(bobPage, 'bob', alicePage, 'alice')
+})
+
+test('alice reloads the page and reconnects to bob', async () => {
+  test.setTimeout(RECONNECT_MS * 4)
+  await reloadAndExpectReconnect(alicePage, 'alice', bobPage, 'bob')
+})
