@@ -445,21 +445,26 @@ fn apply_mutation_side_effects(
 pub fn db_save_mutation(state: State<AppState>, mutation: MutationRow) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
 
-    conn.execute(
-        "INSERT OR IGNORE INTO mutations
-         (id, type, target_id, channel_id, author_id, new_content, emoji_id, logical_ts, created_at, verified)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        rusqlite::params![
-            mutation.id, mutation.mutation_type, mutation.target_id,
-            mutation.channel_id, mutation.author_id, mutation.new_content,
-            mutation.emoji_id, mutation.logical_ts, mutation.created_at,
-            mutation.verified as i64
-        ],
-    ).map_err(|e| e.to_string())?;
+    insert_mutation(&conn, &mutation)?;
 
     // Apply side effects
     apply_mutation_side_effects(&conn, &mutation)?;
 
+    Ok(())
+}
+
+fn insert_mutation(conn: &rusqlite::Connection, mutation: &MutationRow) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR IGNORE INTO mutations
+         (id, type, target_id, channel_id, author_id, new_content, emoji_id, logical_ts, created_at, verified, sig)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        rusqlite::params![
+            mutation.id, mutation.mutation_type, mutation.target_id,
+            mutation.channel_id, mutation.author_id, mutation.new_content,
+            mutation.emoji_id, mutation.logical_ts, mutation.created_at,
+            mutation.verified as i64, mutation.sig
+        ],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -470,13 +475,21 @@ pub fn db_load_mutations(
     after_ts: Option<String>,
 ) -> Result<Vec<MutationRow>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    load_mutations(&conn, channel_id, after_ts)
+}
+
+fn load_mutations(
+    conn: &rusqlite::Connection,
+    channel_id: String,
+    after_ts: Option<String>,
+) -> Result<Vec<MutationRow>, String> {
     let sql = if after_ts.is_some() {
         "SELECT id, type, target_id, channel_id, author_id, new_content, emoji_id,
-         logical_ts, created_at, verified
+         logical_ts, created_at, verified, sig
          FROM mutations WHERE channel_id = ?1 AND logical_ts > ?2 ORDER BY logical_ts ASC"
     } else {
         "SELECT id, type, target_id, channel_id, author_id, new_content, emoji_id,
-         logical_ts, created_at, verified
+         logical_ts, created_at, verified, sig
          FROM mutations WHERE channel_id = ?1 ORDER BY logical_ts ASC"
     };
 
@@ -500,12 +513,50 @@ pub fn db_load_mutations(
             logical_ts:      row.get(7)?,
             created_at:      row.get(8)?,
             verified:        row.get::<_, i64>(9)? != 0,
+            sig:             row.get(10)?,
         })
     }).map_err(|e| e.to_string())?
     .collect::<Result<Vec<_>, _>>()
     .map_err(|e| e.to_string())?;
 
     Ok(rows)
+}
+
+/// All distinct non-empty Ed25519 identity keys recorded for a user across servers.
+/// Used to verify mutation signatures against the author's *known* key (spec 08 §5).
+#[tauri::command]
+pub fn db_get_member_sign_keys(state: State<AppState>, user_id: String) -> Result<Vec<String>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    member_sign_keys(&conn, &user_id)
+}
+
+fn member_sign_keys(conn: &rusqlite::Connection, user_id: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT public_sign_key FROM members
+         WHERE user_id = ?1 AND public_sign_key != ''",
+    ).map_err(|e| e.to_string())?;
+    let keys = stmt.query_map(rusqlite::params![user_id], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(keys)
+}
+
+/// The server a channel belongs to, or `None` when the channel is unknown locally.
+/// Used to drop incoming items whose `channelId` is not a channel of their `serverId`.
+#[tauri::command]
+pub fn db_get_channel_server(state: State<AppState>, channel_id: String) -> Result<Option<String>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    channel_server(&conn, &channel_id)
+}
+
+fn channel_server(conn: &rusqlite::Connection, channel_id: &str) -> Result<Option<String>, String> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT server_id FROM channels WHERE id = ?1",
+        rusqlite::params![channel_id],
+        |row| row.get::<_, String>(0),
+    ).optional().map_err(|e| e.to_string())
 }
 
 // ── Servers & Channels ────────────────────────────────────────────────────────
@@ -2428,6 +2479,7 @@ mod tests {
             logical_ts: "1000-000000".into(),
             created_at: "2024-01-01T00:00:00Z".into(),
             verified: true,
+            sig: None,
         };
         apply_mutation_side_effects(&conn, &mutation).unwrap();
 
@@ -2473,6 +2525,7 @@ mod tests {
             logical_ts: "2000-000000".into(),
             created_at: "2024-06-01T00:00:00Z".into(),
             verified: true,
+            sig: None,
         };
         apply_mutation_side_effects(&conn, &mutation).unwrap();
 
@@ -2503,6 +2556,7 @@ mod tests {
             logical_ts: "1000-000000".into(),
             created_at: "2024-01-01T00:00:00Z".into(),
             verified: true,
+            sig: None,
         };
         apply_mutation_side_effects(&conn, &mutation).unwrap();
 
@@ -2529,6 +2583,7 @@ mod tests {
             logical_ts: "3000-000000".into(),
             created_at: "2024-01-01T00:00:00Z".into(),
             verified: true,
+            sig: None,
         };
         apply_mutation_side_effects(&conn, &mutation).unwrap();
 
@@ -2559,6 +2614,80 @@ mod tests {
         ];
         let result = build_runoff_from_boundary_tie("motion-2", 1, &tied);
         assert!(result.is_none());
+    }
+
+    // ── Mutation signatures (migration 014) ──────────────────────────────────
+
+    fn sig_mutation(id: &str, sig: Option<&str>) -> MutationRow {
+        MutationRow {
+            id: id.into(),
+            mutation_type: "reaction_add".into(),
+            target_id: "msg-1".into(),
+            channel_id: "ch-sig".into(),
+            author_id: "u1".into(),
+            new_content: None,
+            emoji_id: Some("thumbsup".into()),
+            logical_ts: "1000-000000".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+            verified: true,
+            sig: sig.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn migration_014_adds_sig_column() {
+        let conn = test_conn();
+        let has_sig: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('mutations') WHERE name = 'sig'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(has_sig, 1);
+    }
+
+    #[test]
+    fn mutation_sig_round_trips_through_save_and_load() {
+        let conn = test_conn();
+        super::insert_mutation(&conn, &sig_mutation("m-signed", Some("c2lnbmF0dXJl"))).unwrap();
+        super::insert_mutation(&conn, &sig_mutation("m-unsigned", None)).unwrap();
+
+        let rows = super::load_mutations(&conn, "ch-sig".into(), None).unwrap();
+        let signed = rows.iter().find(|r| r.id == "m-signed").unwrap();
+        let unsigned = rows.iter().find(|r| r.id == "m-unsigned").unwrap();
+        assert_eq!(signed.sig.as_deref(), Some("c2lnbmF0dXJl"));
+        assert_eq!(unsigned.sig, None);
+    }
+
+    #[test]
+    fn mutation_row_deserializes_without_sig_field() {
+        let json = r#"{"id":"m","type":"edit","target_id":"t","channel_id":"c","author_id":"a",
+            "new_content":null,"emoji_id":null,"logical_ts":"1","created_at":"2","verified":true}"#;
+        let row: MutationRow = serde_json::from_str(json).unwrap();
+        assert_eq!(row.mutation_type, "edit");
+        assert_eq!(row.sig, None);
+    }
+
+    #[test]
+    fn member_sign_keys_and_channel_server_lookups() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO servers (id, name, owner_id, created_at, raw_json) VALUES ('s1','S','u1','2024','{}')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, server_id, name, created_at) VALUES ('c1','s1','general','2024')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO members (user_id, server_id, display_name, joined_at, public_sign_key, public_dh_key)
+             VALUES ('u1','s1','A','2024','pk-u1','dh'), ('u2','s1','B','2024','','dh')",
+            [],
+        ).unwrap();
+
+        assert_eq!(super::member_sign_keys(&conn, "u1").unwrap(), vec!["pk-u1".to_string()]);
+        assert!(super::member_sign_keys(&conn, "u2").unwrap().is_empty());
+        assert!(super::member_sign_keys(&conn, "nobody").unwrap().is_empty());
+        assert_eq!(super::channel_server(&conn, "c1").unwrap().as_deref(), Some("s1"));
+        assert_eq!(super::channel_server(&conn, "missing").unwrap(), None);
     }
 }
 

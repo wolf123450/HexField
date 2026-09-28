@@ -4,6 +4,13 @@ import type { Server, ServerMember } from '@/types/core'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
+// Mutations are signed at creation (spec 08 §5) — stub the signer.
+vi.mock('@/services/cryptoService', () => ({
+  cryptoService: {
+    signJson: vi.fn((p: Record<string, unknown>) => ({ ...p, __sig: 'test-sig', __pub: 'test-pub' })),
+  },
+}))
+
 // identityStore is dynamically imported inside createServer — stub it out
 vi.mock('@/stores/identityStore', () => ({
   useIdentityStore: () => ({
@@ -294,5 +301,61 @@ describe('serversStore.leaveServer', () => {
     await store.leaveServer('ghost-server')
 
     expect(invoke).not.toHaveBeenCalled()
+  })
+})
+
+describe('serversStore.isServerMember', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  function memberRow(userId: string, serverId = 's-1') {
+    return {
+      user_id: userId, server_id: serverId, display_name: userId, roles: '["member"]',
+      joined_at: '2025-01-01T00:00:00.000Z', public_sign_key: 'k', public_dh_key: 'k',
+    }
+  }
+
+  it('is false for a server we have not joined, without touching the DB', async () => {
+    const { useServersStore } = await import('@/stores/serversStore')
+    const { invoke } = await import('@tauri-apps/api/core')
+    const store = useServersStore()
+
+    expect(await store.isServerMember('s-unknown', 'user-bob')).toBe(false)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('loads members on first use and answers from them', async () => {
+    const { useServersStore } = await import('@/stores/serversStore')
+    const { invoke } = await import('@tauri-apps/api/core')
+    const store = useServersStore()
+    store.servers['s-1'] = makeServer()
+    vi.mocked(invoke).mockResolvedValue([memberRow('user-alice'), memberRow('user-bob')])
+
+    expect(await store.isServerMember('s-1', 'user-bob')).toBe(true)
+    expect(invoke).toHaveBeenCalledWith('db_load_members', { serverId: 's-1' })
+    expect(await store.isServerMember('s-1', 'user-eve')).toBe(false)
+  })
+
+  it('reloads a partial in-memory map before answering no', async () => {
+    const { useServersStore } = await import('@/stores/serversStore')
+    const { invoke } = await import('@tauri-apps/api/core')
+    const store = useServersStore()
+    store.servers['s-1'] = makeServer()
+    // Gossip put a single member in memory; bob is only in the DB
+    store.members['s-1'] = { 'user-carol': makeMemberPayload({ userId: 'user-carol' }) }
+    vi.mocked(invoke).mockResolvedValue([memberRow('user-bob'), memberRow('user-carol')])
+
+    expect(await store.isServerMember('s-1', 'user-bob')).toBe(true)
+  })
+
+  it('is false for empty IDs', async () => {
+    const { useServersStore } = await import('@/stores/serversStore')
+    const store = useServersStore()
+    store.servers['s-1'] = makeServer()
+
+    expect(await store.isServerMember('s-1', '')).toBe(false)
+    expect(await store.isServerMember('', 'user-bob')).toBe(false)
   })
 })
